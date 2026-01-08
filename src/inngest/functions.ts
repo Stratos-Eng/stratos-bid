@@ -2,9 +2,7 @@ import { inngest } from './client';
 import { db } from '@/db';
 import { users, connections, syncJobs } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-
-// NOTE: Scraper imports will be added in Task 2.5 when the scraper index is created
-// import { createScraper, createGmailScanner, usesBrowserScraping } from '@/scrapers';
+import { createScraper, createGmailScanner, usesBrowserScraping, type Platform } from '@/scrapers';
 
 // Daily sync - runs for all users every day at 6 AM
 export const dailySync = inngest.createFunction(
@@ -141,14 +139,44 @@ export const syncConnection = inngest.createFunction(
   }
 );
 
-// Internal sync function - placeholder until scrapers are implemented in Task 2.5
+// Internal sync function - uses the scraper factory
 async function syncConnectionInternal(
-  _userId: string,
+  userId: string,
   connection: { platform: string; id: string }
 ): Promise<{ bidsFound: number; platform: string }> {
-  // TODO: Will be implemented when scrapers are created in Task 2.5
-  // For now, return empty result
-  return { bidsFound: 0, platform: connection.platform };
+  const platform = connection.platform as Platform;
+
+  if (platform === 'gmail') {
+    const scanner = createGmailScanner({
+      connectionId: connection.id,
+      userId,
+    });
+    await scanner.init();
+    const bids = await scanner.scan();
+    const savedCount = await scanner.saveBids(bids);
+    return { bidsFound: savedCount, platform };
+  }
+
+  if (usesBrowserScraping(platform) && platform !== 'planetbids') {
+    const scraper = createScraper(platform as 'planhub' | 'buildingconnected', {
+      connectionId: connection.id,
+      userId,
+    });
+    await scraper.init();
+    try {
+      const loggedIn = await scraper.login();
+      if (!loggedIn) {
+        throw new Error(`Login failed for ${platform}`);
+      }
+      const bids = await scraper.scrape();
+      const savedCount = await scraper.saveBids(bids);
+      return { bidsFound: savedCount, platform };
+    } finally {
+      await scraper.cleanup();
+    }
+  }
+
+  return { bidsFound: 0, platform };
 }
 
 // Export all functions for Inngest serve
