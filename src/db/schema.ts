@@ -3,6 +3,7 @@ import { pgTable, text, timestamp, uuid, real, jsonb, integer } from 'drizzle-or
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   email: text('email').notNull().unique(),
+  emailVerified: timestamp('email_verified'),
   name: text('name'),
   image: text('image'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -27,6 +28,12 @@ export const sessions = pgTable('sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   sessionToken: text('session_token').notNull().unique(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  expires: timestamp('expires').notNull(),
+});
+
+export const verificationTokens = pgTable('verification_tokens', {
+  identifier: text('identifier').notNull(),
+  token: text('token').notNull().unique(),
   expires: timestamp('expires').notNull(),
 });
 
@@ -93,3 +100,7 @@ export const syncJobs = pgTable('sync_jobs', {
   docsDownloaded: integer('docs_downloaded'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
+
+// Type exports for inserting data
+export type NewBid = typeof bids.$inferInsert;
+export type NewDocument = typeof documents.$inferInsert;
