@@ -1,0 +1,566 @@
+{
+  "domAnalysis": {
+    "mainLayout": {
+      "leftSidebar": {
+        "classes": "style-module_appSidebar__2v0v1",
+        "children": [
+          {
+            "tag": "DIV",
+            "class": "style-module_appSidebarContent__1N4QR",
+            "role": null
+          },
+          {
+            "tag": "DIV",
+            "class": "style-module_appSidebarResizer__1JSNH",
+            "role": null
+          }
+        ]
+      },
+      "canvas": {
+        "tag": "CANVAS",
+        "classes": "",
+        "id": ""
+      }
+    },
+    "canvasElements": [
+      {
+        "id": "",
+        "class": "",
+        "width": 1904,
+        "height": 1011,
+        "parent": "ol-layer"
+      }
+    ],
+    "mapLibraries": {
+      "maplibre": false,
+      "leaflet": false,
+      "mapbox": false,
+      "openlayers": false,
+      "googleMaps": true
+    },
+    "featureList": {
+      "count": 17,
+      "sampleClasses": [
+        "bpt-font-14 css-f035d7  feat-panel__feature-content",
+        "bpt-font-14 css-f035d7  feat-panel__feature-content",
+        "bpt-font-14 css-f035d7  feat-panel__feature-content"
+      ]
+    },
+    "reactFiberFound": false,
+    "windowGlobals": [
+      "createImageBitmap",
+      "module$exports$google3$maps$api$javascript$marker$marker",
+      "module$contents$mapsapi$overlay$overlayView_OverlayView",
+      "dataLayer"
+    ]
+  },
+  "mapAnalysis": {
+    "mapLibrary": "OpenLayers",
+    "olViewports": 1,
+    "webglCanvases": []
+  },
+  "tileInfo": {
+    "totalImages": 6,
+    "tileImages": 6,
+    "tileSources": [
+      "https://storage.googleapis.com/falcon-shared-images-front-end/assets/beam_ai_logo_02e611abc6-711f-45a4-9579-03b9bf5f3cd4.png",
+      "https://storage.googleapis.com/autofx-outputs/PDFToImageConversionBatch/2025/12/981c8950-7cdb-4725-9b38-fe4d84e735b1/4.jpeg",
+      "https://storage.googleapis.com/autofx-outputs/PDFToImageConversionBatch/2025/12/981c8950-7cdb-4725-9b38-fe4d84e735b1/5.jpeg",
+      "https://storage.googleapis.com/autofx-outputs/PDFToImageConversionBatch/2025/12/981c8950-7cdb-4725-9b38-fe4d84e735b1/6.jpeg",
+      "https://storage.googleapis.com/autofx-outputs/PDFToImageConversionBatch/2025/12/981c8950-7cdb-4725-9b38-fe4d84e735b1/7.jpeg"
+    ]
+  },
+  "stateAnalysis": {
+    "zustandLike": [
+      "oncontextrestored"
+    ],
+    "reactQuery": [
+      "queryLocalFonts"
+    ],
+    "globalStateObjects": {
+      "cookieStore": []
+    }
+  },
+  "apiRequests": [
+    {
+      "url": "https://feathers.ibeam.ai/api/shared-view/user-requests/ce4cc515-a229-448b-b518-23ce95ef46bd/info/",
+      "method": "GET",
+      "status": 200,
+      "dataKeys": [
+        "id",
+        "created_at",
+        "request_id",
+        "hide_measurements"
+      ],
+      "sampleData": "{\"id\":\"ce4cc515-a229-448b-b518-23ce95ef46bd\",\"created_at\":\"2026-01-05T19:36:32.657898+05:30\",\"request_id\":\"201e94c2-7c3c-4a13-9f2e-3802cbbcdfa8\",\"hide_measurements\":false}"
+    },
+    {
+      "url": "https://feathers.ibeam.ai/api/user-sheets/categories/",
+      "method": "GET",
+      "status": 200,
+      "dataKeys": [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "18",
+        "19",
+        "20",
+        "21",
+        "22",
+        "23",
+        "24",
+        "25",
+        "26",
+        "27",
+        "28",
+        "29",
+        "30",
+        "31",
+        "32",
+        "33",
+        "34",
+        "35",
+        "36",
+        "37",
+        "38",
+        "39",
+        "40"
+      ],
+      "sampleData": "[{\"id\":\"1374a3f2-c741-49ae-8988-018a57817570\",\"name\":\"Conveying Systems\"},{\"id\":\"1d6f9afe-d0a1-4eb0-8b93-fd97f6fe6725\",\"name\":\"Specialties\"},{\"id\":\"2bc58f06-e294-4ca3-b6e2-1bc99f578457\",\"name\":\"Grading\"},{\"id\":\"32c2b796-bf7b-4648-9938-27741269e2fc\",\"name\":\"Opening\"},{\"id\":\"35a3116d-a7fb-4ac1-8275-1165f8dfd5d8\",\"name\":\"Drainage\"},{\"id\":\"3aa24b85-7f05-46e2-84b5-cbaf4bd03db2\",\"name\":\"Existing Conditions\"},{\"id\":\"3d220a88-9796-4bff-bcab-c0b185b714c1\",\"name\":\"Mechanical Piping\"},{\"id\":\"4539a0ee-3ada-"
+    },
+    {
+      "url": "https://feathers.ibeam.ai/api/user-requests/201e94c2-7c3c-4a13-9f2e-3802cbbcdfa8/",
+      "method": "GET",
+      "status": 200,
+      "dataKeys": [
+        "id",
+        "name",
+        "tat",
+        "tat_exact_time",
+        "inputs_link",
+        "fxs_job_id",
+        "status",
+        "user",
+        "created_at",
+        "completed_at",
+        "resubmit_status",
+        "resubmit_type",
+        "resubmit_count",
+        "folder_data",
+        "editing_status",
+        "shareable_link",
+        "origin",
+        "due_date",
+        "is_measurement_system_enabled",
+        "measurement_system",
+        "is_city_spec_takeoff",
+        "request_measurement_system",
+        "project",
+        "ace_review_step",
+        "ai_run_status",
+        "feathers_request_id",
+        "send_to_feathers",
+        "city",
+        "is_addendum_variance_enabled",
+        "fxs_tile_job_id",
+        "is_high_quality_images",
+        "bid",
+        "is_active",
+        "is_pilot",
+        "prospect_company_name",
+        "account_executive",
+        "sales_engineer",
+        "is_rfi_raised",
+        "is_annotation_request",
+        "is_accelerate_user",
+        "user_takeoff_id",
+        "request_access",
+        "processing_time_remaining",
+        "can_export",
+        "current_user",
+        "hide_measurements",
+        "is_copied",
+        "is_manual_measurement",
+        "editing_user",
+        "active_tab_id",
+        "chat_session_id",
+        "is_chat_positive",
+        "gpt_processing_status",
+        "user_chat_feedback",
+        "user_ongoing_requests",
+        "is_feedback",
+        "rfi",
+        "denied_bid_creation"
+      ],
+      "sampleData": "{\"id\":\"201e94c2-7c3c-4a13-9f2e-3802cbbcdfa8\",\"name\":\"EXTRA SPACE  SELF STORAGE  LOS ANGELES\",\"tat\":null,\"tat_exact_time\":null,\"inputs_link\":\"https://storage.googleapis.com/beam-filestore/prod/constructions_zip/EXTRA_SPACE__SELF_STORAGE__LOS_ANGELES_1767213220211328855.zip\",\"fxs_job_id\":null,\"status\":5,\"user\":{\"id\":\"4e46df36-1cad-45fb-aaf7-ec94a61b2b28\",\"email\":\"souvik.das@attentive.ai\",\"full_name\":\"Souvik Das\"},\"created_at\":\"2026-01-05T19:36:31.298931+05:30\",\"completed_at\":\"2026-01-05T19:36:32.8"
+    },
+    {
+      "url": "https://feathers.ibeam.ai/api/user-features/",
+      "method": "GET",
+      "status": 200,
+      "dataKeys": [
+        "results"
+      ],
+      "sampleData": "{\"results\":[{\"id\":\"318833c2-3ecb-4627-98f1-c21b5d5d03e9\",\"created_at\":\"2026-01-05T19:36:31.516521+05:30\",\"request_id\":\"201e94c2-7c3c-4a13-9f2e-3802cbbcdfa8\",\"description\":\"<p>DOOR TYPE - FG2</p><p>DOOR MATERIAL - AL/GL</p><p>FRAME TYPE - PER MFR</p><p><span style=\\\"color: rgba(0, 0, 0, 0.87);\\\">GLAZING - 1\\\" INSULATED TEMPERED GLASS</span></p>\",\"style\":{\"id\":\"444f3494-0804-4f52-ab3f-4fb01ac2d4fa\",\"json_style\":{\"color\":\"#ff5794\",\"width\":3,\"opacity\":1,\"pattern\":2,\"is_visible\":true,\"layer_order\":1,"
+    },
+    {
+      "url": "https://feathers.ibeam.ai/api/user-requests/201e94c2-7c3c-4a13-9f2e-3802cbbcdfa8/blueprint_files/",
+      "method": "GET",
+      "status": 200,
+      "dataKeys": [
+        "files_info",
+        "total_workable_sheets_count",
+        "total_non_workable_sheets_count",
+        "total_completed_sheets_count",
+        "total_ats_processed_sheets"
+      ],
+      "sampleData": "{\"files_info\":[{\"id\":\"8e4ef859-9369-4f5f-aeff-1b4e34a79c1a\",\"file_url\":\"https://storage.googleapis.com/beam-filestore/prod/blueprint_files/2026/1/1/Arch_1767213141.pdf\",\"name\":\"Arch\",\"created_at\":\"2026-01-05T14:06:32.644642Z\",\"is_earliest\":true,\"is_latest\":true,\"is_hidden\":false,\"file_unique_identifier\":\"9167f983-7376-4e99-b3dd-2692e48c7278\",\"total_ats_processed_sheets\":36},{\"id\":\"ef1ea62f-2ff2-4cfb-b3be-cdf3f1eb58da\",\"file_url\":\"https://storage.googleapis.com/beam-filestore/prod/blueprint_files"
+    },
+    {
+      "url": "https://feathers.ibeam.ai/api/user-requests/201e94c2-7c3c-4a13-9f2e-3802cbbcdfa8/tag_library/",
+      "method": "GET",
+      "status": 200,
+      "dataKeys": [
+        "tag_types"
+      ],
+      "sampleData": "{\"tag_types\":[{\"id\":\"84e5f5bf-811f-497e-8c57-d3e56b6ead53\",\"name\":\"MasterFormat\",\"tags\":[{\"id\":\"01754dc3-d935-4922-9b5f-e55f5442613e\",\"tag_type\":\"84e5f5bf-811f-497e-8c57-d3e56b6ead53\",\"name\":\"DIVISION_23\",\"color\":\"#FFFFFF\",\"subtags\":[{\"id\":\"5c55388c-db4b-4c85-92ba-5eb73c5e3b9d\",\"tag\":\"01754dc3-d935-4922-9b5f-e55f5442613e\",\"name\":\"23C_TESTING_ADJ_BAL\"},{\"id\":\"5e817c16-4327-4c6d-aaca-2866ad3ac394\",\"tag\":\"01754dc3-d935-4922-9b5f-e55f5442613e\",\"name\":\"23B_REFRIGERATION\"},{\"id\":\"7d840f53-dd39-4c7e-a8"
+    },
+    {
+      "url": "https://feathers.ibeam.ai/api/user-features/worksheets/",
+      "method": "POST",
+      "status": 200,
+      "dataKeys": [
+        "results"
+      ],
+      "sampleData": "{\"results\":[{\"request_feature_id\":\"318833c2-3ecb-4627-98f1-c21b5d5d03e9\",\"worksheet_id\":\"2721a88c-ccf3-4bd6-8759-c8a8f1a8d3bb\",\"worksheet_name\":\"A1.01\",\"blueprint_file_id\":\"8e4ef859-9369-4f5f-aeff-1b4e34a79c1a\"},{\"request_feature_id\":\"337ba724-fa55-4a11-a845-5830afb30620\",\"worksheet_id\":\"5f021aa7-30b9-443f-94be-1372ea745297\",\"worksheet_name\":\"A2.01\",\"blueprint_file_id\":\"8e4ef859-9369-4f5f-aeff-1b4e34a79c1a\"},{\"request_feature_id\":\"365b0d03-73e6-4bbd-af32-334c3d229b55\",\"worksheet_id\":\"2721a88c-cc"
+    },
+    {
+      "url": "https://feathers.ibeam.ai/api/user-sheets/",
+      "method": "GET",
+      "status": 200,
+      "dataKeys": [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "18",
+        "19",
+        "20",
+        "21",
+        "22",
+        "23",
+        "24",
+        "25",
+        "26",
+        "27",
+        "28",
+        "29",
+        "30",
+        "31",
+        "32",
+        "33",
+        "34",
+        "35",
+        "36",
+        "37",
+        "38",
+        "39",
+        "40",
+        "41",
+        "42",
+        "43",
+        "44",
+        "45",
+        "46",
+        "47",
+        "48",
+        "49",
+        "50"
+      ],
+      "sampleData": "[{\"id\":\"94fd624e-105f-4b6e-986d-d68a0ee0983c\",\"name\":\"A0.01A\",\"request_id\":\"201e94c2-7c3c-4a13-9f2e-3802cbbcdfa8\",\"is_typical\":false,\"blueprint_file_id\":\"8e4ef859-9369-4f5f-aeff-1b4e34a79c1a\",\"blueprint_file_url\":\"https://storage.googleapis.com/beam-filestore/prod/blueprint_files/2026/1/1/Arch_1767213141.pdf\",\"status\":1,\"is_workable\":false,\"is_duplicate\":false,\"image\":{\"image_url\":\"https://storage.googleapis.com/autofx-outputs/PDFToImageConversionBatch/2025/12/981c8950-7cdb-4725-9b38-fe4d84e735b"
+    },
+    {
+      "url": "https://feathers.ibeam.ai/api/user-sheets/f924bcf8-5003-43df-9903-add33ca1516a/status/",
+      "method": "GET",
+      "status": 200,
+      "dataKeys": [
+        "request_status",
+        "sheet_status",
+        "total_workable_sheets_count",
+        "total_non_workable_sheets_count",
+        "total_completed_sheets_count"
+      ],
+      "sampleData": "{\"request_status\":5,\"sheet_status\":3,\"total_workable_sheets_count\":5,\"total_non_workable_sheets_count\":46,\"total_completed_sheets_count\":5}"
+    },
+    {
+      "url": "https://feathers.ibeam.ai/api/user-outputs/",
+      "method": "GET",
+      "status": 200,
+      "dataKeys": [
+        "sheet_id",
+        "is_typical",
+        "blueprint_file_id",
+        "image",
+        "outputs",
+        "sheet_tools",
+        "measurement_type"
+      ],
+      "sampleData": "{\"sheet_id\":\"f924bcf8-5003-43df-9903-add33ca1516a\",\"is_typical\":false,\"blueprint_file_id\":\"8e4ef859-9369-4f5f-aeff-1b4e34a79c1a\",\"image\":\"84a82c3c-ba94-40c2-9617-8ec3ca30c82f\",\"outputs\":[{\"output_id\":\"8ba882af-ed12-4bbc-a901-a1a57b62f93a\",\"auto_count_job_id\":null,\"auto_count_process_status\":1,\"output_geojson\":{\"type\":\"FeatureCollection\",\"features\":[{\"id\":\"id-mjwyb0kq0.17tda683vyw\",\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[1136.8953863183658,-2175.7932885404434]},\"properties\":{\"c"
+    },
+    {
+      "url": "https://feathers.ibeam.ai/api/user-requests/201e94c2-7c3c-4a13-9f2e-3802cbbcdfa8/notes/",
+      "method": "GET",
+      "status": 200,
+      "dataKeys": [],
+      "sampleData": "[]"
+    }
+  ],
+  "componentTree": {
+    "component": "div",
+    "className": "rootCls",
+    "children": [
+      {
+        "component": "div",
+        "className": "main-layout",
+        "children": [
+          {
+            "component": "div",
+            "className": "theme-default",
+            "children": [
+              {
+                "component": "div",
+                "className": "Toastify",
+                "children": []
+              },
+              {
+                "component": "div",
+                "className": "style-module_container__1vJ8q",
+                "children": [
+                  {
+                    "component": "div",
+                    "className": "style-module_sharedViewHeader__d9WxC",
+                    "children": [
+                      {
+                        "component": "div",
+                        "className": "",
+                        "children": [
+                          {
+                            "component": "img",
+                            "className": "style-module_logo__3DzKJ",
+                            "children": []
+                          },
+                          {
+                            "component": "h2",
+                            "className": "",
+                            "children": []
+                          },
+                          {
+                            "component": "button",
+                            "className": "MuiButtonBase-root",
+                            "children": []
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "component": "input",
+                    "className": "",
+                    "children": []
+                  },
+                  {
+                    "component": "div",
+                    "className": "style-module_body__1WzOL",
+                    "children": [
+                      {
+                        "component": "div",
+                        "className": "style-module_leftFloating__MVvEI",
+                        "children": [
+                          {
+                            "component": "div",
+                            "className": "style-module_panelDiv__276v1",
+                            "children": []
+                          }
+                        ]
+                      },
+                      {
+                        "component": "div",
+                        "className": "style-module_rightFloating__1aFvM",
+                        "children": [
+                          {
+                            "component": "div",
+                            "className": "style-module_worksheetContainer__6r313",
+                            "children": []
+                          }
+                        ]
+                      },
+                      {
+                        "component": "div",
+                        "className": "",
+                        "children": [
+                          {
+                            "component": "div",
+                            "className": "theme-default",
+                            "children": []
+                          }
+                        ]
+                      },
+                      {
+                        "component": "button",
+                        "className": "css-1umxoy7",
+                        "children": [
+                          {
+                            "component": "svg",
+                            "children": []
+                          },
+                          {
+                            "component": "p",
+                            "className": "MuiTypography-root",
+                            "children": []
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "component": "div",
+                "className": "",
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "geojsonInput": null,
+  "cssAnalysis": {
+    "cssModulesCount": 22,
+    "cssModulesSample": [
+      "style-module_container",
+      "style-module_sharedViewHeader",
+      "style-module_logo",
+      "style-module_body",
+      "style-module_leftFloating",
+      "style-module_panelDiv",
+      "style-module_appContainer",
+      "style-module_appSidebar",
+      "style-module_appSidebarContent",
+      "style-module_appSidebarResizer",
+      "style-module_rightFloating",
+      "style-module_worksheetContainer",
+      "style-module_worksheetContainerHeader",
+      "style-module_totalSheetLabel",
+      "style-module_worksheetWrapper",
+      "style-module_worksheetFilter",
+      "style-module_worksheetPopover",
+      "style-module_menuButton",
+      "style-module_filterMenuItemContainer",
+      "style-module_filterMenuItem"
+    ],
+    "muiCount": 65,
+    "muiSample": [
+      "MuiButtonBase-root",
+      "MuiButton-root",
+      "MuiButton-contained",
+      "MuiButton-containedPrimary",
+      "MuiButton-sizeMedium",
+      "MuiButton-containedSizeMedium",
+      "MuiButton-disableElevation",
+      "MuiTypography-root",
+      "MuiTypography-caption",
+      "MuiFormControl-root",
+      "MuiFormControl-fullWidth",
+      "MuiTextField-root",
+      "MuiInputBase-root",
+      "MuiOutlinedInput-root",
+      "MuiInputBase-colorPrimary",
+      "MuiInputBase-fullWidth",
+      "MuiInputBase-formControl",
+      "MuiInputBase-sizeSmall",
+      "MuiInputBase-adornedEnd",
+      "MuiInputBase-input"
+    ],
+    "antdCount": 0,
+    "tailwindCount": 0
+  },
+  "jsFiles": [
+    "https://app.ibeam.ai/assets/js/runtime.6cdcb445.js",
+    "https://app.ibeam.ai/assets/js/vendor-react.04d764a1.js",
+    "https://app.ibeam.ai/assets/js/antdVendor..pnpm-antd4.20.0_react-dom%4018.3.1_react%4018.3.1__react%4018.3.1-node_modules.0ad2de16.js",
+    "https://app.ibeam.ai/assets/js/vendor-lodash.e47ad4a6.js",
+    "https://app.ibeam.ai/assets/js/vendors.axios1.13.2.b05a1cae.js",
+    "https://app.ibeam.ai/assets/js/vendors.babel%2Bruntime%407.28.4.9b2d57ba.js",
+    "https://app.ibeam.ai/assets/js/vendors.ant-design%2Bicons-svg%404.4.2.15d87321.js",
+    "https://app.ibeam.ai/assets/js/vendors.tanstack%2Bquery-core%404.41.0.08d43cf5.js",
+    "https://app.ibeam.ai/assets/js/vendors.sentry%2Butils%406.19.7.a3966912.js",
+    "https://app.ibeam.ai/assets/js/vendors.remix-run%2Brouter%401.23.1.c05a76ed.js",
+    "https://app.ibeam.ai/assets/js/vendors.pako2.1.0.c0978403.js",
+    "https://app.ibeam.ai/assets/js/vendors.posthog-js1.299.0.1116d37c.js",
+    "https://app.ibeam.ai/assets/js/main.ce7a42c5.js",
+    "https://app.ibeam.ai/assets/js/3796.f8c3a98e.js",
+    "https://app.ibeam.ai/assets/js/vendors..pnpm.6734b4f3.js",
+    "https://app.ibeam.ai/assets/js/vendors.date-fns2.30.0.bdf4745b.chunk.js",
+    "https://app.ibeam.ai/assets/js/vendors.lodash-es4.17.21.7ca18655.chunk.js",
+    "https://app.ibeam.ai/assets/js/vendors.turf+isobands@6.5.0.8a7bfeaa.chunk.js",
+    "https://app.ibeam.ai/assets/js/vendors.firebase+database@1.0.8.b95a593e.chunk.js",
+    "https://app.ibeam.ai/assets/js/9279.c90255e0.chunk.js",
+    "https://app.ibeam.ai/assets/js/3904.4b394b35.chunk.js",
+    "https://app.ibeam.ai/assets/js/4056.6b193ea2.chunk.js",
+    "https://app.ibeam.ai/assets/js/vendors.html2canvas1.4.1.dd956a19.chunk.js",
+    "https://app.ibeam.ai/assets/js/vendor-quill.b1b71ce9.chunk.js",
+    "https://app.ibeam.ai/assets/js/vendors.turf-jsts1.2.3.3023ca91.chunk.js",
+    "https://app.ibeam.ai/assets/js/7447.cdff06aa.chunk.js",
+    "https://app.ibeam.ai/assets/js/9197.d4371531.chunk.js",
+    "https://app.ibeam.ai/assets/js/vendor-ol.32b0d348.chunk.js",
+    "https://app.ibeam.ai/assets/js/vendor-ag-grid.37ac6237.chunk.js",
+    "https://app.ibeam.ai/assets/js/vendor-stem.69ac5042.chunk.js",
+    "https://app.ibeam.ai/assets/js/5336.22095721.chunk.js",
+    "https://app.ibeam.ai/assets/js/7651.913e7d82.chunk.js",
+    "https://app.ibeam.ai/assets/js/32.913e7d82.chunk.js",
+    "https://app.ibeam.ai/assets/js/8519.56c9de1f.chunk.js",
+    "https://app.ibeam.ai/assets/js/vendors.d3-geo1.7.1.e6839e06.chunk.js",
+    "https://app.ibeam.ai/assets/js/vendors.topojson-server3.0.1.b8de31d7.chunk.js",
+    "https://app.ibeam.ai/assets/js/5797.6c18c210.chunk.js",
+    "https://app.ibeam.ai/assets/js/vendors.d3-voronoi1.1.2.0409cb58.chunk.js",
+    "https://app.ibeam.ai/assets/js/vendors.robust-predicates3.0.2.e64677e4.chunk.js",
+    "https://app.ibeam.ai/assets/js/vendors.turf+polygonize@6.5.0.ee1d8c56.chunk.js",
+    "blob:https://app.ibeam.ai/84fcc274-4ee8-40e8-a754-3ba8d8732655",
+    "https://app.ibeam.ai/assets/js/6629.87e0eef3.chunk.js",
+    "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/11473500843/?random=1767836102296&cv=11&fst=1767836102296&bg=ffffff&guid=ON&async=1&en=gtag.config&gtm=45be6160v9171984527za200zd9171984527xec&gcd=13l3l3l3l1l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~105391252~115938465~115938469&u_w=800&u_h=600&url=https%3A%2F%2Fapp.ibeam.ai%2Fblueprint%2Fshared-view%3Ffid%3Dall_pdf%26id%3Dce4cc515-a229-448b-b518-23ce95ef46bd%26selected_sheet%3Df924bcf8-5003-43df-9903-add33ca1516a%26tab%3Dall_features%26wspc%3Dfalse&frm=0&tiba=Beam%20AI%20%7C%20Property%20Measurements%20Simplified&did=dZTQ1Zm&gdid=dZTQ1Zm&hn=www.googleadservices.com&npa=0&auid=1695261313.1767836102&uaa=arm&uab=64&uafvl=Chromium%3B143.0.7499.169%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=macOS&uapv=14.6.0&uaw=0&data=event%3Dgtag.config&rfmt=3&fmt=4",
+    "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/11012220105/?random=1767836102312&cv=11&fst=1767836102312&bg=ffffff&guid=ON&async=1&en=gtag.config&gtm=45be6160v9171984527za200zd9171984527xec&gcd=13l3l3l3l1l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~105391252~115938465~115938469&u_w=800&u_h=600&url=https%3A%2F%2Fapp.ibeam.ai%2Fblueprint%2Fshared-view%3Ffid%3Dall_pdf%26id%3Dce4cc515-a229-448b-b518-23ce95ef46bd%26selected_sheet%3Df924bcf8-5003-43df-9903-add33ca1516a%26tab%3Dall_features%26wspc%3Dfalse&frm=0&tiba=Beam%20AI%20%7C%20Property%20Measurements%20Simplified&did=dZTQ1Zm&gdid=dZTQ1Zm&hn=www.googleadservices.com&npa=0&auid=1695261313.1767836102&uaa=arm&uab=64&uafvl=Chromium%3B143.0.7499.169%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=macOS&uapv=14.6.0&uaw=0&data=event%3Dgtag.config&rfmt=3&fmt=4",
+    "https://app.ibeam.ai/assets/js/9002.81acc5d6.chunk.js",
+    "https://connect.facebook.net/signals/config/2064975940570480?v=2.9.248&r=stable&domain=app.ibeam.ai&hme=17590b9a2e1b26755cdc9ecb401f9f46bca979d3ccce95d786db0936167af731&ex_m=94%2C156%2C134%2C20%2C67%2C68%2C127%2C63%2C43%2C128%2C72%2C62%2C10%2C141%2C80%2C15%2C93%2C28%2C122%2C115%2C70%2C73%2C121%2C138%2C102%2C143%2C7%2C3%2C4%2C6%2C5%2C2%2C81%2C91%2C144%2C224%2C167%2C57%2C226%2C227%2C50%2C183%2C27%2C69%2C232%2C231%2C170%2C30%2C56%2C9%2C59%2C87%2C88%2C89%2C95%2C118%2C29%2C26%2C120%2C117%2C116%2C135%2C71%2C137%2C136%2C45%2C55%2C111%2C14%2C140%2C40%2C213%2C215%2C177%2C23%2C24%2C25%2C17%2C18%2C39%2C35%2C37%2C36%2C76%2C82%2C86%2C100%2C126%2C129%2C41%2C101%2C21%2C19%2C107%2C64%2C33%2C131%2C130%2C132%2C123%2C22%2C32%2C54%2C99%2C139%2C65%2C16%2C133%2C104%2C31%2C193%2C163%2C284%2C211%2C154%2C196%2C189%2C164%2C97%2C119%2C75%2C109%2C49%2C44%2C103%2C42%2C108%2C114%2C53%2C60%2C113%2C48%2C51%2C47%2C90%2C142%2C0%2C112%2C13%2C110%2C11%2C1%2C52%2C83%2C58%2C61%2C106%2C79%2C78%2C145%2C146%2C84%2C85%2C8%2C92%2C46%2C124%2C77%2C74%2C66%2C105%2C96%2C38%2C125%2C34%2C98%2C12%2C147"
+  ]
+}
