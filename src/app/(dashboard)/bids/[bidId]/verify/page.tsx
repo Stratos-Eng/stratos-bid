@@ -186,7 +186,7 @@ export default function VerificationPage() {
           />
         )}
         {mode === "review" && <ReviewMode documents={documents} bidId={bidId} />}
-        {mode === "verify" && <VerifyMode documents={documents} />}
+        {mode === "verify" && <VerifyMode documents={documents} bidId={bidId} />}
       </main>
     </div>
   )

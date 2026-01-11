@@ -7,15 +7,18 @@ import { cn } from "@/lib/utils"
 
 interface VerifyModeProps {
   documents: { id: string; filename: string; pageCount: number }[]
+  bidId: string
 }
 
-export function VerifyMode({ documents }: VerifyModeProps) {
+export function VerifyMode({ documents, bidId }: VerifyModeProps) {
   const {
     leftPaneDocId,
     rightPaneDocId,
     setLeftPaneDoc,
     setRightPaneDoc,
     setMode,
+    items,
+    updateItem,
   } = useVerificationStore()
 
   const [leftPage, setLeftPage] = useState(1)
@@ -34,6 +37,56 @@ export function VerifyMode({ documents }: VerifyModeProps) {
       setRightPaneDoc(documents[1].id)
     }
   }, [leftPaneDocId, rightPaneDocId, documents, setLeftPaneDoc, setRightPaneDoc])
+
+  // Trust Left: Verify all items from left document
+  const handleTrustLeft = async () => {
+    const leftDocItems = items.filter((i) => i.documentId === leftPaneDocId)
+
+    for (const item of leftDocItems) {
+      await fetch(`/api/bids/${bidId}/line-items`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemId: item.id, updates: { reviewStatus: "verified" } }),
+      })
+      updateItem(item.id, { status: "verified" })
+    }
+  }
+
+  // Trust Right: Verify all items from right document
+  const handleTrustRight = async () => {
+    const rightDocItems = items.filter((i) => i.documentId === rightPaneDocId)
+
+    for (const item of rightDocItems) {
+      await fetch(`/api/bids/${bidId}/line-items`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemId: item.id, updates: { reviewStatus: "verified" } }),
+      })
+      updateItem(item.id, { status: "verified" })
+    }
+  }
+
+  // Flag for RFI: Flag all items from both documents
+  const handleFlagForRFI = async () => {
+    const relevantItems = items.filter(
+      (i) => i.documentId === leftPaneDocId || i.documentId === rightPaneDocId
+    )
+
+    for (const item of relevantItems) {
+      await fetch(`/api/bids/${bidId}/line-items`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          itemId: item.id,
+          updates: {
+            reviewStatus: "flagged",
+            notes: "Flagged for RFI - conflicting specs",
+          },
+        }),
+      })
+      updateItem(item.id, { status: "flagged", notes: "Flagged for RFI - conflicting specs" })
+    }
+  }
 
   const renderPane = (
     doc: typeof leftDoc | undefined,
@@ -147,13 +200,13 @@ export function VerifyMode({ documents }: VerifyModeProps) {
             Tab to switch panes | Esc to return to Scan
           </span>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm">
+            <Button variant="outline" size="sm" onClick={handleTrustLeft}>
               Trust Left
             </Button>
-            <Button variant="outline" size="sm">
+            <Button variant="outline" size="sm" onClick={handleTrustRight}>
               Trust Right
             </Button>
-            <Button variant="outline" size="sm">
+            <Button variant="outline" size="sm" onClick={handleFlagForRFI}>
               Flag for RFI
             </Button>
           </div>
