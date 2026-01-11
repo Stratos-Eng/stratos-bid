@@ -54,7 +54,6 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
   const mapContainerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<Map | null>(null)
   const tileLayerRef = useRef<TileLayer<XYZ> | null>(null)
-  const vectorLayerRef = useRef<VectorLayer<VectorSource> | null>(null)
   const vectorSourceRef = useRef<VectorSource | null>(null)
   const [currentZoom, setCurrentZoom] = useState(100)
   const initialResolutionRef = useRef<number>(1)
@@ -148,7 +147,6 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
       source: vectorSource,
       style: createStyleFunction()
     })
-    vectorLayerRef.current = vectorLayer
 
     // Tile source - will be updated when document/page changes
     const tileSource = new XYZ({
@@ -243,7 +241,6 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
       map.setTarget(undefined)
       mapRef.current = null
       tileLayerRef.current = null
-      vectorLayerRef.current = null
       vectorSourceRef.current = null
     }
   // Only run on mount - we update tile source separately
