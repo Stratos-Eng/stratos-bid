@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect } from "react"
 import dynamic from "next/dynamic"
 import { useVerificationStore } from "@/lib/stores/verification-store"
 import { Button } from "@/components/ui/button"
@@ -124,24 +124,26 @@ export function DocumentViewer({ documents, annotations = [], onAnnotationClick 
           </Button>
         </div>
 
-        {/* Zoom Controls */}
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setScale((s) => Math.max(0.5, s - 0.25))}
-          >
-            &minus;
-          </Button>
-          <span className="text-xs text-muted-foreground">{Math.round(scale * 100)}%</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setScale((s) => Math.min(3, s + 0.25))}
-          >
-            +
-          </Button>
-        </div>
+        {/* Zoom Controls - only for non-tile mode */}
+        {!tileConfig && (
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setScale((s) => Math.max(0.5, s - 0.25))}
+            >
+              &minus;
+            </Button>
+            <span className="text-xs text-muted-foreground">{Math.round(scale * 100)}%</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setScale((s) => Math.min(3, s + 0.25))}
+            >
+              +
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* Document View */}
