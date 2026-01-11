@@ -7,6 +7,7 @@ import TileLayer from "ol/layer/Tile"
 import VectorLayer from "ol/layer/Vector"
 import VectorSource from "ol/source/Vector"
 import XYZ from "ol/source/XYZ"
+import Projection from "ol/proj/Projection"
 import { defaults as defaultControls } from "ol/control"
 import { defaults as defaultInteractions } from "ol/interaction"
 import Feature from "ol/Feature"
@@ -15,12 +16,44 @@ import { Style, Fill, Stroke, Circle as CircleStyle, Text } from "ol/style"
 import type { FeatureLike } from "ol/Feature"
 import "ol/ol.css"
 
-interface Annotation {
+// Annotation interface for simple usage
+export interface Annotation {
   id: string
   type: "highlight" | "measurement" | "note"
   coordinates: number[][] // [[x1, y1], [x2, y2], ...]
   label?: string
   color?: string
+}
+
+// GeoJSON types for ibeam-style integration
+// Reference: ibeam uses standard GeoJSON with custom properties
+export interface GeoJSONFeature {
+  id: string
+  type: "Feature"
+  geometry: {
+    type: "Point" | "LineString" | "Polygon"
+    coordinates: number[] | number[][] | number[][][]
+  }
+  properties: {
+    vector_layer_id?: string
+    count?: number
+    measurement?: number
+    unit?: string
+    color?: string
+    label?: string
+    tags_info?: Record<string, unknown>
+    zone_id?: string[]
+  }
+}
+
+export interface GeoJSONFeatureCollection {
+  type: "FeatureCollection"
+  features: GeoJSONFeature[]
+  properties?: {
+    count?: number
+    edit_count?: number
+    total_measurement?: number
+  }
 }
 
 interface OpenLayersTileViewerProps {
@@ -30,11 +63,22 @@ interface OpenLayersTileViewerProps {
   pageHeight: number
   maxZoom: number
   annotations?: Annotation[]
+  geoJsonFeatures?: GeoJSONFeatureCollection
   onAnnotationClick?: (annotation: Annotation) => void
+  onFeatureClick?: (feature: GeoJSONFeature) => void
   highlightedItemId?: string | null
 }
 
 const TILE_SIZE = 256
+
+// Style cache for performance (keyed by featureId-highlighted-resolution)
+// Using Object instead of Map to avoid collision with OpenLayers Map import
+const styleCacheStore: Record<string, Style | Style[]> = {}
+const styleCache = {
+  get: (key: string) => styleCacheStore[key],
+  set: (key: string, value: Style | Style[]) => { styleCacheStore[key] = value },
+  clear: () => { Object.keys(styleCacheStore).forEach(key => delete styleCacheStore[key]) }
+}
 
 export interface OpenLayersTileViewerRef {
   navigateTo: (x: number, y: number, zoom?: number) => void
@@ -48,7 +92,9 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
   pageHeight,
   maxZoom,
   annotations = [],
+  geoJsonFeatures,
   onAnnotationClick,
+  onFeatureClick,
   highlightedItemId
 }, ref) {
   const mapContainerRef = useRef<HTMLDivElement>(null)
@@ -62,23 +108,51 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
   const highlightedItemIdRef = useRef<string | null>(null)
   highlightedItemIdRef.current = highlightedItemId ?? null
 
-  // Calculate the extent (bounds) of the document in pixel coordinates
+  // Store current resolution in ref for style cache key
+  const currentResolutionRef = useRef<number>(1)
+
+  // Custom PDF projection - extent is [minX, minY, maxX, maxY]
+  // PDF coordinates: origin at top-left, Y grows downward (so we use negative Y)
+  // Following ibeam reference: extent = [0, -pdfHeight, pdfWidth, 0]
+  const pdfProjection = useMemo(() => {
+    return new Projection({
+      code: "PDF",
+      units: "pixels",
+      extent: [0, -pageHeight, pageWidth, 0]
+    })
+  }, [pageWidth, pageHeight])
+
+  // Calculate the extent for view constraints
   const extent = useMemo<[number, number, number, number]>(
-    () => [0, -pageHeight * 2, pageWidth * 2, 0],
+    () => [0, -pageHeight, pageWidth, 0],
     [pageWidth, pageHeight]
   )
 
-  // Style function that reads from ref to avoid stale closure
+  // Style function with caching for performance
+  // Reference: ibeam uses style caching keyed by featureId + state + resolution
   const createStyleFunction = useCallback(() => {
     return (feature: FeatureLike) => {
       const props = feature.getProperties()
-      const isHighlighted = props.id === highlightedItemIdRef.current
+      const featureId = props.id || feature.getId() || ""
+      const isHighlighted = featureId === highlightedItemIdRef.current
       const annotationType = props.type as string
       const color = props.color || "#3b82f6"
+      const geometry = feature.getGeometry()
+
+      // Cache key includes feature id, highlight state, and resolution bucket
+      const resBucket = Math.floor(Math.log2(currentResolutionRef.current + 1))
+      const cacheKey = `${featureId}-${annotationType}-${isHighlighted}-${resBucket}`
+
+      // Check cache first
+      const cached = styleCache.get(cacheKey)
+      if (cached) return cached
+
+      let styles: Style | Style[]
 
       switch (annotationType) {
         case "highlight":
-          return new Style({
+        case "polygon":
+          styles = new Style({
             fill: new Fill({
               color: isHighlighted ? "rgba(59, 130, 246, 0.4)" : "rgba(59, 130, 246, 0.2)"
             }),
@@ -87,17 +161,50 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
               width: isHighlighted ? 3 : 2
             })
           })
+          break
 
         case "measurement":
-          return [
+        case "linestring": {
+          // Build styles array with line + endpoint markers (per reference architecture)
+          const lineStyles: Style[] = [
             new Style({
               stroke: new Stroke({
                 color: isHighlighted ? "#dc2626" : "#ef4444",
                 width: isHighlighted ? 3 : 2,
                 lineDash: [8, 4]
               })
-            }),
-            ...(props.label ? [new Style({
+            })
+          ]
+
+          // Add endpoint markers (circles at line ends) - reference architecture pattern
+          if (geometry && geometry.getType() === "LineString") {
+            const lineGeom = geometry as LineString
+            const coords = lineGeom.getCoordinates()
+            if (coords.length >= 2) {
+              // Start point marker
+              lineStyles.push(new Style({
+                geometry: new Point(coords[0]),
+                image: new CircleStyle({
+                  radius: isHighlighted ? 6 : 5,
+                  fill: new Fill({ color: isHighlighted ? "#dc2626" : "#ef4444" }),
+                  stroke: new Stroke({ color: "#ffffff", width: 2 })
+                })
+              }))
+              // End point marker
+              lineStyles.push(new Style({
+                geometry: new Point(coords[coords.length - 1]),
+                image: new CircleStyle({
+                  radius: isHighlighted ? 6 : 5,
+                  fill: new Fill({ color: isHighlighted ? "#dc2626" : "#ef4444" }),
+                  stroke: new Stroke({ color: "#ffffff", width: 2 })
+                })
+              }))
+            }
+          }
+
+          // Add label if present
+          if (props.label) {
+            lineStyles.push(new Style({
               text: new Text({
                 text: props.label,
                 font: "12px sans-serif",
@@ -105,11 +212,16 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
                 stroke: new Stroke({ color: "#ffffff", width: 3 }),
                 offsetY: -10
               })
-            })] : [])
-          ]
+            }))
+          }
+
+          styles = lineStyles
+          break
+        }
 
         case "note":
-          return new Style({
+        case "point":
+          styles = new Style({
             image: new CircleStyle({
               radius: isHighlighted ? 10 : 8,
               fill: new Fill({ color: isHighlighted ? "#f59e0b" : "#fbbf24" }),
@@ -123,13 +235,18 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
               offsetY: 20
             }) : undefined
           })
+          break
 
         default:
-          return new Style({
+          styles = new Style({
             stroke: new Stroke({ color, width: 2 }),
             fill: new Fill({ color: `${color}33` })
           })
       }
+
+      // Cache the style
+      styleCache.set(cacheKey, styles)
+      return styles
     }
   }, [])
 
@@ -137,6 +254,9 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return
     if (pageWidth <= 0 || pageHeight <= 0) return // Guard against invalid dimensions
+
+    // Clear style cache on new map initialization
+    styleCache.clear()
 
     // Vector source for annotations
     const vectorSource = new VectorSource()
@@ -148,36 +268,41 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
       style: createStyleFunction()
     })
 
-    // Tile source - will be updated when document/page changes
+    // Tile source - using custom PDF projection
+    // Reference: ibeam stores tiles at GCS and serves via CDN with proper caching
     const tileSource = new XYZ({
       url: `/api/tiles/${documentId}/${pageNumber}/{z}/{x}/{y}.png`,
       tileSize: TILE_SIZE,
       maxZoom: maxZoom,
-      minZoom: 0
+      minZoom: 0,
+      projection: pdfProjection
     })
 
     const tileLayer = new TileLayer({
       source: tileSource,
-      preload: 2
+      preload: 2 // Progressive loading - load 2 zoom levels ahead
     })
     tileLayerRef.current = tileLayer
 
-    // Calculate initial resolution
+    // Calculate initial resolution to fit page in container
     const containerWidth = mapContainerRef.current.clientWidth || 800
     const containerHeight = mapContainerRef.current.clientHeight || 600
     const initialResolution = Math.max(
-      (pageWidth * 2) / containerWidth,
-      (pageHeight * 2) / containerHeight
-    ) * 1.1
+      pageWidth / containerWidth,
+      pageHeight / containerHeight
+    ) * 1.1 // 10% padding
     initialResolutionRef.current = initialResolution
+    currentResolutionRef.current = initialResolution
 
-    // Create map
+    // Create map with custom PDF projection
+    // Reference: ibeam uses extent [0, -pdfHeight, pdfWidth, 0] with center at [width/2, -height/2]
     const map = new Map({
       target: mapContainerRef.current,
       layers: [tileLayer, vectorLayer],
       view: new View({
+        projection: pdfProjection,
         extent: extent,
-        center: [pageWidth, -pageHeight],
+        center: [pageWidth / 2, -pageHeight / 2], // Center of PDF
         resolution: initialResolution,
         minResolution: 0.125,
         maxResolution: initialResolution * 4,
@@ -199,10 +324,11 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
       })
     })
 
-    // Track zoom changes
+    // Track zoom/resolution changes for style caching and UI
     map.getView().on("change:resolution", () => {
       const resolution = map.getView().getResolution()
       if (resolution && initialResolutionRef.current) {
+        currentResolutionRef.current = resolution
         const zoom = Math.round((initialResolutionRef.current / resolution) * 100)
         setCurrentZoom(zoom)
       }
@@ -252,18 +378,18 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
     if (!tileLayerRef.current || !mapRef.current) return
     if (pageWidth <= 0 || pageHeight <= 0) return
 
+    // Clear style cache when page changes
+    styleCache.clear()
+
     const newTileSource = new XYZ({
       url: `/api/tiles/${documentId}/${pageNumber}/{z}/{x}/{y}.png`,
       tileSize: TILE_SIZE,
       maxZoom: maxZoom,
-      minZoom: 0
+      minZoom: 0,
+      projection: pdfProjection
     })
 
     tileLayerRef.current.setSource(newTileSource)
-
-    // Update view extent and center for new page dimensions
-    const view = mapRef.current.getView()
-    const newExtent: [number, number, number, number] = [0, -pageHeight * 2, pageWidth * 2, 0]
 
     // Calculate new resolution to fit
     const container = mapContainerRef.current
@@ -271,26 +397,29 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
       const containerWidth = container.clientWidth || 800
       const containerHeight = container.clientHeight || 600
       const newResolution = Math.max(
-        (pageWidth * 2) / containerWidth,
-        (pageHeight * 2) / containerHeight
+        pageWidth / containerWidth,
+        pageHeight / containerHeight
       ) * 1.1
       initialResolutionRef.current = newResolution
+      currentResolutionRef.current = newResolution
 
-      // Animate to new view
+      // Animate to new view - center at middle of page
+      const view = mapRef.current.getView()
       view.animate({
-        center: [pageWidth, -pageHeight],
+        center: [pageWidth / 2, -pageHeight / 2],
         resolution: newResolution,
         duration: 200
       })
     }
-  }, [documentId, pageNumber, pageWidth, pageHeight, maxZoom])
+  }, [documentId, pageNumber, pageWidth, pageHeight, maxZoom, pdfProjection])
 
-  // Update annotations when they change
+  // Update annotations when they change (supports both Annotation[] and GeoJSONFeatureCollection)
   useEffect(() => {
     if (!vectorSourceRef.current) return
 
     vectorSourceRef.current.clear()
 
+    // Process simple Annotation[] format
     annotations.forEach((annotation) => {
       let geometry
 
@@ -318,7 +447,47 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
 
       vectorSourceRef.current?.addFeature(feature)
     })
-  }, [annotations])
+
+    // Process GeoJSON FeatureCollection format (ibeam-style)
+    if (geoJsonFeatures?.features) {
+      geoJsonFeatures.features.forEach((geoFeature) => {
+        let geometry
+
+        const geomType = geoFeature.geometry.type
+        const coords = geoFeature.geometry.coordinates
+
+        if (geomType === "Point") {
+          geometry = new Point(coords as number[])
+        } else if (geomType === "LineString") {
+          geometry = new LineString(coords as number[][])
+        } else if (geomType === "Polygon") {
+          geometry = new Polygon(coords as number[][][])
+        } else {
+          return // Skip unknown geometry types
+        }
+
+        // Map GeoJSON geometry type to annotation type for styling
+        const annotationType = geomType.toLowerCase()
+
+        const feature = new Feature({
+          geometry,
+          id: geoFeature.id,
+          type: annotationType,
+          vector_layer_id: geoFeature.properties.vector_layer_id,
+          count: geoFeature.properties.count,
+          measurement: geoFeature.properties.measurement,
+          unit: geoFeature.properties.unit,
+          label: geoFeature.properties.label ||
+            (geoFeature.properties.measurement
+              ? `${geoFeature.properties.measurement.toFixed(2)} ${geoFeature.properties.unit || ""}`.trim()
+              : undefined),
+          color: geoFeature.properties.color
+        })
+
+        vectorSourceRef.current?.addFeature(feature)
+      })
+    }
+  }, [annotations, geoJsonFeatures])
 
   // Trigger style re-render when highlightedItemId changes
   useEffect(() => {
@@ -360,13 +529,14 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
     })
   }, [extent])
 
-  // Navigate to specific coordinates
+  // Navigate to specific coordinates (PDF pixel coordinates with Y-inverted)
+  // Reference: ibeam coordinates are [x, -y] where x is from left, y is from top going down
   const navigateTo = useCallback((x: number, y: number, zoom?: number) => {
     if (!mapRef.current) return
     const view = mapRef.current.getView()
 
     const animationOptions: { center: [number, number]; duration: number; resolution?: number } = {
-      center: [x * 2, -y * 2], // Scale to tile coordinates and flip Y
+      center: [x, -y], // PDF coordinates: positive X from left, negative Y from top
       duration: 300
     }
 
