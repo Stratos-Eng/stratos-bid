@@ -1,10 +1,31 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
+import dynamic from "next/dynamic"
 import { useVerificationStore } from "@/lib/stores/verification-store"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { TileViewer } from "./tile-viewer"
+
+// Dynamically import OpenLayers viewer to avoid SSR issues
+const OpenLayersTileViewer = dynamic(
+  () => import("./openlayers-tile-viewer").then((mod) => mod.OpenLayersTileViewer),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center">
+        <div className="text-sm text-muted-foreground">Loading viewer...</div>
+      </div>
+    )
+  }
+)
+
+interface Annotation {
+  id: string
+  type: "highlight" | "measurement" | "note"
+  coordinates: number[][]
+  label?: string
+  color?: string
+}
 
 interface DocumentViewerProps {
   documents: {
@@ -13,10 +34,12 @@ interface DocumentViewerProps {
     pageCount: number
     tileConfig?: string | null
   }[]
+  annotations?: Annotation[]
+  onAnnotationClick?: (annotation: Annotation) => void
 }
 
-export function DocumentViewer({ documents }: DocumentViewerProps) {
-  const { currentDocumentId, currentPage, setCurrentDocument, setCurrentPage } =
+export function DocumentViewer({ documents, annotations = [], onAnnotationClick }: DocumentViewerProps) {
+  const { currentDocumentId, currentPage, setCurrentDocument, setCurrentPage, selectedItemId } =
     useVerificationStore()
   const [scale, setScale] = useState(1)
   const [loading, setLoading] = useState(false)
@@ -122,18 +145,20 @@ export function DocumentViewer({ documents }: DocumentViewerProps) {
       </div>
 
       {/* Document View */}
-      <div className="flex-1 overflow-auto bg-muted/30 p-4">
+      <div className="flex-1 overflow-hidden bg-muted/30">
         {tileConfig ? (
-          <TileViewer
+          <OpenLayersTileViewer
             documentId={currentDoc.id}
             pageNumber={currentPage}
             pageWidth={tileConfig.pageWidth}
             pageHeight={tileConfig.pageHeight}
             maxZoom={tileConfig.zoomLevels}
-            tileUrlPattern={tileConfig.tileUrlPattern}
+            annotations={annotations}
+            onAnnotationClick={onAnnotationClick}
+            highlightedItemId={selectedItemId}
           />
         ) : (
-          <>
+          <div className="h-full overflow-auto p-4">
             {loading && (
               <div className="flex h-full items-center justify-center">
                 <div className="text-sm text-muted-foreground">Loading...</div>
@@ -143,9 +168,10 @@ export function DocumentViewer({ documents }: DocumentViewerProps) {
               src={imageUrl}
               alt={`Page ${currentPage}`}
               onLoad={() => setLoading(false)}
+              onError={() => setLoading(false)}
               className={cn("mx-auto shadow-lg", loading && "hidden")}
             />
-          </>
+          </div>
         )}
       </div>
     </div>
