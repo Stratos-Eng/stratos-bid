@@ -84,6 +84,8 @@ export const documents = pgTable('documents', {
   extractedText: text('extracted_text'),
   relevanceScore: real('relevance_score').default(0),
   pageCount: integer('page_count'),
+  extractionStatus: text('extraction_status').default('pending'), // 'pending' | 'extracting' | 'completed' | 'failed'
+  tileConfig: text('tile_config'), // JSON: { zoomLevels, tileUrlPattern, pageWidth, pageHeight }
   downloadedAt: timestamp('downloaded_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
@@ -101,6 +103,32 @@ export const syncJobs = pgTable('sync_jobs', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+export const lineItems = pgTable('line_items', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  bidId: uuid('bid_id').notNull().references(() => bids.id, { onDelete: 'cascade' }),
+  documentId: uuid('document_id').references(() => documents.id, { onDelete: 'set null' }),
+
+  category: text('category'), // 'Storefront', 'Curtain Wall', 'Room Signs', etc.
+  description: text('description'),
+
+  estimatedQty: text('estimated_qty'),
+  unit: text('unit'), // 'SF', 'LF', 'EA', etc.
+
+  pageNumber: integer('page_number'),
+  pageReference: text('page_reference'), // 'A2.1 - Detail 3'
+
+  extractionConfidence: real('extraction_confidence').default(0),
+  reviewStatus: text('review_status').notNull().default('pending'), // 'pending' | 'verified' | 'flagged'
+  notes: text('notes'),
+
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Add extractionStatus to documents
+// Note: This should be added via migration, adding here for type reference
+
 // Type exports for inserting data
 export type NewBid = typeof bids.$inferInsert;
 export type NewDocument = typeof documents.$inferInsert;
+export type NewLineItem = typeof lineItems.$inferInsert;
