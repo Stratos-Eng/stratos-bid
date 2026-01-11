@@ -1,11 +1,13 @@
 "use client"
 
+import { useState } from "react"
 import { useVerificationStore } from "@/lib/stores/verification-store"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
 interface ReviewModeProps {
   documents: { id: string; filename: string; pageCount: number }[]
+  bidId: string
 }
 
 // Helper to generate confidence explanations
@@ -27,7 +29,7 @@ function getConfidenceReasons(item: any): string[] {
   return reasons.length > 0 ? reasons : ["Manual verification recommended"]
 }
 
-export function ReviewMode({ documents }: ReviewModeProps) {
+export function ReviewMode({ documents, bidId }: ReviewModeProps) {
   const {
     items,
     reviewQueue,
@@ -37,6 +39,10 @@ export function ReviewMode({ documents }: ReviewModeProps) {
     updateItem,
     setMode,
   } = useVerificationStore()
+
+  const [isEditingQty, setIsEditingQty] = useState(false)
+  const [editQty, setEditQty] = useState("")
+  const [editUnit, setEditUnit] = useState("")
 
   const currentItemId = reviewQueue[currentReviewIndex]
   const currentItem = items.find((i) => i.id === currentItemId)
@@ -69,6 +75,31 @@ export function ReviewMode({ documents }: ReviewModeProps) {
 
   const handleFlag = () => {
     updateItem(currentItem.id, { status: "flagged" })
+  }
+
+  const handleSaveQuantity = async () => {
+    if (!currentItem) return
+
+    try {
+      const res = await fetch(`/api/bids/${bidId}/line-items`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          itemId: currentItem.id,
+          updates: {
+            estimatedQty: editQty || null,
+            unit: editUnit || null
+          }
+        })
+      })
+
+      if (res.ok) {
+        updateItem(currentItem.id, { quantity: editQty, unit: editUnit })
+        setIsEditingQty(false)
+      }
+    } catch (error) {
+      console.error('Failed to save quantity:', error)
+    }
   }
 
   const getConfidenceColor = (level: string) => {
@@ -171,9 +202,39 @@ export function ReviewMode({ documents }: ReviewModeProps) {
 
             {/* Edit buttons */}
             <div className="mt-4 flex gap-2">
-              <Button variant="outline" size="sm">
-                Edit Quantity
-              </Button>
+              {isEditingQty ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={editQty}
+                    onChange={(e) => setEditQty(e.target.value)}
+                    placeholder="Qty"
+                    className="w-20 rounded border border-border bg-background px-2 py-1 text-sm"
+                    autoFocus
+                  />
+                  <input
+                    type="text"
+                    value={editUnit}
+                    onChange={(e) => setEditUnit(e.target.value)}
+                    placeholder="Unit"
+                    className="w-16 rounded border border-border bg-background px-2 py-1 text-sm"
+                  />
+                  <Button size="sm" onClick={handleSaveQuantity}>Save</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setIsEditingQty(false)}>Cancel</Button>
+                </div>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setEditQty(currentItem?.quantity?.toString() || "")
+                    setEditUnit(currentItem?.unit || "")
+                    setIsEditingQty(true)
+                  }}
+                >
+                  Edit Quantity
+                </Button>
+              )}
               <Button variant="outline" size="sm">
                 View All References
               </Button>

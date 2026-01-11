@@ -185,7 +185,7 @@ export default function VerificationPage() {
             onRetryExtraction={handleRetryExtraction}
           />
         )}
-        {mode === "review" && <ReviewMode documents={documents} />}
+        {mode === "review" && <ReviewMode documents={documents} bidId={bidId} />}
         {mode === "verify" && <VerifyMode documents={documents} />}
       </main>
     </div>
