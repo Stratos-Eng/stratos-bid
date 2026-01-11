@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { useVerificationStore } from "@/lib/stores/verification-store"
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts"
@@ -19,11 +19,55 @@ export default function VerificationPage() {
   const bidId = params.bidId as string
 
   const { mode, setMode, setItems, items } = useVerificationStore()
+  const [prevExtractionStatus, setPrevExtractionStatus] = useState<string | null>(null)
 
   // Fetch bid data
   const { data: bid, error: bidError } = useSWR(`/api/bids/${bidId}`, fetcher)
-  const { data: documentsData } = useSWR(`/api/bids/${bidId}/documents`, fetcher)
-  const { data: lineItemsData, mutate: mutateLineItems } = useSWR(`/api/bids/${bidId}/line-items`, fetcher)
+
+  // Fetch documents with polling when extracting
+  const { data: documentsData, mutate: mutateDocuments } = useSWR(
+    `/api/bids/${bidId}/documents`,
+    fetcher
+  )
+
+  // Calculate extraction status from documents
+  const documents = documentsData?.documents ?? []
+  const getAggregatedExtractionStatus = (): "pending" | "extracting" | "completed" | "failed" => {
+    if (documents.length === 0) return "completed"
+
+    const statuses = documents.map((d: { extractionStatus?: string }) => d.extractionStatus || "pending")
+
+    // If any is extracting, show extracting
+    if (statuses.includes("extracting")) return "extracting"
+    // If any is pending, show pending
+    if (statuses.includes("pending")) return "pending"
+    // If any failed, show failed
+    if (statuses.includes("failed")) return "failed"
+    // All completed
+    return "completed"
+  }
+
+  const extractionStatus = getAggregatedExtractionStatus()
+  const isExtracting = extractionStatus === "extracting" || extractionStatus === "pending"
+
+  // Update documents SWR to poll when extracting
+  useSWR(
+    `/api/bids/${bidId}/documents`,
+    fetcher,
+    {
+      refreshInterval: isExtracting ? 3000 : 0,
+      dedupingInterval: 2000,
+    }
+  )
+
+  // Fetch line items with polling when extracting
+  const { data: lineItemsData, mutate: mutateLineItems } = useSWR(
+    `/api/bids/${bidId}/line-items`,
+    fetcher,
+    {
+      refreshInterval: isExtracting ? 5000 : 0,
+    }
+  )
 
   // Map 0-1 confidence to low/medium/high
   const getConfidenceLevel = (confidence: number): "low" | "medium" | "high" => {
@@ -57,6 +101,17 @@ export default function VerificationPage() {
     }
   }, [lineItemsData, setItems])
 
+  // Refresh line items when extraction completes
+  useEffect(() => {
+    if (
+      (prevExtractionStatus === "extracting" || prevExtractionStatus === "pending") &&
+      extractionStatus === "completed"
+    ) {
+      mutateLineItems()
+    }
+    setPrevExtractionStatus(extractionStatus)
+  }, [extractionStatus, prevExtractionStatus, mutateLineItems])
+
   // Enable keyboard shortcuts
   useKeyboardShortcuts(bidId)
 
@@ -85,28 +140,9 @@ export default function VerificationPage() {
     )
   }
 
-  const documents = documentsData.documents ?? []
   const verifiedCount = items.filter((i) => i.status === "verified").length
   const flaggedCount = items.filter((i) => i.status === "flagged").length
   const pendingCount = items.filter((i) => i.status === "pending").length
-
-  // Aggregate extraction status from all documents
-  const getAggregatedExtractionStatus = (): "pending" | "extracting" | "completed" | "failed" => {
-    if (documents.length === 0) return "completed"
-
-    const statuses = documents.map((d: { extractionStatus?: string }) => d.extractionStatus || "pending")
-
-    // If any is extracting, show extracting
-    if (statuses.includes("extracting")) return "extracting"
-    // If any is pending, show pending
-    if (statuses.includes("pending")) return "pending"
-    // If any failed, show failed
-    if (statuses.includes("failed")) return "failed"
-    // All completed
-    return "completed"
-  }
-
-  const extractionStatus = getAggregatedExtractionStatus()
 
   const handleRetryExtraction = async () => {
     try {
