@@ -3,10 +3,15 @@ import { PDFDocument } from "pdf-lib"
 import sharp from "sharp"
 import { readFile, mkdir, writeFile } from "fs/promises"
 import { join, dirname } from "path"
-import { exec } from "child_process"
+import { execFile } from "child_process"
 import { promisify } from "util"
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
+
+// Validate documentId is UUID format
+function validateDocumentId(id: string): boolean {
+  return /^[a-f0-9-]{36}$/i.test(id)
+}
 
 const TILE_SIZE = 256
 const MAX_ZOOM = 5
@@ -33,6 +38,14 @@ export interface TileResult {
  */
 export async function generateTilesForPage(config: TileConfig): Promise<TileResult> {
   const { documentId, pageNumber, storagePath, outputDir } = config
+
+  if (!validateDocumentId(documentId)) {
+    throw new Error("Invalid documentId format")
+  }
+  if (!Number.isInteger(pageNumber) || pageNumber < 1) {
+    throw new Error("Invalid pageNumber")
+  }
+
   const fullPath = join(process.cwd(), storagePath)
 
   // Get page dimensions
@@ -115,15 +128,21 @@ export async function generateTilesForPage(config: TileConfig): Promise<TileResu
 }
 
 async function renderPageToBuffer(pdfPath: string, pageNumber: number, dpi: number): Promise<Buffer | null> {
+  // Cap DPI to prevent memory exhaustion
+  const safeDpi = Math.min(Math.round(dpi), 600)
+
   try {
-    // Try pdftoppm first (if available)
-    const { stdout } = await execAsync(
-      `pdftoppm -f ${pageNumber} -l ${pageNumber} -png -r ${dpi} -singlefile "${pdfPath}" -`,
-      { maxBuffer: 100 * 1024 * 1024, encoding: "buffer" }
-    )
-    return stdout as unknown as Buffer
+    const { stdout } = await execFileAsync('pdftoppm', [
+      '-f', String(pageNumber),
+      '-l', String(pageNumber),
+      '-png',
+      '-r', String(safeDpi),
+      '-singlefile',
+      pdfPath,
+      '-'
+    ], { maxBuffer: 100 * 1024 * 1024, encoding: 'buffer' })
+    return stdout
   } catch {
-    // pdftoppm not available - return null to trigger placeholder
     console.warn("pdftoppm not available, using placeholder tiles")
     return null
   }
@@ -140,6 +159,16 @@ async function generatePlaceholderTiles(
   // Generate simple gray placeholder tiles
   let totalTiles = 0
 
+  // Create placeholder tile once
+  const placeholderTile = await sharp({
+    create: {
+      width: TILE_SIZE,
+      height: TILE_SIZE,
+      channels: 4,
+      background: { r: 245, g: 245, b: 243, alpha: 1 }
+    }
+  }).png().toBuffer()
+
   for (let z = 0; z <= zoomLevels; z++) {
     const scale = Math.pow(2, z - zoomLevels)
     const scaledWidth = Math.round(pdfWidth * (BASE_DPI / 72) * scale)
@@ -147,16 +176,6 @@ async function generatePlaceholderTiles(
 
     const tilesX = Math.ceil(scaledWidth / TILE_SIZE)
     const tilesY = Math.ceil(scaledHeight / TILE_SIZE)
-
-    // Create a simple placeholder tile
-    const placeholderTile = await sharp({
-      create: {
-        width: TILE_SIZE,
-        height: TILE_SIZE,
-        channels: 4,
-        background: { r: 245, g: 245, b: 243, alpha: 1 }
-      }
-    }).png().toBuffer()
 
     for (let x = 0; x < tilesX; x++) {
       for (let y = 0; y < tilesY; y++) {
@@ -181,6 +200,10 @@ async function generatePlaceholderTiles(
  * Check if tiles exist for a page
  */
 export async function tilesExist(documentId: string, pageNumber: number): Promise<boolean> {
+  if (!validateDocumentId(documentId)) {
+    return false
+  }
+
   const tilePath = join(process.cwd(), "tiles", documentId, String(pageNumber), "0", "0", "0.png")
   try {
     await readFile(tilePath)
