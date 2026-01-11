@@ -1,8 +1,12 @@
 import { inngest } from './client';
 import { db } from '@/db';
-import { users, connections, syncJobs } from '@/db/schema';
+import { users, connections, syncJobs, documents, lineItems } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { createScraper, createGmailScanner, usesBrowserScraping, type Platform } from '@/scrapers';
+import { extractPdfText } from '@/lib/pdf-extractor';
+import { extractLineItems } from '@/lib/ai-extractor';
+import { generateTilesForPage } from '@/lib/tile-generator';
+import { join } from 'path';
 
 // Daily sync - runs for all users every day at 6 AM
 export const dailySync = inngest.createFunction(
@@ -179,5 +183,135 @@ async function syncConnectionInternal(
   return { bidsFound: 0, platform };
 }
 
+// Document extraction - triggered after upload
+export const extractDocument = inngest.createFunction(
+  {
+    id: 'extract-document',
+    name: 'Extract Document',
+    retries: 2,
+  },
+  { event: 'document/extract' },
+  async ({ event, step }) => {
+    const { documentId, bidId } = event.data;
+
+    // Get document info
+    const [doc] = await step.run('get-document', async () => {
+      return await db
+        .select()
+        .from(documents)
+        .where(eq(documents.id, documentId))
+        .limit(1);
+    });
+
+    if (!doc || !doc.storagePath) {
+      throw new Error(`Document ${documentId} not found or has no storage path`);
+    }
+
+    // Update status to extracting
+    await step.run('set-extracting', async () => {
+      await db
+        .update(documents)
+        .set({ extractionStatus: 'extracting' })
+        .where(eq(documents.id, documentId));
+    });
+
+    try {
+      // Extract text from PDF
+      const extraction = await step.run('extract-text', async () => {
+        return await extractPdfText(doc.storagePath!);
+      });
+
+      // Save extracted text
+      await step.run('save-text', async () => {
+        await db
+          .update(documents)
+          .set({
+            extractedText: extraction.text,
+            pageCount: extraction.pageCount,
+          })
+          .where(eq(documents.id, documentId));
+      });
+
+      // Generate tiles for the document
+      const tileResult = await step.run('generate-tiles', async () => {
+        const pageCount = extraction.pageCount;
+        let firstPageResult = null;
+
+        for (let page = 1; page <= pageCount; page++) {
+          const result = await generateTilesForPage({
+            documentId,
+            pageNumber: page,
+            storagePath: doc.storagePath!,
+            outputDir: join(process.cwd(), 'tiles')
+          });
+
+          if (page === 1) {
+            firstPageResult = result;
+          }
+        }
+
+        return firstPageResult;
+      });
+
+      // Save tile config
+      await step.run('save-tile-config', async () => {
+        await db
+          .update(documents)
+          .set({ tileConfig: JSON.stringify(tileResult) })
+          .where(eq(documents.id, documentId));
+      });
+
+      // Run AI extraction for line items
+      const aiResult = await step.run('ai-extract', async () => {
+        return await extractLineItems(extraction.text, doc.filename);
+      });
+
+      // Save line items
+      if (aiResult.items.length > 0) {
+        await step.run('save-line-items', async () => {
+          const itemsToInsert = aiResult.items.map((item) => ({
+            bidId,
+            documentId,
+            category: item.category,
+            description: item.description,
+            estimatedQty: item.estimatedQty,
+            unit: item.unit,
+            pageReference: item.pageReference,
+            extractionConfidence: item.confidence,
+            reviewStatus: 'pending' as const,
+          }));
+
+          await db.insert(lineItems).values(itemsToInsert);
+        });
+      }
+
+      // Mark as completed
+      await step.run('set-completed', async () => {
+        await db
+          .update(documents)
+          .set({ extractionStatus: 'completed' })
+          .where(eq(documents.id, documentId));
+      });
+
+      return {
+        documentId,
+        itemsExtracted: aiResult.items.length,
+        summary: aiResult.summary
+      };
+
+    } catch (error) {
+      // Mark as failed
+      await step.run('set-failed', async () => {
+        await db
+          .update(documents)
+          .set({ extractionStatus: 'failed' })
+          .where(eq(documents.id, documentId));
+      });
+
+      throw error;
+    }
+  }
+);
+
 // Export all functions for Inngest serve
-export const functions = [dailySync, syncUser, syncConnection];
+export const functions = [dailySync, syncUser, syncConnection, extractDocument];
