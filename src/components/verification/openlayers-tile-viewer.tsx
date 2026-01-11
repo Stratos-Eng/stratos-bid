@@ -137,6 +137,7 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
   // Initialize map once
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return
+    if (pageWidth <= 0 || pageHeight <= 0) return // Guard against invalid dimensions
 
     // Vector source for annotations
     const vectorSource = new VectorSource()
@@ -252,6 +253,7 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
   // Update tile source when document or page changes
   useEffect(() => {
     if (!tileLayerRef.current || !mapRef.current) return
+    if (pageWidth <= 0 || pageHeight <= 0) return
 
     const newTileSource = new XYZ({
       url: `/api/tiles/${documentId}/${pageNumber}/{z}/{x}/{y}.png`,
@@ -383,6 +385,15 @@ export const OpenLayersTileViewer = forwardRef<OpenLayersTileViewerRef, OpenLaye
     navigateTo,
     fitToPage: handleFitToPage
   }), [navigateTo, handleFitToPage])
+
+  // Show error state if dimensions are invalid
+  if (pageWidth <= 0 || pageHeight <= 0) {
+    return (
+      <div className="flex h-full w-full items-center justify-center bg-muted">
+        <div className="text-sm text-muted-foreground">Invalid page dimensions</div>
+      </div>
+    )
+  }
 
   return (
     <div className="relative h-full w-full">
