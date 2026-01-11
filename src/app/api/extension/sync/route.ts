@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { bids, connections } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { verifyExtensionToken } from '@/lib/extension-auth';
+import { rateLimiters, getRateLimitHeaders } from '@/lib/rate-limit';
 
 interface ExtractedBid {
   sourceBidId: string;
@@ -30,10 +32,19 @@ export async function POST(req: NextRequest) {
   }
 
   const token = authHeader.slice(7);
-  const userId = await verifyExtensionToken(token);
+  const userId = verifyExtensionToken(token);
 
   if (!userId) {
     return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
+  }
+
+  // Rate limiting
+  const rateLimitResult = rateLimiters.extensionSync(userId);
+  if (!rateLimitResult.allowed) {
+    return NextResponse.json(
+      { error: 'Rate limit exceeded. Please try again later.' },
+      { status: 429, headers: getRateLimitHeaders(rateLimitResult) }
+    );
   }
 
   try {
@@ -144,22 +155,3 @@ export async function POST(req: NextRequest) {
   }
 }
 
-async function verifyExtensionToken(token: string): Promise<string | null> {
-  // Simple JWT-like token verification
-  // In production, use proper JWT verification with jsonwebtoken
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-
-    const payload = JSON.parse(atob(parts[1]));
-
-    // Check expiration
-    if (payload.exp && Date.now() > payload.exp * 1000) {
-      return null;
-    }
-
-    return payload.userId;
-  } catch {
-    return null;
-  }
-}

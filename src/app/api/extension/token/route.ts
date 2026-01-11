@@ -1,47 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
+import { generateExtensionToken } from '@/lib/extension-auth';
+import { rateLimiters, getRateLimitHeaders } from '@/lib/rate-limit';
 
-const EXTENSION_TOKEN_SECRET = process.env.EXTENSION_TOKEN_SECRET || 'dev-secret-change-in-prod';
-
-export async function POST(_req: NextRequest) {
+export async function POST(req: NextRequest) {
   const session = await auth();
 
   if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  // Generate a simple JWT-like token for the extension
-  // In production, use proper JWT library (jsonwebtoken)
-  const payload = {
-    userId: session.user.id,
-    email: session.user.email,
-    iat: Math.floor(Date.now() / 1000),
-    exp: Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60), // 90 days
-  };
+  // Rate limiting by user ID
+  const rateLimitResult = rateLimiters.extensionToken(session.user.id);
+  if (!rateLimitResult.allowed) {
+    return NextResponse.json(
+      { error: 'Rate limit exceeded. Please try again later.' },
+      { status: 429, headers: getRateLimitHeaders(rateLimitResult) }
+    );
+  }
 
-  // Simple base64 encoding (in production, use proper JWT signing)
-  const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const body = btoa(JSON.stringify(payload));
-  const signature = btoa(
-    simpleHash(`${header}.${body}.${EXTENSION_TOKEN_SECRET}`)
+  // Generate a properly signed JWT for the extension
+  const { token, expiresAt } = generateExtensionToken(
+    session.user.id,
+    session.user.email || ''
   );
-
-  const token = `${header}.${body}.${signature}`;
 
   return NextResponse.json({
     token,
     userId: session.user.id,
-    expiresAt: new Date(payload.exp * 1000).toISOString(),
+    expiresAt: expiresAt.toISOString(),
   });
-}
-
-// Simple hash function for demo - use crypto.createHmac in production
-function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return hash.toString(36);
 }
