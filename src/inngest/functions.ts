@@ -1,8 +1,10 @@
 import { inngest } from './client';
 import { db } from '@/db';
-import { users, connections, syncJobs } from '@/db/schema';
+import { users, connections, syncJobs, documents, userSettings } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { createScraper, createGmailScanner, usesBrowserScraping, type Platform } from '@/scrapers';
+import { extractDocument } from '@/extraction';
+import { TradeCode } from '@/lib/trade-definitions';
 
 // Daily sync - runs for all users every day at 6 AM
 export const dailySync = inngest.createFunction(
@@ -179,5 +181,128 @@ async function syncConnectionInternal(
   return { bidsFound: 0, platform };
 }
 
+// Document extraction - triggered after document download or manually
+export const extractDocumentJob = inngest.createFunction(
+  {
+    id: 'extract-document',
+    name: 'Extract Document Line Items',
+    retries: 2,
+  },
+  { event: 'extraction/document' },
+  async ({ event, step }) => {
+    const { documentId, userId, trades } = event.data;
+
+    // Get user's trade preferences if not specified
+    const tradeFilter = trades || await step.run('get-user-trades', async () => {
+      const [settings] = await db
+        .select()
+        .from(userSettings)
+        .where(eq(userSettings.userId, userId))
+        .limit(1);
+
+      return (settings?.trades as TradeCode[]) || ['division_08', 'division_10'];
+    });
+
+    // Run extraction
+    const result = await step.run('extract-document', async () => {
+      return await extractDocument(documentId, userId, {
+        trades: tradeFilter,
+        useVision: false, // Text-only for now
+        concurrency: 3,
+      });
+    });
+
+    return {
+      documentId,
+      jobId: result.jobId,
+      itemsExtracted: result.itemsExtracted,
+    };
+  }
+);
+
+// Batch extraction - extract all documents for a bid
+export const extractBidDocuments = inngest.createFunction(
+  {
+    id: 'extract-bid-documents',
+    name: 'Extract All Bid Documents',
+    retries: 1,
+  },
+  { event: 'extraction/bid' },
+  async ({ event, step }) => {
+    const { bidId, userId, trades } = event.data;
+
+    // Get all documents for this bid
+    const bidDocuments = await step.run('get-documents', async () => {
+      return await db
+        .select()
+        .from(documents)
+        .where(eq(documents.bidId, bidId));
+    });
+
+    // Filter to only PDFs that haven't been extracted
+    const docsToProcess = bidDocuments.filter(
+      doc => doc.storagePath &&
+             doc.extractionStatus !== 'completed' &&
+             doc.storagePath.toLowerCase().endsWith('.pdf')
+    );
+
+    // Queue extraction for each document
+    for (const doc of docsToProcess) {
+      await step.sendEvent('queue-extraction', {
+        name: 'extraction/document',
+        data: { documentId: doc.id, userId, trades },
+      });
+    }
+
+    return {
+      bidId,
+      documentsQueued: docsToProcess.length,
+      documentIds: docsToProcess.map(d => d.id),
+    };
+  }
+);
+
+// Auto-extract after document download (if user has auto_extract enabled)
+export const autoExtractOnDownload = inngest.createFunction(
+  {
+    id: 'auto-extract-on-download',
+    name: 'Auto Extract After Download',
+  },
+  { event: 'document/downloaded' },
+  async ({ event, step }) => {
+    const { documentId, userId } = event.data;
+
+    // Check if user has auto-extract enabled
+    const shouldExtract = await step.run('check-auto-extract', async () => {
+      const [settings] = await db
+        .select()
+        .from(userSettings)
+        .where(eq(userSettings.userId, userId))
+        .limit(1);
+
+      return settings?.autoExtract !== false; // Default to true
+    });
+
+    if (!shouldExtract) {
+      return { skipped: true, reason: 'auto_extract_disabled' };
+    }
+
+    // Queue extraction
+    await step.sendEvent('queue-extraction', {
+      name: 'extraction/document',
+      data: { documentId, userId },
+    });
+
+    return { queued: true, documentId };
+  }
+);
+
 // Export all functions for Inngest serve
-export const functions = [dailySync, syncUser, syncConnection];
+export const functions = [
+  dailySync,
+  syncUser,
+  syncConnection,
+  extractDocumentJob,
+  extractBidDocuments,
+  autoExtractOnDownload,
+];

@@ -2,6 +2,13 @@ import { chromium, Browser, Page, BrowserContext } from 'playwright';
 import { db } from '@/db';
 import { bids, documents, NewBid, NewDocument } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
+import {
+  askClaudeForHelp,
+  executeBrowserAction,
+  getKnownSelector,
+  saveLearnedSelector,
+  type BrowserAction,
+} from '@/lib/browser-agent';
 
 export interface ScraperConfig {
   platform: string;
@@ -60,6 +67,24 @@ export abstract class BaseScraper {
   // Abstract methods to be implemented by platform scrapers
   abstract login(): Promise<boolean>;
   abstract scrape(): Promise<ScrapedBid[]>;
+
+  /**
+   * Scrape a single project by URL (for deep fetch from email links)
+   * Override in platform scrapers that support this
+   */
+  async scrapeProjectByUrl(url: string): Promise<ScrapedBid | null> {
+    console.log(`scrapeProjectByUrl not implemented for ${this.config.platform}`);
+    return null;
+  }
+
+  /**
+   * Download documents for a bid
+   * Override in platform scrapers that support this
+   */
+  async downloadDocuments(bid: ScrapedBid): Promise<ScrapedDocument[]> {
+    console.log(`downloadDocuments not implemented for ${this.config.platform}`);
+    return [];
+  }
 
   // Common method to save bids to database
   async saveBids(scrapedBids: ScrapedBid[]): Promise<number> {
@@ -136,5 +161,162 @@ export abstract class BaseScraper {
   async randomDelay(min = 1000, max = 3000): Promise<void> {
     const delay = Math.floor(Math.random() * (max - min + 1)) + min;
     await new Promise(resolve => setTimeout(resolve, delay));
+  }
+
+  /**
+   * Try to perform an action with selector, fall back to Claude agent if it fails
+   */
+  protected async tryWithFallback(
+    actionName: string,
+    selectors: string[],
+    action: (selector: string) => Promise<void>,
+    task: string
+  ): Promise<boolean> {
+    if (!this.page) throw new Error('Page not initialized');
+
+    // First check if we have a learned selector
+    const knownSelector = getKnownSelector(this.config.platform, actionName);
+    if (knownSelector) {
+      selectors = [knownSelector, ...selectors];
+    }
+
+    // Try each selector
+    for (const selector of selectors) {
+      try {
+        await action(selector);
+        console.log(`✓ ${actionName} succeeded with: ${selector}`);
+        return true;
+      } catch (error) {
+        console.log(`✗ ${actionName} failed with: ${selector}`);
+      }
+    }
+
+    // All selectors failed, ask Claude for help
+    console.log(`⚡ Asking Claude agent for help with: ${actionName}`);
+    await this.screenshot(`before-agent-${actionName}`);
+
+    const context = `Platform: ${this.config.platform}\nAction: ${actionName}\nTried selectors: ${selectors.join(', ')}`;
+
+    let attempts = 0;
+    const maxAttempts = 3;
+
+    while (attempts < maxAttempts) {
+      attempts++;
+      const agentAction = await askClaudeForHelp(this.page, task, context);
+
+      if (agentAction.type === 'fail') {
+        console.error(`Agent gave up: ${agentAction.reason}`);
+        return false;
+      }
+
+      if (agentAction.type === 'done') {
+        // Save learned selector if provided
+        if (agentAction.learnedSelector) {
+          saveLearnedSelector(
+            this.config.platform,
+            actionName,
+            agentAction.learnedSelector
+          );
+        }
+        return true;
+      }
+
+      // Execute the action
+      const success = await executeBrowserAction(this.page, agentAction);
+
+      if (success && agentAction.learnedSelector) {
+        saveLearnedSelector(
+          this.config.platform,
+          actionName,
+          agentAction.learnedSelector
+        );
+      }
+
+      // Give the page time to update
+      await this.randomDelay(1000, 2000);
+    }
+
+    console.error(`Agent failed after ${maxAttempts} attempts`);
+    return false;
+  }
+
+  /**
+   * Click with fallback to Claude agent
+   */
+  protected async clickWithFallback(
+    actionName: string,
+    selectors: string[],
+    task: string
+  ): Promise<boolean> {
+    return this.tryWithFallback(
+      actionName,
+      selectors,
+      async (selector) => {
+        await this.page!.click(selector, { timeout: 5000 });
+      },
+      task
+    );
+  }
+
+  /**
+   * Fill input with fallback to Claude agent
+   */
+  protected async fillWithFallback(
+    actionName: string,
+    selectors: string[],
+    value: string,
+    task: string
+  ): Promise<boolean> {
+    return this.tryWithFallback(
+      actionName,
+      selectors,
+      async (selector) => {
+        await this.page!.fill(selector, value, { timeout: 5000 });
+      },
+      task
+    );
+  }
+
+  /**
+   * Wait for navigation with fallback
+   */
+  protected async waitForUrlWithFallback(
+    pattern: string | RegExp,
+    task: string,
+    timeout = 30000
+  ): Promise<boolean> {
+    if (!this.page) throw new Error('Page not initialized');
+
+    try {
+      await this.page.waitForURL(pattern, { timeout });
+      return true;
+    } catch {
+      console.log(`⚡ URL pattern not matched, asking Claude for help`);
+      await this.screenshot('url-mismatch');
+
+      // Ask Claude to help navigate
+      const agentAction = await askClaudeForHelp(
+        this.page,
+        task,
+        `Expected URL pattern: ${pattern}\nCurrent URL: ${this.page.url()}`
+      );
+
+      if (agentAction.type === 'done') {
+        return true;
+      }
+
+      if (agentAction.type !== 'fail') {
+        await executeBrowserAction(this.page, agentAction);
+        // Check again after agent action
+        try {
+          await this.page.waitForURL(pattern, { timeout: 10000 });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+
+      return false;
+    }
   }
 }

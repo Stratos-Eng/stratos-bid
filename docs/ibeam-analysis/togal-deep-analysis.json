@@ -1,0 +1,139 @@
+{
+  "windowDeep": {
+    "mupdfFunctions": [
+      "$libmupdf_stm_close",
+      "$libmupdf_stm_seek",
+      "$libmupdf_stm_read",
+      "$libmupdf_load_font_file",
+      "$libmupdf_path_walk",
+      "$libmupdf_text_walk",
+      "$libmupdf_device"
+    ],
+    "threeVersion": "134",
+    "sentryHub": false,
+    "reactRouterVersion": "6",
+    "hasSegment": true,
+    "authContextKeys": [
+      "subscriptionState",
+      "subscriptionDetails",
+      "subscriptionActions",
+      "user",
+      "locales",
+      "isMobile",
+      "sessionId",
+      "permissions",
+      "selectedOrg",
+      "isSuperAdmin",
+      "isLoadingAuth",
+      "pendingInvites",
+      "isOnEssentialsPlan",
+      "isAdmin",
+      "isAuthenticated",
+      "selectedOrgId",
+      "userUsage",
+      "setUser",
+      "signOut",
+      "setUserUsage",
+      "setSessionId",
+      "sendUserEvent",
+      "setPendingInvites",
+      "fetchLatestUserUsage",
+      "fetchLatestSelectedOrg",
+      "setSelectedOrg"
+    ],
+    "hasTheme": true,
+    "hasLightTheme": true,
+    "hasDarkTheme": true,
+    "stateKeys": [
+      "oncontentvisibilityautostatechange",
+      "oncontextrestored",
+      "onpopstate",
+      "cookieStore"
+    ],
+    "hasApiRequest": true,
+    "apiRequestType": "object"
+  },
+  "jsContent": {
+    "index.41cbd85d.js": {
+      "url": "https://www-prod.togal.ai/assets/index.41cbd85d.js",
+      "size": 3770912,
+      "patterns": {
+        "mupdf": true,
+        "threejs": true,
+        "webgl": true,
+        "canvas2d": true,
+        "mapbox": true,
+        "drawInteraction": true,
+        "polygon": true,
+        "polyline": true,
+        "measurement": true,
+        "area": true,
+        "length": true,
+        "redux": true,
+        "mobx": true,
+        "reactQuery": true,
+        "websocket": true,
+        "xlsx": true,
+        "rest": true
+      },
+      "specificFinds": [
+        "path:\"/\"",
+        "path:\"/3d_models/3_Way_Joint.obj\"",
+        "path:\"/3d_models/4_Way_Joint.obj\"",
+        "path:\"/3d_models/Coupling.obj\"",
+        "path:\"/3d_models/Cross_Joint.obj\"",
+        "path:\"/3d_models/Elbow_Joint_45deg.obj\"",
+        "path:\"/3d_models/Elbow_Joint_90deg.obj\"",
+        "path:\"/3d_models/Tee_Joint_90deg.obj\"",
+        "path:\"/3d_models/Wye_Joint_45deg.obj\"",
+        "path:\"/3d_models/Wye_Joint_90deg.obj\"",
+        "path:\"/auth/login\"",
+        "path:\"/auth/forgot-password\"",
+        "path:\"/auth/reset-password\"",
+        "path:\"/invite\"",
+        "path:\"/register\"",
+        "path:\"/accept_invite/*\"",
+        "path:\"/auth/logout\"",
+        "path:\"/auth/verify-email\""
+      ]
+    },
+    "BufferGeometryUtils.9fb17f27.js": {
+      "url": "https://www-prod.togal.ai/assets/BufferGeometryUtils.9fb17f27.js",
+      "size": 9445,
+      "patterns": {
+        "threejs": true
+      }
+    },
+    "session.2780b3ef.js": {
+      "url": "https://www-prod.togal.ai/assets/session.2780b3ef.js",
+      "size": 737,
+      "patterns": {
+        "webgl": true
+      }
+    },
+    "rrweb-record.e70f6f13.js": {
+      "url": "https://www-prod.togal.ai/assets/rrweb-record.e70f6f13.js",
+      "size": 180814,
+      "patterns": {
+        "webgl": true,
+        "canvas2d": true
+      }
+    }
+  },
+  "allJSUrls": [
+    "https://www-prod.togal.ai/assets/index.41cbd85d.js",
+    "https://www-prod.togal.ai/assets/BufferGeometryUtils.9fb17f27.js",
+    "https://www-prod.togal.ai/assets/Login.2027e4ba.js",
+    "https://www-prod.togal.ai/assets/session.2780b3ef.js",
+    "https://www-prod.togal.ai/assets/useMutation.esm.4248f682.js",
+    "https://www-prod.togal.ai/assets/AuthForm.a981da05.js",
+    "https://www-prod.togal.ai/assets/index.5240e045.js",
+    "https://www-prod.togal.ai/assets/index.9db38b3e.js",
+    "https://www-prod.togal.ai/assets/logo_full.d3f2baaf.js",
+    "https://www-prod.togal.ai/assets/is-plan-event-enabled.6c12943d.js",
+    "https://www-prod.togal.ai/assets/index.6e765c13.js",
+    "https://www-prod.togal.ai/assets/index.7bb7a8c4.js",
+    "https://www-prod.togal.ai/assets/rrweb-record.e70f6f13.js",
+    "https://www-prod.togal.ai/assets/rrweb-plugin-console-record.60d05d61.js"
+  ]
+}

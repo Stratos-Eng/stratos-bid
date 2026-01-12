@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
-import { auth } from '@/lib/auth';
+import { auth, signOut } from '@/lib/auth';
 import Link from 'next/link';
 
 export default async function DashboardLayout({
@@ -14,38 +14,49 @@ export default async function DashboardLayout({
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="bg-white border-b border-gray-200">
+      <header className="bg-card border-b border-border">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
             <div className="flex items-center gap-8">
-              <Link href="/" className="text-xl font-bold text-gray-900">
+              <Link href="/" className="text-xl font-serif font-bold text-foreground">
                 Stratos
               </Link>
               <nav className="hidden md:flex gap-6">
                 <Link
+                  href="/takeoff"
+                  className="text-muted-foreground hover:text-foreground font-medium transition-smooth"
+                >
+                  Takeoff
+                </Link>
+                <Link
                   href="/bids"
-                  className="text-gray-600 hover:text-gray-900 font-medium"
+                  className="text-muted-foreground hover:text-foreground font-medium transition-smooth"
                 >
                   Bids
                 </Link>
                 <Link
                   href="/connections"
-                  className="text-gray-600 hover:text-gray-900 font-medium"
+                  className="text-muted-foreground hover:text-foreground font-medium transition-smooth"
                 >
                   Connections
                 </Link>
               </nav>
             </div>
             <div className="flex items-center gap-4">
-              <span className="text-sm text-gray-600">
+              <span className="text-sm text-muted-foreground">
                 {session.user?.email}
               </span>
-              <form action="/api/auth/signout" method="POST">
+              <form
+                action={async () => {
+                  'use server';
+                  await signOut({ redirectTo: '/login' });
+                }}
+              >
                 <button
                   type="submit"
-                  className="text-sm text-gray-600 hover:text-gray-900"
+                  className="text-sm text-muted-foreground hover:text-foreground transition-smooth"
                 >
                   Sign out
                 </button>

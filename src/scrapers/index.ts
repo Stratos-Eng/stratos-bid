@@ -2,25 +2,28 @@ export { BaseScraper, type ScraperConfig, type ScrapedBid, type ScrapedDocument 
 export { PlanHubScraper } from './planhub';
 export { BuildingConnectedScraper } from './buildingconnected';
 export { GmailScanner } from './gmail';
+export { PlanetBidsScraper, KNOWN_CA_PORTALS, DISCOVERY_RANGES } from './planetbids';
 
 import { BaseScraper, ScraperConfig } from './base';
 import { PlanHubScraper } from './planhub';
 import { BuildingConnectedScraper } from './buildingconnected';
 import { GmailScanner } from './gmail';
+import { PlanetBidsScraper } from './planetbids';
 
 export type Platform = 'planhub' | 'buildingconnected' | 'gmail' | 'planetbids';
 
-export type ScraperInstance = PlanHubScraper | BuildingConnectedScraper;
+export type ScraperInstance = PlanHubScraper | BuildingConnectedScraper | PlanetBidsScraper;
 export type ScannerInstance = GmailScanner;
 
 /**
  * Factory function to create the appropriate scraper for a platform
- * Note: Gmail uses GmailScanner (not a scraper) and PlanetBids is not yet implemented
+ * Note: Gmail uses GmailScanner (not a scraper)
+ * Note: PlanetBids requires a portalId, use createPlanetBidsScraper instead
  */
 export function createScraper(
   platform: Exclude<Platform, 'gmail' | 'planetbids'>,
   config: Omit<ScraperConfig, 'platform'>
-): ScraperInstance {
+): PlanHubScraper | BuildingConnectedScraper {
   switch (platform) {
     case 'planhub':
       return new PlanHubScraper(config);
@@ -29,6 +32,16 @@ export function createScraper(
     default:
       throw new Error(`Unknown platform: ${platform}`);
   }
+}
+
+/**
+ * Create a PlanetBids scraper for a specific portal
+ */
+export function createPlanetBidsScraper(
+  portalId: string,
+  config: Omit<ScraperConfig, 'platform'>
+): PlanetBidsScraper {
+  return new PlanetBidsScraper({ ...config, portalId });
 }
 
 /**
@@ -49,7 +62,7 @@ export function usesBrowserScraping(platform: Platform): boolean {
  * Get all supported platforms
  */
 export function getSupportedPlatforms(): Platform[] {
-  return ['planhub', 'buildingconnected', 'gmail'];
+  return ['planhub', 'buildingconnected', 'gmail', 'planetbids'];
 }
 
 /**
@@ -64,4 +77,11 @@ export function getPasswordPlatforms(): Platform[] {
  */
 export function getOAuthPlatforms(): Platform[] {
   return ['gmail'];
+}
+
+/**
+ * Get platforms that use vendor registration (no login required)
+ */
+export function getRegistrationPlatforms(): Platform[] {
+  return ['planetbids'];
 }

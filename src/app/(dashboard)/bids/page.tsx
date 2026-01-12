@@ -116,9 +116,10 @@ export default async function BidsPage({
       ) : (
         <div className="bg-white rounded-lg border divide-y">
           {userBids.map((bid) => (
-            <div
+            <Link
               key={bid.id}
-              className="p-4 hover:bg-gray-50 transition-colors"
+              href={`/bids/${bid.id}`}
+              className="p-4 hover:bg-gray-50 transition-colors block"
             >
               <div className="flex items-start justify-between gap-4">
                 <div className="flex-1 min-w-0">
@@ -168,18 +169,13 @@ export default async function BidsPage({
                     {bid.status}
                   </span>
                   {bid.sourceUrl && (
-                    <a
-                      href={bid.sourceUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sm text-blue-600 hover:underline"
-                    >
-                      View →
-                    </a>
+                    <span className="text-sm text-blue-600">
+                      View Details →
+                    </span>
                   )}
                 </div>
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       )}

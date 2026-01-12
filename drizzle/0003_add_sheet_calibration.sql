@@ -1,0 +1,1 @@
+ALTER TABLE "takeoff_sheets" ADD COLUMN "calibration" jsonb;
