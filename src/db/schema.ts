@@ -85,6 +85,7 @@ export const documents = pgTable('documents', {
   extractedText: text('extracted_text'),
   relevanceScore: real('relevance_score').default(0),
   pageCount: integer('page_count'),
+  tileConfig: text('tile_config'), // JSON: { zoomLevels, tileUrlPattern, pageWidth, pageHeight }
   downloadedAt: timestamp('downloaded_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   // Extraction status
