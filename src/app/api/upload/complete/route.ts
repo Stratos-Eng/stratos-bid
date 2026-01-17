@@ -179,7 +179,15 @@ export async function POST(request: NextRequest) {
             },
           });
 
-          console.log(`[complete] Queued extraction and thumbnails for document ${doc.id}`);
+          // Queue text extraction for search
+          await inngest.send({
+            name: 'document/extract-text',
+            data: {
+              documentId: doc.id,
+            },
+          });
+
+          console.log(`[complete] Queued extraction, thumbnails, and text extraction for document ${doc.id}`);
         } catch (inngestError) {
           console.error('[complete] Failed to queue Inngest jobs:', inngestError);
           // Don't fail the upload, just log the error

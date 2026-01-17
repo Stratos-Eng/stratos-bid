@@ -66,6 +66,11 @@ interface ProjectState {
   quickAddPosition: { x: number; y: number } | null // Screen position for form
   quickAddPdfCoords: { x: number; y: number } | null // Normalized PDF coordinates
   setQuickAddPosition: (pos: { x: number; y: number } | null, pdfCoords?: { x: number; y: number } | null) => void
+
+  // Search
+  isSearchOpen: boolean
+  setSearchOpen: (open: boolean) => void
+  toggleSearch: () => void
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
@@ -217,4 +222,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     quickAddPosition: pos,
     quickAddPdfCoords: pdfCoords ?? null,
   }),
+
+  // Search
+  isSearchOpen: false,
+  setSearchOpen: (open) => set({ isSearchOpen: open }),
+  toggleSearch: () => set((state) => ({ isSearchOpen: !state.isSearchOpen })),
 }))

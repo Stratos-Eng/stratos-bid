@@ -1,12 +1,12 @@
 import { inngest } from './client';
 import { db } from '@/db';
-import { users, connections, syncJobs, documents, userSettings, uploadSessions } from '@/db/schema';
+import { users, connections, syncJobs, documents, userSettings, uploadSessions, pageText } from '@/db/schema';
 import { eq, lt, or } from 'drizzle-orm';
 import { createScraper, createGmailScanner, usesBrowserScraping, type Platform } from '@/scrapers';
 import { extractDocument } from '@/extraction';
 import { TradeCode } from '@/lib/trade-definitions';
 import { generateThumbnails } from '@/lib/thumbnail-generator';
-import { rm } from 'fs/promises';
+import { rm, readFile } from 'fs/promises';
 
 // Daily sync - runs for all users every day at 6 AM
 export const dailySync = inngest.createFunction(
@@ -423,6 +423,123 @@ export const autoExtractOnDownload = inngest.createFunction(
   }
 );
 
+// Extract text from PDF for search indexing
+export const extractTextJob = inngest.createFunction(
+  {
+    id: 'extract-text',
+    name: 'Extract Text for Search',
+    retries: 2,
+  },
+  { event: 'document/extract-text' },
+  async ({ event, step }) => {
+    const { documentId } = event.data;
+
+    // Get document info
+    const [doc] = await step.run('get-document', async () => {
+      return await db
+        .select()
+        .from(documents)
+        .where(eq(documents.id, documentId))
+        .limit(1);
+    });
+
+    if (!doc || !doc.storagePath) {
+      throw new Error(`Document ${documentId} not found or has no storage path`);
+    }
+
+    // Update status to extracting
+    await step.run('update-status-extracting', async () => {
+      await db
+        .update(documents)
+        .set({ textExtractionStatus: 'extracting' })
+        .where(eq(documents.id, documentId));
+    });
+
+    try {
+      // Call Python service for text extraction
+      const result = await step.run('extract-text', async () => {
+        // Read PDF file
+        const pdfBuffer = await readFile(doc.storagePath!);
+        const pythonApiUrl = process.env.PYTHON_VECTOR_API_URL || 'http://localhost:8001';
+        const pdfBase64 = Buffer.from(pdfBuffer).toString('base64');
+
+        const response = await fetch(`${pythonApiUrl}/text`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pdfData: pdfBase64 }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Python service returned ${response.status}`);
+        }
+
+        return await response.json();
+      });
+
+      if (!result.success) {
+        throw new Error(result.error || 'Text extraction failed');
+      }
+
+      // Save extracted text to database
+      let pagesNeedingOcr = 0;
+      await step.run('save-page-text', async () => {
+        for (const page of result.pages) {
+          if (page.needsOcr) pagesNeedingOcr++;
+
+          // Upsert page text
+          await db
+            .insert(pageText)
+            .values({
+              documentId,
+              pageNumber: page.page,
+              rawText: page.text,
+              extractionMethod: 'pymupdf',
+              needsOcr: page.needsOcr,
+            })
+            .onConflictDoUpdate({
+              target: [pageText.documentId, pageText.pageNumber],
+              set: {
+                rawText: page.text,
+                extractionMethod: 'pymupdf',
+                needsOcr: page.needsOcr,
+              },
+            });
+        }
+      });
+
+      // Update document status
+      await step.run('update-status-completed', async () => {
+        await db
+          .update(documents)
+          .set({
+            textExtractionStatus: 'completed',
+            updatedAt: new Date(),
+          })
+          .where(eq(documents.id, documentId));
+      });
+
+      return {
+        documentId,
+        pagesExtracted: result.totalPages,
+        pagesNeedingOcr,
+      };
+    } catch (error) {
+      // Update status to failed
+      await step.run('update-status-failed', async () => {
+        await db
+          .update(documents)
+          .set({
+            textExtractionStatus: 'failed',
+            updatedAt: new Date(),
+          })
+          .where(eq(documents.id, documentId));
+      });
+
+      throw error;
+    }
+  }
+);
+
 // Cleanup stale upload sessions - runs every 6 hours
 export const cleanupUploadSessions = inngest.createFunction(
   { id: 'cleanup-upload-sessions', name: 'Cleanup Stale Upload Sessions' },
@@ -491,5 +608,6 @@ export const functions = [
   extractDocumentJob,
   extractBidDocuments,
   autoExtractOnDownload,
+  extractTextJob,
   cleanupUploadSessions,
 ];

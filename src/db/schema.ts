@@ -88,8 +88,10 @@ export const documents = pgTable('documents', {
   tileConfig: text('tile_config'), // JSON: { zoomLevels, tileUrlPattern, pageWidth, pageHeight }
   downloadedAt: timestamp('downloaded_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  // Extraction status
+  // Extraction status (signage items)
   extractionStatus: text('extraction_status').default('not_started'), // 'not_started' | 'queued' | 'extracting' | 'completed' | 'failed'
+  // Text extraction status (for search)
+  textExtractionStatus: text('text_extraction_status').default('not_started'), // 'not_started' | 'extracting' | 'completed' | 'failed'
   lineItemCount: integer('line_item_count').default(0),
   pagesWithTrades: jsonb('pages_with_trades'), // [{ page: 13, trades: ['signage'] }]
   // Signage legend data (extracted from sign legend/schedule pages)
@@ -112,6 +114,21 @@ export const syncJobs = pgTable('sync_jobs', {
   docsDownloaded: integer('docs_downloaded'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
+
+// Page text for full-text search
+export const pageText = pgTable('page_text', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  documentId: uuid('document_id').notNull().references(() => documents.id, { onDelete: 'cascade' }),
+  pageNumber: integer('page_number').notNull(),
+  rawText: text('raw_text'),
+  // Note: text_search tsvector column is managed via raw SQL migration
+  extractionMethod: text('extraction_method').default('pymupdf'), // 'pymupdf' | 'tesseract'
+  needsOcr: boolean('needs_ocr').default(false),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  documentPageIdx: index('page_text_document_page_idx').on(table.documentId, table.pageNumber),
+  needsOcrIdx: index('page_text_needs_ocr_idx').on(table.needsOcr),
+}));
 
 // Line items extracted from documents (signage, glazing, etc.)
 export const lineItems = pgTable('line_items', {
@@ -370,3 +387,5 @@ export type NewTakeoffMeasurement = typeof takeoffMeasurements.$inferInsert;
 export type NewSheetVectors = typeof sheetVectors.$inferInsert;
 export type NewUploadSession = typeof uploadSessions.$inferInsert;
 export type UploadSession = typeof uploadSessions.$inferSelect;
+export type NewPageText = typeof pageText.$inferInsert;
+export type PageText = typeof pageText.$inferSelect;

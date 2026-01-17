@@ -64,6 +64,13 @@
       "when": 1768590021934,
       "tag": "0008_light_slayback",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1768672800000,
+      "tag": "0009_page_text_search",
+      "breakpoints": true
     }
   ]
 }

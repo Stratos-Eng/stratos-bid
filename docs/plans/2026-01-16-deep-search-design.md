@@ -230,8 +230,8 @@ isSearchOpen: boolean
 
 ---
 
-## Open Questions
+## Decisions
 
-1. Should we show a visual indicator on pages that haven't been OCR'd yet?
-2. Do we need to support phrase search ("exact match")?
-3. Should results persist when navigating away and back?
+1. **Show indicator on non-OCR'd pages** - Yes. Display a subtle warning in search results if some pages haven't been indexed yet.
+2. **Support phrase search** - Yes. Wrap query in quotes for exact phrase matching using `phraseto_tsquery`.
+3. **Persist search state** - Yes. Keep search query and results in zustand store, restore when returning to project.

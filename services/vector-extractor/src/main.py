@@ -224,6 +224,86 @@ async def render_page(request: RenderRequest):
         )
 
 
+# === Text Extraction Endpoint ===
+
+class TextExtractionRequest(BaseModel):
+    """Request for extracting text from PDF pages."""
+    pdfData: str  # Base64 encoded PDF
+
+
+class PageTextResult(BaseModel):
+    """Text extracted from a single page."""
+    page: int  # 1-indexed
+    text: str
+    needsOcr: bool  # True if page has <50 chars (likely scanned)
+
+
+class TextExtractionResponse(BaseModel):
+    """Response with text from all pages."""
+    success: bool
+    pages: list[PageTextResult] = []
+    totalPages: int = 0
+    error: Optional[str] = None
+
+
+@app.post("/text", response_model=TextExtractionResponse)
+async def extract_text(request: TextExtractionRequest):
+    """
+    Extract text from all pages of a PDF.
+
+    Uses PyMuPDF's text extraction which works well for PDFs with
+    embedded text (CAD exports, digital documents). Pages with very
+    little text (<50 chars) are flagged as needing OCR.
+    """
+    try:
+        # Decode base64 PDF data
+        try:
+            pdf_bytes = base64.b64decode(request.pdfData)
+        except Exception as e:
+            return TextExtractionResponse(
+                success=False,
+                error=f"Invalid base64 PDF data: {str(e)}"
+            )
+
+        # Open PDF from bytes (PyMuPDF can open from stream)
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        except Exception as e:
+            return TextExtractionResponse(
+                success=False,
+                error=f"Failed to open PDF: {str(e)}"
+            )
+
+        pages = []
+        for i in range(len(doc)):
+            page = doc[i]
+            text = page.get_text()
+
+            # Flag pages with very little text as needing OCR
+            # These are likely scanned documents
+            needs_ocr = len(text.strip()) < 50
+
+            pages.append(PageTextResult(
+                page=i + 1,  # 1-indexed
+                text=text,
+                needsOcr=needs_ocr,
+            ))
+
+        doc.close()
+
+        return TextExtractionResponse(
+            success=True,
+            pages=pages,
+            totalPages=len(pages),
+        )
+
+    except Exception as e:
+        return TextExtractionResponse(
+            success=False,
+            error=str(e)
+        )
+
+
 @app.post("/extract", response_model=ExtractionStatus)
 async def extract_vectors(request: ExtractionRequest, background_tasks: BackgroundTasks):
     """

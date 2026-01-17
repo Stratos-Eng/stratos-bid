@@ -9,6 +9,7 @@ import { ProjectViewer } from "@/components/projects/project-viewer"
 import { ItemPanel } from "@/components/projects/item-panel"
 import { QuickAddForm } from "@/components/projects/quick-add-form"
 import { ItemsList } from "@/components/projects/items-list"
+import { SearchPanel } from "@/components/projects/search-panel"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
@@ -44,6 +45,9 @@ export default function ProjectPage() {
     quickAddPosition,
     quickAddPdfCoords,
     setQuickAddPosition,
+    isSearchOpen,
+    setSearchOpen,
+    toggleSearch,
   } = useProjectStore()
 
   // Fetch project data
@@ -85,7 +89,14 @@ export default function ProjectPage() {
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger if typing in an input
+      // Cmd+F / Ctrl+F opens search (always capture, even in inputs)
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault()
+        toggleSearch()
+        return
+      }
+
+      // Don't trigger other shortcuts if typing in an input
       if ((e.target as HTMLElement).tagName === "INPUT" || (e.target as HTMLElement).tagName === "TEXTAREA") {
         return
       }
@@ -146,12 +157,17 @@ export default function ProjectPage() {
           e.preventDefault()
           setFilmstripCollapsed((prev) => !prev)
           break
+        case "/":
+          // Also allow / to open search (common shortcut)
+          e.preventDefault()
+          setSearchOpen(true)
+          break
       }
     }
 
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [selectedItemId, prevPage, nextPage, nextDocument, prevDocument, setPanelOpen, setSelectedItemId, setQuickAddMode, setQuickAddPosition, setFilmstripCollapsed])
+  }, [selectedItemId, prevPage, nextPage, nextDocument, prevDocument, setPanelOpen, setSelectedItemId, setQuickAddMode, setQuickAddPosition, setFilmstripCollapsed, toggleSearch, setSearchOpen])
 
   const handleApprove = useCallback(
     async (id: string) => {
@@ -362,6 +378,20 @@ export default function ProjectPage() {
             </button>
           </div>
 
+          {/* Search Button */}
+          {viewMode === "pdf" && (
+            <Button
+              variant={isSearchOpen ? "primary" : "outline"}
+              size="sm"
+              onClick={toggleSearch}
+              title="Search documents (Cmd+F)"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </Button>
+          )}
+
           {/* Quick Add Toggle */}
           {viewMode === "pdf" && (
             <Button
@@ -380,8 +410,21 @@ export default function ProjectPage() {
 
       {/* Main Content */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Filmstrip Sidebar - only in PDF mode */}
-        {viewMode === "pdf" && (
+        {/* Search Panel (replaces filmstrip when open) */}
+        {viewMode === "pdf" && isSearchOpen && (
+          <SearchPanel
+            projectId={projectId}
+            isOpen={isSearchOpen}
+            onClose={() => setSearchOpen(false)}
+            onSelectResult={(docId, pageNum) => {
+              setCurrentDocument(docId)
+              setCurrentPage(pageNum)
+            }}
+          />
+        )}
+
+        {/* Filmstrip Sidebar - only in PDF mode when search is closed */}
+        {viewMode === "pdf" && !isSearchOpen && (
           filmstripCollapsed ? (
             <div className="w-10 border-r border-border bg-muted/30 flex flex-col items-center py-2">
               <button
@@ -499,7 +542,7 @@ export default function ProjectPage() {
         <div className="flex items-center gap-4 text-muted-foreground">
           <span>{items.length} items</span>
           <span>·</span>
-          <span>A=approve, S=skip, ←→=pages, ⌘↑↓=docs, [=toggle sidebar</span>
+          <span>⌘F=search, A=approve, S=skip, ←→=pages, [=sidebar</span>
         </div>
       </footer>
     </div>
