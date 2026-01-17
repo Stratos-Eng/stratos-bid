@@ -38,28 +38,60 @@ export const TRADE_DEFINITIONS = {
     displayName: 'Division 10 - Specialties (Signage)',
     csiSections: ['10 14 00', '10 14 19', '10 14 23', '10 14 26', '10 14 53'],
     keywords: [
-      'signage', 'sign', 'signs', 'wayfinding', 'monument sign',
-      'channel letter', 'channel letters', 'ada sign', 'ada signage',
-      'directory', 'pylon', 'illuminated sign', 'tactile',
-      'braille', 'room identification', 'door sign',
-      'exit sign', 'emergency sign', 'regulatory sign',
-      'parking sign', 'traffic sign', 'building sign',
-      'dimensional letter', 'marquee', 'canopy sign',
-      'blade sign', 'projecting sign', 'wall sign',
+      // General signage
+      'signage', 'sign', 'signs', 'sign schedule', 'sign legend',
+      // Exterior/architectural
+      'wayfinding', 'monument sign', 'channel letter', 'channel letters',
+      'directory', 'pylon', 'illuminated sign', 'dimensional letter',
+      'marquee', 'canopy sign', 'blade sign', 'projecting sign', 'wall sign',
+      // ADA/accessibility
+      'ada sign', 'ada signage', 'tactile', 'braille',
+      'raised character', 'raised letter', 'accessible sign',
+      'wheelchair sign', 'isa sign', 'accessibility sign',
+      // Room/door identification
+      'room identification', 'door sign', 'room sign', 'room number sign',
+      // Restroom-specific
+      'restroom sign', 'toilet sign', 'lavatory sign', 'gender neutral',
+      // Exit/egress
+      'exit sign', 'emergency exit', 'egress sign', 'evacuation',
+      'exit route', 'exit stair',
+      // Fire safety
+      'fire extinguisher', 'extinguisher cabinet', 'fire alarm',
+      'pull station', 'facp', 'alarm panel', 'sprinkler riser',
+      // Regulatory/compliance
+      'no smoking', 'smoke free', 'occupancy sign', 'capacity sign',
+      'max occupant', 'regulatory sign', 'emergency sign',
+      // Warning/safety
+      'warning sign', 'caution sign', 'danger sign', 'hazard sign',
+      // Parking/traffic
+      'parking sign', 'traffic sign', 'no parking', 'fire lane',
+      'reserved parking', 'van accessible', 'tow away',
+      // Building identification
+      'building sign', 'building identification',
     ],
     categories: [
+      // Interior signage
       'Room/Door Identification',
-      'Exit Signs',
+      'Restroom Signs',
       'ADA/Tactile Signs',
+      'Exit Signs',
       'Wayfinding/Directional',
-      'Compliance/Safety Signs',
+      'Directory Signs',
+      // Safety/compliance
+      'Fire Safety Signs',
+      'Evacuation Signs',
+      'Warning/Safety Signs',
+      'No Smoking Signs',
+      'Occupancy Signs',
+      'Compliance/Regulatory Signs',
+      // Exterior signage
       'Monument Signs',
       'Channel Letters',
-      'Directory Signs',
       'Pylon Signs',
       'Illuminated Signs',
-      'Parking/Traffic Signs',
       'Building Identification',
+      // Parking/site
+      'Parking/Traffic Signs',
     ],
   },
 } as const;

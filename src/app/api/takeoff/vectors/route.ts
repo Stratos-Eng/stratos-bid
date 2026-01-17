@@ -502,11 +502,18 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Sheet not found' }, { status: 404 });
     }
 
+    // Check if vectors are stale (sheet created after extraction)
+    const vectorsStale = result.vectors.extractedAt && result.sheet.createdAt
+      ? new Date(result.sheet.createdAt) > new Date(result.vectors.extractedAt)
+      : false;
+
     return NextResponse.json({
       vectorsReady: true,
+      vectorsStale,
       quality: result.sheet.vectorQuality,
       snapPoints: result.vectors.snapPoints || [],
       lines: result.vectors.lines || [],
+      extractedAt: result.vectors.extractedAt,
     });
   } catch (error) {
     console.error('Get vectors error:', error);

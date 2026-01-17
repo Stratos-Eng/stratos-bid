@@ -5,11 +5,6 @@ import {
   SIGNAGE_EXTRACTION_PROMPT,
   SIGNAGE_VISION_PROMPT,
 } from './prompts/signage';
-import {
-  GLAZING_SYSTEM_PROMPT,
-  GLAZING_EXTRACTION_PROMPT,
-  GLAZING_VISION_PROMPT,
-} from './prompts/glazing';
 
 export interface ExtractedLineItem {
   category: string;
@@ -33,19 +28,13 @@ export interface ExtractionResult {
 const anthropic = new Anthropic();
 
 function getPromptsForTrade(tradeCode: TradeCode) {
-  if (tradeCode === 'division_10') {
-    return {
-      system: SIGNAGE_SYSTEM_PROMPT,
-      extraction: SIGNAGE_EXTRACTION_PROMPT,
-      vision: SIGNAGE_VISION_PROMPT,
-    };
-  } else {
-    return {
-      system: GLAZING_SYSTEM_PROMPT,
-      extraction: GLAZING_EXTRACTION_PROMPT,
-      vision: GLAZING_VISION_PROMPT,
-    };
-  }
+  // Currently only supporting signage (Division 10)
+  // TODO: Add other trade prompts when needed
+  return {
+    system: SIGNAGE_SYSTEM_PROMPT,
+    extraction: SIGNAGE_EXTRACTION_PROMPT,
+    vision: SIGNAGE_VISION_PROMPT,
+  };
 }
 
 /**

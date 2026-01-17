@@ -1,18 +1,16 @@
 export { BaseScraper, type ScraperConfig, type ScrapedBid, type ScrapedDocument } from './base';
-export { PlanHubScraper } from './planhub';
 export { BuildingConnectedScraper } from './buildingconnected';
 export { GmailScanner } from './gmail';
 export { PlanetBidsScraper, KNOWN_CA_PORTALS, DISCOVERY_RANGES } from './planetbids';
 
 import { BaseScraper, ScraperConfig } from './base';
-import { PlanHubScraper } from './planhub';
 import { BuildingConnectedScraper } from './buildingconnected';
 import { GmailScanner } from './gmail';
 import { PlanetBidsScraper } from './planetbids';
 
-export type Platform = 'planhub' | 'buildingconnected' | 'gmail' | 'planetbids';
+export type Platform = 'buildingconnected' | 'gmail' | 'planetbids';
 
-export type ScraperInstance = PlanHubScraper | BuildingConnectedScraper | PlanetBidsScraper;
+export type ScraperInstance = BuildingConnectedScraper | PlanetBidsScraper;
 export type ScannerInstance = GmailScanner;
 
 /**
@@ -23,10 +21,8 @@ export type ScannerInstance = GmailScanner;
 export function createScraper(
   platform: Exclude<Platform, 'gmail' | 'planetbids'>,
   config: Omit<ScraperConfig, 'platform'>
-): PlanHubScraper | BuildingConnectedScraper {
+): BuildingConnectedScraper {
   switch (platform) {
-    case 'planhub':
-      return new PlanHubScraper(config);
     case 'buildingconnected':
       return new BuildingConnectedScraper(config);
     default:
@@ -55,21 +51,21 @@ export function createGmailScanner(config: { connectionId: string; userId: strin
  * Check if a platform uses browser-based scraping
  */
 export function usesBrowserScraping(platform: Platform): boolean {
-  return platform === 'planhub' || platform === 'buildingconnected' || platform === 'planetbids';
+  return platform === 'buildingconnected' || platform === 'planetbids';
 }
 
 /**
  * Get all supported platforms
  */
 export function getSupportedPlatforms(): Platform[] {
-  return ['planhub', 'buildingconnected', 'gmail', 'planetbids'];
+  return ['buildingconnected', 'gmail', 'planetbids'];
 }
 
 /**
  * Get platforms that require password authentication
  */
 export function getPasswordPlatforms(): Platform[] {
-  return ['planhub', 'buildingconnected'];
+  return ['buildingconnected'];
 }
 
 /**

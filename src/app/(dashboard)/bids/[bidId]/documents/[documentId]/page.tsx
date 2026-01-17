@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { ThumbnailStrip } from '@/components/documents/thumbnail-strip';
 
 interface DocumentInfo {
   id: string;
@@ -53,12 +54,12 @@ export default function DocumentViewerPage() {
     window.history.replaceState(null, '', newUrl);
   }, [currentPage, bidId, documentId]);
 
-  const goToPage = (page: number) => {
+  const goToPage = useCallback((page: number) => {
     if (docInfo && page >= 1 && page <= docInfo.pageCount) {
       setImageLoading(true);
       setCurrentPage(page);
     }
-  };
+  }, [docInfo]);
 
   if (loading) {
     return (
@@ -159,27 +160,38 @@ export default function DocumentViewerPage() {
         </div>
       </div>
 
-      {/* Page viewer */}
-      <div className="flex-1 overflow-auto p-4">
-        <div className="flex justify-center">
-          {imageLoading && (
-            <div className="absolute inset-0 flex items-center justify-center bg-gray-100/50">
-              <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full" />
-            </div>
-          )}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            key={`${documentId}-${currentPage}-${scale}`}
-            src={`/api/documents/${documentId}/page/${currentPage}?scale=${scale}`}
-            alt={`Page ${currentPage}`}
-            className="shadow-lg bg-white"
-            style={{ maxWidth: '100%' }}
-            onLoad={() => setImageLoading(false)}
-            onError={() => {
-              setImageLoading(false);
-              setError('Failed to load page');
-            }}
-          />
+      {/* Main content area with thumbnail strip */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Thumbnail strip on the left */}
+        <ThumbnailStrip
+          documentId={documentId}
+          pageCount={docInfo.pageCount}
+          currentPage={currentPage}
+          onPageSelect={goToPage}
+        />
+
+        {/* Page viewer */}
+        <div className="flex-1 overflow-auto p-4">
+          <div className="flex justify-center">
+            {imageLoading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-gray-100/50">
+                <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full" />
+              </div>
+            )}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              key={`${documentId}-${currentPage}-${scale}`}
+              src={`/api/documents/${documentId}/page/${currentPage}?scale=${scale}`}
+              alt={`Page ${currentPage}`}
+              className="shadow-lg bg-white"
+              style={{ maxWidth: '100%' }}
+              onLoad={() => setImageLoading(false)}
+              onError={() => {
+                setImageLoading(false);
+                setError('Failed to load page');
+              }}
+            />
+          </div>
         </div>
       </div>
     </div>

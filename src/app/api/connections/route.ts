@@ -3,7 +3,7 @@ import { auth } from '@/lib/auth';
 import { db } from '@/db';
 import { connections } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { encryptCredentials } from '@/lib/encryption';
+import { encryptCredentials, type PasswordCredentials } from '@/lib/crypto';
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const encryptedCreds = encryptCredentials({ type: 'password', email, password });
+    const encryptedCreds = encryptCredentials({ email, password });
 
     // Check if connection exists
     const existing = await db

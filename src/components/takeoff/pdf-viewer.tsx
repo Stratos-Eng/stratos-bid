@@ -212,6 +212,20 @@ export function PdfViewer({
   const [shiftPressed, setShiftPressed] = useState(false);
   const [imageLoadError, setImageLoadError] = useState<string | null>(null);
   const [imageLoading, setImageLoading] = useState(true);
+  const [showLoadingIndicator, setShowLoadingIndicator] = useState(false);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractionError, setExtractionError] = useState<string | null>(null);
+  const [vectorsStale, setVectorsStale] = useState(false);
+
+  // Debounce loading indicator - only show after 150ms to avoid flicker
+  useEffect(() => {
+    if (imageLoading) {
+      const timer = setTimeout(() => setShowLoadingIndicator(true), 150);
+      return () => clearTimeout(timer);
+    } else {
+      setShowLoadingIndicator(false);
+    }
+  }, [imageLoading]);
 
   // Get category by ID
   const getCategoryById = useCallback((categoryId: string) => {
@@ -321,45 +335,113 @@ export function PdfViewer({
   // Load vectors for sheet
   useEffect(() => {
     async function loadVectors() {
+      setExtractionError(null);
+
       try {
         const response = await fetch(`/api/takeoff/vectors?sheetId=${sheetId}`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.vectorsReady) {
-            setSnapPoints(data.snapPoints || []);
-            setSnapLines(data.lines || []);
-            setVectorQuality(data.quality);
-            setVectorsLoaded(true);
-          } else {
-            // Trigger vector extraction
+        if (!response.ok) {
+          throw new Error('Failed to fetch vectors');
+        }
+
+        const data = await response.json();
+
+        if (data.vectorsReady && !data.vectorsStale) {
+          setSnapPoints(data.snapPoints || []);
+          setSnapLines(data.lines || []);
+          setVectorQuality(data.quality);
+          setVectorsLoaded(true);
+          setVectorsStale(false);
+        } else if (data.vectorsStale) {
+          // Vectors exist but are stale - show warning, allow re-extract
+          setSnapPoints(data.snapPoints || []);
+          setSnapLines(data.lines || []);
+          setVectorQuality(data.quality);
+          setVectorsLoaded(true);
+          setVectorsStale(true);
+        } else {
+          // Trigger vector extraction
+          setIsExtracting(true);
+
+          try {
             const extractResponse = await fetch('/api/takeoff/vectors', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ sheetId }),
             });
-            if (extractResponse.ok) {
-              const extractData = await extractResponse.json();
-              // Reload vectors
-              const reloadResponse = await fetch(`/api/takeoff/vectors?sheetId=${sheetId}`);
-              if (reloadResponse.ok) {
-                const reloadData = await reloadResponse.json();
-                setSnapPoints(reloadData.snapPoints || []);
-                setSnapLines(reloadData.lines || []);
-                setVectorQuality(extractData.quality);
-                setVectorsLoaded(true);
-              }
+
+            if (!extractResponse.ok) {
+              const errData = await extractResponse.json();
+              throw new Error(errData.error || 'Extraction failed');
             }
+
+            const extractData = await extractResponse.json();
+
+            // Reload vectors after extraction
+            const reloadResponse = await fetch(`/api/takeoff/vectors?sheetId=${sheetId}`);
+            if (reloadResponse.ok) {
+              const reloadData = await reloadResponse.json();
+              setSnapPoints(reloadData.snapPoints || []);
+              setSnapLines(reloadData.lines || []);
+              setVectorQuality(extractData.quality);
+              setVectorsLoaded(true);
+              setVectorsStale(false);
+            }
+          } finally {
+            setIsExtracting(false);
           }
         }
       } catch (err) {
         console.error('Failed to load vectors:', err);
+        setExtractionError(err instanceof Error ? err.message : 'Failed to load snap points');
+        setIsExtracting(false);
       }
     }
 
     if (sheetId) {
+      // Reset state when sheet changes
+      setVectorsLoaded(false);
+      setVectorsStale(false);
+      setExtractionError(null);
       loadVectors();
     }
   }, [sheetId]);
+
+  // Handler to re-extract vectors (for stale or error cases)
+  const handleReExtract = async () => {
+    setIsExtracting(true);
+    setExtractionError(null);
+
+    try {
+      const extractResponse = await fetch('/api/takeoff/vectors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sheetId }),
+      });
+
+      if (!extractResponse.ok) {
+        const errData = await extractResponse.json();
+        throw new Error(errData.error || 'Extraction failed');
+      }
+
+      const extractData = await extractResponse.json();
+
+      // Reload vectors
+      const reloadResponse = await fetch(`/api/takeoff/vectors?sheetId=${sheetId}`);
+      if (reloadResponse.ok) {
+        const reloadData = await reloadResponse.json();
+        setSnapPoints(reloadData.snapPoints || []);
+        setSnapLines(reloadData.lines || []);
+        setVectorQuality(extractData.quality);
+        setVectorsLoaded(true);
+        setVectorsStale(false);
+      }
+    } catch (err) {
+      console.error('Re-extraction failed:', err);
+      setExtractionError(err instanceof Error ? err.message : 'Re-extraction failed');
+    } finally {
+      setIsExtracting(false);
+    }
+  };
 
   // Keyboard modifiers
   useEffect(() => {
@@ -1090,12 +1172,102 @@ export function PdfViewer({
         </div>
       )}
 
-      {/* Loading indicator */}
-      {imageLoading && (imageUrl || tileUrlTemplate) && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gray-100/80 z-30">
-          <div className="text-center">
-            <div className="animate-spin w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full mx-auto mb-3" />
-            <p className="text-gray-600 font-medium">Loading PDF...</p>
+      {/* Unified Loading Indicator - Shows progressive steps (debounced to avoid flicker) */}
+      {(showLoadingIndicator || isExtracting) && (imageUrl || tileUrlTemplate) && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-100/90 z-30">
+          <div className="text-center max-w-sm px-6">
+            {/* Animated spinner */}
+            <div className="relative w-16 h-16 mx-auto mb-4">
+              <div className="absolute inset-0 rounded-full border-4 border-gray-200" />
+              <div className="absolute inset-0 rounded-full border-4 border-blue-600 border-t-transparent animate-spin" />
+              {/* Inner icon */}
+              <div className="absolute inset-0 flex items-center justify-center text-2xl">
+                {imageLoading ? '📄' : '🔍'}
+              </div>
+            </div>
+
+            {/* Step indicator */}
+            <div className="space-y-3">
+              {/* Step 1: Rendering PDF */}
+              <div className={`flex items-center gap-3 justify-center ${imageLoading ? 'text-blue-600' : 'text-green-600'}`}>
+                <div className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold ${
+                  imageLoading ? 'bg-blue-600 text-white' : 'bg-green-600 text-white'
+                }`}>
+                  {imageLoading ? '1' : '✓'}
+                </div>
+                <span className={`font-medium ${imageLoading ? 'text-gray-700' : 'text-green-600'}`}>
+                  {imageLoading ? 'Rendering PDF page...' : 'PDF rendered'}
+                </span>
+              </div>
+
+              {/* Step 2: Extracting vectors */}
+              <div className={`flex items-center gap-3 justify-center ${
+                isExtracting ? 'text-blue-600' : imageLoading ? 'text-gray-400' : 'text-green-600'
+              }`}>
+                <div className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold ${
+                  isExtracting ? 'bg-blue-600 text-white' : imageLoading ? 'bg-gray-300 text-gray-500' : 'bg-green-600 text-white'
+                }`}>
+                  {!imageLoading && !isExtracting ? '✓' : '2'}
+                </div>
+                <span className={`font-medium ${
+                  isExtracting ? 'text-gray-700' : imageLoading ? 'text-gray-400' : 'text-green-600'
+                }`}>
+                  {isExtracting ? 'Analyzing drawing vectors...' : imageLoading ? 'Extract snap points' : 'Snap points ready'}
+                </span>
+              </div>
+            </div>
+
+            {/* Helpful context */}
+            <div className="mt-4 pt-4 border-t border-gray-200">
+              <p className="text-gray-500 text-sm">
+                {imageLoading
+                  ? 'Converting PDF to high-resolution image for precise measurements'
+                  : 'Finding lines and intersections for accurate snapping'}
+              </p>
+              {isExtracting && (
+                <p className="text-gray-400 text-xs mt-2">
+                  Large drawings may take 10-30 seconds
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Vector extraction error */}
+      {extractionError && !isExtracting && (
+        <div className="absolute top-4 right-20 bg-red-50 border border-red-200 rounded-lg shadow-lg px-4 py-3 z-20 max-w-xs">
+          <div className="flex items-start gap-2">
+            <span className="text-red-500 text-lg">⚠️</span>
+            <div>
+              <p className="text-red-700 font-medium text-sm">Snap points unavailable</p>
+              <p className="text-red-600 text-xs mt-1">{extractionError}</p>
+              <button
+                onClick={handleReExtract}
+                className="mt-2 text-xs text-red-700 hover:text-red-800 underline"
+              >
+                Retry extraction
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Stale vectors warning */}
+      {vectorsStale && !isExtracting && !extractionError && (
+        <div className="absolute top-4 right-20 bg-yellow-50 border border-yellow-200 rounded-lg shadow-lg px-4 py-3 z-20 max-w-xs">
+          <div className="flex items-start gap-2">
+            <span className="text-yellow-500 text-lg">⏰</span>
+            <div>
+              <p className="text-yellow-700 font-medium text-sm">Snap points may be outdated</p>
+              <p className="text-yellow-600 text-xs mt-1">Sheet was updated after extraction</p>
+              <button
+                onClick={handleReExtract}
+                className="mt-2 text-xs text-yellow-700 hover:text-yellow-800 underline"
+              >
+                Re-extract snap points
+              </button>
+            </div>
           </div>
         </div>
       )}

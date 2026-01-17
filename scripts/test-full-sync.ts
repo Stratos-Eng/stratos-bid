@@ -39,9 +39,9 @@ async function test() {
     }
   }
 
-  // 5. Save bids (without deep fetch for now)
-  console.log('\n4. Saving bids (without deep fetch)...');
-  const savedCount = await scanner.saveBids(extractedBids, false); // disable deep fetch
+  // 5. Save bids
+  console.log('\n4. Saving bids...');
+  const savedCount = await scanner.saveBids(extractedBids);
   console.log(`   ✓ Saved ${savedCount} new bids`);
 
   // 6. Check database

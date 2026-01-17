@@ -6,7 +6,10 @@ import { PdfViewer } from '@/components/takeoff/pdf-viewer';
 import { TakeoffToolbar } from '@/components/takeoff/toolbar';
 import { TakeoffDataPanel } from '@/components/takeoff/data-panel';
 import { TakeoffSheetPanel } from '@/components/takeoff/sheet-panel';
+import { SheetNavigator } from '@/components/takeoff/sheet-navigator';
+import { SheetThumbnailStrip } from '@/components/takeoff/sheet-thumbnail-strip';
 import { useToast } from '@/components/ui/toast';
+import { useTakeoffKeyboard } from '@/hooks/use-takeoff-keyboard';
 import {
   useTakeoffStore,
   type TakeoffCategory,
@@ -68,6 +71,9 @@ export default function TakeoffWorkspacePage() {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Enable keyboard shortcuts
+  useTakeoffKeyboard({ enabled: !loading && !error });
   const [saving, setSaving] = useState(false);
   const [lastSaveTime, setLastSaveTime] = useState<Date | null>(null);
   const [showAddCategory, setShowAddCategory] = useState(false);
@@ -89,6 +95,10 @@ export default function TakeoffWorkspacePage() {
   // Sync status tracking
   const [pendingSaves, setPendingSaves] = useState(0);
   const [lastSyncError, setLastSyncError] = useState<string | null>(null);
+
+  // Dismissible warning banners
+  const [dismissedCategoryWarning, setDismissedCategoryWarning] = useState(false);
+  const [dismissedScaleWarning, setDismissedScaleWarning] = useState(false);
 
   // Warn before leaving with unsaved changes
   useEffect(() => {
@@ -499,10 +509,12 @@ export default function TakeoffWorkspacePage() {
             </div>
           )}
 
-          {/* Warning banner for missing requirements (after onboarding) */}
-          {currentSheet && project.categories.length > 0 && (!activeCategory || !calibration) && (
+          {/* Warning banner for missing requirements (after onboarding) - dismissible */}
+          {currentSheet && project.categories.length > 0 && (
+            (!activeCategory && !dismissedCategoryWarning) || (!calibration && !dismissedScaleWarning)
+          ) && (
             <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 flex gap-2">
-              {!activeCategory && (
+              {!activeCategory && !dismissedCategoryWarning && (
                 <div className="bg-terracotta/10 border border-terracotta/30 text-terracotta px-3 py-1.5 rounded-lg text-sm shadow-sm flex items-center gap-2">
                   <span>Select a category to start measuring</span>
                   <button
@@ -511,12 +523,26 @@ export default function TakeoffWorkspacePage() {
                   >
                     Add category
                   </button>
+                  <button
+                    onClick={() => setDismissedCategoryWarning(true)}
+                    className="ml-1 text-terracotta/60 hover:text-terracotta"
+                    title="Dismiss"
+                  >
+                    ×
+                  </button>
                 </div>
               )}
-              {!calibration && (
+              {!calibration && !dismissedScaleWarning && (
                 <div className="bg-primary/10 border border-primary/30 text-primary px-3 py-1.5 rounded-lg text-sm shadow-sm flex items-center gap-2">
                   <span>Set scale for accurate measurements</span>
                   <span className="text-primary/70">(Press K)</span>
+                  <button
+                    onClick={() => setDismissedScaleWarning(true)}
+                    className="ml-1 text-primary/60 hover:text-primary"
+                    title="Dismiss"
+                  >
+                    ×
+                  </button>
                 </div>
               )}
             </div>
@@ -524,13 +550,22 @@ export default function TakeoffWorkspacePage() {
 
           {/* PDF Viewer */}
           {currentSheet ? (
-            <PdfViewer
-              sheetId={currentSheet.id}
-              tileUrlTemplate={currentSheet.tileUrlTemplate || undefined}
-              width={currentSheet.widthPx}
-              height={currentSheet.heightPx}
-              onMeasurementComplete={handleMeasurementComplete}
-            />
+            <>
+              <PdfViewer
+                sheetId={currentSheet.id}
+                tileUrlTemplate={currentSheet.tileUrlTemplate || undefined}
+                width={currentSheet.widthPx}
+                height={currentSheet.heightPx}
+                onMeasurementComplete={handleMeasurementComplete}
+              />
+              {/* Sheet navigation - floating at bottom center */}
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-2">
+                {/* Thumbnail strip for visual navigation */}
+                <SheetThumbnailStrip />
+                {/* Compact navigator with prev/next buttons */}
+                <SheetNavigator />
+              </div>
+            </>
           ) : (
             <div className="flex items-center justify-center h-full bg-secondary">
               <div className="text-center text-muted-foreground">

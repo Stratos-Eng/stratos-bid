@@ -14,6 +14,9 @@ export function TakeoffSheetPanel({ onSheetSelect, onAddSheets }: SheetPanelProp
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(['all']));
   const [editingSheetId, setEditingSheetId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
+  const [isBatchExtracting, setIsBatchExtracting] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{ completed: number; total: number } | null>(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
 
   const sheets = project?.sheets || [];
 
@@ -98,20 +101,77 @@ export function TakeoffSheetPanel({ onSheetSelect, onAddSheets }: SheetPanelProp
     setEditName('');
   };
 
+  const handleBatchExtractVectors = async () => {
+    if (!project) return;
+
+    setIsBatchExtracting(true);
+    setBatchError(null);
+    setBatchProgress({ completed: 0, total: sheets.length });
+
+    try {
+      const response = await fetch('/api/takeoff/vectors/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: project.id }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || 'Batch extraction failed');
+      }
+
+      const data = await response.json();
+      setBatchProgress({ completed: data.completed, total: data.total });
+
+      if (data.failed > 0) {
+        setBatchError(`${data.failed} of ${data.total} sheets failed to extract`);
+      }
+
+      // Update local state with extraction results
+      if (project) {
+        setProject({
+          ...project,
+          sheets: project.sheets.map(sheet => {
+            const result = data.results.find((r: { sheetId: string }) => r.sheetId === sheet.id);
+            if (result?.success) {
+              return { ...sheet, vectorsReady: true, vectorQuality: result.quality };
+            }
+            return sheet;
+          }),
+        });
+      }
+    } catch (err) {
+      console.error('Batch extraction failed:', err);
+      setBatchError(err instanceof Error ? err.message : 'Batch extraction failed');
+    } finally {
+      setIsBatchExtracting(false);
+    }
+  };
+
   return (
     <div className="w-64 bg-white border-r flex flex-col h-full">
       {/* Header */}
       <div className="p-4 border-b flex items-center justify-between">
         <h2 className="font-semibold text-gray-900">Sheets</h2>
-        {onAddSheets && (
+        <div className="flex items-center gap-1">
           <button
-            onClick={onAddSheets}
-            className="text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded"
-            title="Add more PDF sheets"
+            onClick={handleBatchExtractVectors}
+            disabled={isBatchExtracting || sheets.length === 0}
+            className="text-xs px-2 py-1 text-green-600 hover:bg-green-50 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Extract snap points for all sheets"
           >
-            + Add
+            {isBatchExtracting ? '...' : '⚡ Snap'}
           </button>
-        )}
+          {onAddSheets && (
+            <button
+              onClick={onAddSheets}
+              className="text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded"
+              title="Add more PDF sheets"
+            >
+              + Add
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Search */}
@@ -225,8 +285,43 @@ export function TakeoffSheetPanel({ onSheetSelect, onAddSheets }: SheetPanelProp
       </div>
 
       {/* Footer */}
-      <div className="p-3 border-t bg-gray-50 text-xs text-gray-500">
-        {sheets.length} sheets • {measurements.length} measurements
+      <div className="p-3 border-t bg-gray-50 text-xs text-gray-500 space-y-1">
+        <div>{sheets.length} sheets • {measurements.length} measurements</div>
+
+        {/* Keyboard hint */}
+        <div className="text-gray-400 flex items-center gap-1">
+          <kbd className="px-1 py-0.5 bg-gray-200 rounded text-[10px] font-mono">[</kbd>
+          <kbd className="px-1 py-0.5 bg-gray-200 rounded text-[10px] font-mono">]</kbd>
+          <span className="ml-1">to navigate sheets</span>
+        </div>
+
+        {/* Batch extraction progress */}
+        {isBatchExtracting && batchProgress && (
+          <div className="flex items-center gap-2 text-blue-600">
+            <div className="animate-spin w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full" />
+            <span>Extracting {batchProgress.completed}/{batchProgress.total}...</span>
+          </div>
+        )}
+
+        {/* Batch extraction error */}
+        {batchError && !isBatchExtracting && (
+          <div className="text-red-600">
+            {batchError}
+            <button
+              onClick={handleBatchExtractVectors}
+              className="ml-2 underline hover:no-underline"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {/* Batch extraction success */}
+        {batchProgress && !isBatchExtracting && !batchError && batchProgress.completed > 0 && (
+          <div className="text-green-600">
+            ✓ Extracted {batchProgress.completed} sheets
+          </div>
+        )}
       </div>
     </div>
   );

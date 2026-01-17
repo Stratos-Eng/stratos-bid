@@ -92,6 +92,12 @@ export const documents = pgTable('documents', {
   extractionStatus: text('extraction_status').default('not_started'), // 'not_started' | 'queued' | 'extracting' | 'completed' | 'failed'
   lineItemCount: integer('line_item_count').default(0),
   pagesWithTrades: jsonb('pages_with_trades'), // [{ page: 13, trades: ['signage'] }]
+  // Signage legend data (extracted from sign legend/schedule pages)
+  // Structure: { found: boolean, legendPages: number[], sheetNumbers: string[], symbols: SymbolDefinition[], confidence: number }
+  signageLegend: jsonb('signage_legend'),
+  // Thumbnail generation status
+  thumbnailsGenerated: boolean('thumbnails_generated').default(false),
+  updatedAt: timestamp('updated_at'),
 });
 
 export const syncJobs = pgTable('sync_jobs', {
@@ -122,6 +128,8 @@ export const lineItems = pgTable('line_items', {
   pdfFilePath: text('pdf_file_path'),
   pageNumber: integer('page_number'),
   pageReference: text('page_reference'), // e.g., "A2.1" for architectural drawings
+  pageX: real('page_x'), // X coordinate on PDF page (0-1 normalized)
+  pageY: real('page_y'), // Y coordinate on PDF page (0-1 normalized)
 
   // Item details
   description: text('description').notNull(),
@@ -314,6 +322,41 @@ export const planetbidsPortals = pgTable('planetbids_portals', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+// Upload sessions for chunked file uploads
+export const uploadSessions = pgTable('upload_sessions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  projectId: uuid('project_id').references(() => takeoffProjects.id, { onDelete: 'cascade' }),
+  bidId: uuid('bid_id').references(() => bids.id, { onDelete: 'cascade' }), // For projects flow
+
+  // File metadata
+  filename: text('filename').notNull(),
+  fileSize: integer('file_size').notNull(), // Total file size in bytes
+  mimeType: text('mime_type').notNull(),
+
+  // Chunking info
+  chunkSize: integer('chunk_size').notNull(), // Chunk size in bytes
+  totalChunks: integer('total_chunks').notNull(),
+  receivedChunks: integer('received_chunks').default(0).notNull(),
+
+  // Status tracking
+  status: text('status').notNull().default('pending'), // 'pending' | 'uploading' | 'assembling' | 'completed' | 'failed' | 'expired'
+  errorMessage: text('error_message'),
+
+  // Storage paths
+  tempDir: text('temp_dir').notNull(), // Temp directory for chunks
+  finalPath: text('final_path'), // Final assembled file path
+
+  // For sheet naming (optional metadata passed from client)
+  folderName: text('folder_name'),
+  relativePath: text('relative_path'),
+
+  // Timestamps
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  expiresAt: timestamp('expires_at').notNull(), // Auto-cleanup stale uploads
+});
+
 // Type exports for inserting data
 export type NewBid = typeof bids.$inferInsert;
 export type NewPlanetbidsPortal = typeof planetbidsPortals.$inferInsert;
@@ -325,3 +368,5 @@ export type NewTakeoffSheet = typeof takeoffSheets.$inferInsert;
 export type NewTakeoffCategory = typeof takeoffCategories.$inferInsert;
 export type NewTakeoffMeasurement = typeof takeoffMeasurements.$inferInsert;
 export type NewSheetVectors = typeof sheetVectors.$inferInsert;
+export type NewUploadSession = typeof uploadSessions.$inferInsert;
+export type UploadSession = typeof uploadSessions.$inferSelect;

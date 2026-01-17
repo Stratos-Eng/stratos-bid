@@ -25,16 +25,16 @@ export default async function DashboardLayout({
               </Link>
               <nav className="hidden md:flex gap-6">
                 <Link
-                  href="/takeoff"
-                  className="text-muted-foreground hover:text-foreground font-medium transition-smooth"
-                >
-                  Takeoff
-                </Link>
-                <Link
                   href="/bids"
                   className="text-muted-foreground hover:text-foreground font-medium transition-smooth"
                 >
                   Bids
+                </Link>
+                <Link
+                  href="/projects"
+                  className="text-muted-foreground hover:text-foreground font-medium transition-smooth"
+                >
+                  Projects
                 </Link>
                 <Link
                   href="/connections"

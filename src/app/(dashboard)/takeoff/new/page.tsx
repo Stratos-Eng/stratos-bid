@@ -1,45 +1,71 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { useChunkedUpload, type FileToUpload } from '@/hooks/use-chunked-upload';
+import { UploadProgress } from '@/components/upload/upload-progress';
 
-// Max file size: 50MB
-const MAX_FILE_SIZE_MB = 50;
-const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+// Helper to format file size
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
 
 export default function NewTakeoffProjectPage() {
   const router = useRouter();
   const [name, setName] = useState('');
   const [files, setFiles] = useState<File[]>([]);
-  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [progress, setProgress] = useState<string>('');
-  const [warnings, setWarnings] = useState<string[]>([]);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
+
+  // Chunked upload hook
+  const {
+    uploads,
+    isUploading,
+    uploadFiles,
+    pause,
+    resume,
+    cancel,
+    pauseAll,
+    resumeAll,
+    cancelAll,
+    reset,
+  } = useChunkedUpload({
+    projectId: projectId || '',
+    onAllComplete: (results) => {
+      if (projectId && results.length > 0) {
+        router.push(`/takeoff/${projectId}`);
+      }
+    },
+    onError: (filename, errorMsg) => {
+      console.error(`Upload failed for ${filename}:`, errorMsg);
+    },
+  });
+
+  // Start uploads when projectId is set and we have files waiting
+  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
+
+  useEffect(() => {
+    console.log('[new-page] useEffect triggered. projectId:', projectId, 'pendingFiles:', pendingFiles?.length);
+    if (projectId && pendingFiles && pendingFiles.length > 0) {
+      console.log('[new-page] Starting upload for', pendingFiles.length, 'files');
+      const filesToUpload: FileToUpload[] = pendingFiles.map((file) => ({
+        file,
+        projectId, // Pass projectId directly to avoid stale closure
+      }));
+      uploadFiles(filesToUpload);
+      setPendingFiles(null);
+    }
+  }, [projectId, pendingFiles, uploadFiles]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
       const pdfFiles = Array.from(e.target.files).filter(
-        (f) => f.type === 'application/pdf'
+        (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
       );
-
-      // Check file sizes
-      const newWarnings: string[] = [];
-      const validFiles: File[] = [];
-
-      for (const file of pdfFiles) {
-        if (file.size > MAX_FILE_SIZE_BYTES) {
-          newWarnings.push(`"${file.name}" exceeds ${MAX_FILE_SIZE_MB}MB limit and was not added`);
-        } else if (file.size > MAX_FILE_SIZE_BYTES * 0.8) {
-          // Warn if close to limit
-          newWarnings.push(`"${file.name}" is large (${(file.size / 1024 / 1024).toFixed(1)}MB) - upload may take a while`);
-          validFiles.push(file);
-        } else {
-          validFiles.push(file);
-        }
-      }
-
-      setWarnings(newWarnings);
-      setFiles(validFiles);
+      setFiles(pdfFiles);
     }
   };
 
@@ -54,12 +80,11 @@ export default function NewTakeoffProjectPage() {
       return;
     }
 
-    setUploading(true);
+    setIsCreatingProject(true);
     setError(null);
 
     try {
       // 1. Create project
-      setProgress('Creating project...');
       const projectRes = await fetch('/api/takeoff/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -72,51 +97,39 @@ export default function NewTakeoffProjectPage() {
 
       const { project } = await projectRes.json();
 
-      // 2. Upload each PDF and create sheets
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        setProgress(`Uploading ${file.name} (${i + 1}/${files.length})...`);
-
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('projectId', project.id);
-
-        const uploadRes = await fetch('/api/takeoff/upload', {
-          method: 'POST',
-          body: formData,
-        });
-
-        if (!uploadRes.ok) {
-          const err = await uploadRes.json();
-          throw new Error(err.error || `Failed to upload ${file.name}`);
-        }
-      }
-
-      // 3. Redirect to project
-      setProgress('Redirecting...');
-      router.push(`/takeoff/${project.id}`);
+      // 2. Set project ID and pending files - the useEffect will trigger uploads
+      setProjectId(project.id);
+      setPendingFiles(files);
+      setIsCreatingProject(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed');
-      setUploading(false);
+      setError(err instanceof Error ? err.message : 'Failed to create project');
+      setIsCreatingProject(false);
     }
   };
+
+  const isBusy = isCreatingProject || isUploading;
 
   return (
     <div className="max-w-2xl mx-auto">
       <h1 className="text-2xl font-serif font-bold text-foreground mb-6">New Takeoff Project</h1>
 
+      {/* Chunked upload progress overlay */}
+      {isUploading && uploads.length > 0 && (
+        <UploadProgress
+          uploads={uploads}
+          onPause={pause}
+          onResume={resume}
+          onCancel={cancel}
+          onPauseAll={pauseAll}
+          onResumeAll={resumeAll}
+          onCancelAll={cancelAll}
+        />
+      )}
+
       <form onSubmit={handleSubmit} className="bg-card rounded-lg border border-border p-6 card-hover">
         {error && (
           <div className="mb-4 p-3 bg-destructive/10 border border-destructive/30 rounded-lg text-destructive text-sm">
             {error}
-          </div>
-        )}
-
-        {warnings.length > 0 && (
-          <div className="mb-4 p-3 bg-terracotta/10 border border-terracotta/30 rounded-lg text-terracotta text-sm">
-            {warnings.map((warning, i) => (
-              <p key={i}>{warning}</p>
-            ))}
           </div>
         )}
 
@@ -131,7 +144,7 @@ export default function NewTakeoffProjectPage() {
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g., ABC Office Building"
             className="w-full px-4 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary bg-input transition-smooth"
-            disabled={uploading}
+            disabled={isBusy}
           />
         </div>
 
@@ -148,7 +161,7 @@ export default function NewTakeoffProjectPage() {
               onChange={handleFileChange}
               className="hidden"
               id="pdf-upload"
-              disabled={uploading}
+              disabled={isBusy}
             />
             <label
               htmlFor="pdf-upload"
@@ -162,7 +175,7 @@ export default function NewTakeoffProjectPage() {
                 Each page becomes a sheet in your takeoff
               </p>
               <p className="text-xs text-muted-foreground/50 mt-1">
-                Max {MAX_FILE_SIZE_MB}MB per file
+                Large files are automatically chunked for reliable uploads
               </p>
             </label>
           </div>
@@ -177,7 +190,7 @@ export default function NewTakeoffProjectPage() {
                 >
                   <span className="text-sm text-foreground">{file.name}</span>
                   <span className="text-xs text-muted-foreground">
-                    {(file.size / 1024 / 1024).toFixed(2)} MB
+                    {formatFileSize(file.size)}
                   </span>
                 </div>
               ))}
@@ -191,16 +204,16 @@ export default function NewTakeoffProjectPage() {
             type="button"
             onClick={() => router.back()}
             className="px-4 py-2 text-muted-foreground hover:bg-secondary rounded-lg transition-smooth"
-            disabled={uploading}
+            disabled={isBusy}
           >
             Cancel
           </button>
           <button
             type="submit"
-            disabled={uploading || !name.trim() || files.length === 0}
+            disabled={isBusy || !name.trim() || files.length === 0}
             className="px-6 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed btn-lift"
           >
-            {uploading ? progress : 'Create Project'}
+            {isCreatingProject ? 'Creating project...' : 'Create Project'}
           </button>
         </div>
       </form>

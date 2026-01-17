@@ -131,8 +131,26 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error('Upload error:', error);
+
+    // Provide specific error messages based on the error type
+    let message = 'Failed to process PDF';
+    if (error instanceof Error) {
+      if (error.message.includes('Invalid PDF')) {
+        message = 'Invalid PDF file - the file may be corrupted or encrypted';
+      } else if (error.message.includes('password')) {
+        message = 'PDF is password-protected';
+      } else if (error.message.includes('ENOSPC')) {
+        message = 'Server storage is full';
+      } else if (error.message.includes('EACCES')) {
+        message = 'Server permission error';
+      } else {
+        // Include the actual error for debugging
+        message = `Failed to process PDF: ${error.message}`;
+      }
+    }
+
     return NextResponse.json(
-      { error: 'Failed to process PDF' },
+      { error: message },
       { status: 500 }
     );
   }

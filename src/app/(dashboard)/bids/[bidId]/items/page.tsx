@@ -102,6 +102,14 @@ export default async function LineItemsPage({
         </div>
 
         <div className="flex gap-2">
+          {tradeCounts['division_10'] > 0 && (
+            <Link
+              href={`/signage/${bidId}`}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
+            >
+              Review Signage
+            </Link>
+          )}
           <Link
             href={`/api/export?bidId=${bidId}${trade ? `&trade=${trade}` : ''}`}
             className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"

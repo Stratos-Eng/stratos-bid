@@ -139,24 +139,34 @@ export default async function BidDetailPage({
           <div className="grid grid-cols-2 gap-4">
             {lineItemStats.map((stat) => {
               const trade = TRADE_DEFINITIONS[stat.tradeCode as TradeCode];
+              const isSignage = stat.tradeCode === 'division_10';
               return (
-                <Link
+                <div
                   key={stat.tradeCode}
-                  href={`/bids/${bidId}/items?trade=${stat.tradeCode}`}
                   className="p-4 border rounded-lg hover:border-blue-300 transition-colors"
                 >
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <h3 className="font-medium">{trade?.name || stat.tradeCode}</h3>
-                      <p className="text-sm text-gray-500">{trade?.displayName}</p>
+                  <Link href={`/bids/${bidId}/items?trade=${stat.tradeCode}`}>
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <h3 className="font-medium">{trade?.name || stat.tradeCode}</h3>
+                        <p className="text-sm text-gray-500">{trade?.displayName}</p>
+                      </div>
+                      <span className="text-2xl font-bold text-gray-900">{stat.count}</span>
                     </div>
-                    <span className="text-2xl font-bold text-gray-900">{stat.count}</span>
-                  </div>
-                  <div className="mt-2 flex gap-2 text-xs">
-                    <span className="text-yellow-600">{stat.pendingCount} pending</span>
-                    <span className="text-green-600">{stat.approvedCount} approved</span>
-                  </div>
-                </Link>
+                    <div className="mt-2 flex gap-2 text-xs">
+                      <span className="text-yellow-600">{stat.pendingCount} pending</span>
+                      <span className="text-green-600">{stat.approvedCount} approved</span>
+                    </div>
+                  </Link>
+                  {isSignage && stat.pendingCount > 0 && (
+                    <Link
+                      href={`/signage/${bidId}`}
+                      className="mt-3 block w-full text-center px-3 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-medium"
+                    >
+                      Review Signage →
+                    </Link>
+                  )}
+                </div>
               );
             })}
           </div>

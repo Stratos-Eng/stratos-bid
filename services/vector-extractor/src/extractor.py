@@ -26,7 +26,7 @@ DEFAULT_DPI = 150  # Default DPI for rendering
 def extract_page_vectors(
     pdf_path: str,
     page_number: int,
-    dpi: int = DEFAULT_DPI,
+    dpi: float = DEFAULT_DPI,
     on_progress: Optional[Callable[[float], None]] = None,
 ) -> dict:
     """
@@ -130,7 +130,8 @@ def extract_raw_lines(page: fitz.Page, scale: float) -> list[tuple[Point, Point,
 
     for drawing in drawings:
         items = drawing.get("items", [])
-        width = drawing.get("width", 1.0) * scale
+        raw_width = drawing.get("width")
+        width = (raw_width if raw_width is not None else 1.0) * scale
 
         for item in items:
             item_type = item[0]

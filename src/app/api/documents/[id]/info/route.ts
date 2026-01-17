@@ -8,6 +8,13 @@ import fs from 'fs';
 // Use legacy build for Node.js environment
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 
+interface PageInfo {
+  width: number;
+  height: number;
+  rotation: number;
+  label?: string;  // Original page label from PDF (e.g., "A1.1", "S-101")
+}
+
 // GET /api/documents/[id]/info - Get document metadata
 export async function GET(
   request: NextRequest,
@@ -36,40 +43,69 @@ export async function GET(
       return NextResponse.json({ error: 'Document not found' }, { status: 404 });
     }
 
-    // Get page count
-    let pageCount = doc.document.pageCount;
+    // Resolve the file path
+    let resolvedPath = doc.document.storagePath;
+    if (resolvedPath && !path.isAbsolute(resolvedPath)) {
+      resolvedPath = path.join(process.cwd(), resolvedPath);
+    }
 
-    // If we don't have page count cached, get it from the PDF
-    if (!pageCount && doc.document.storagePath) {
-      const filePath = doc.document.storagePath;
-      let resolvedPath = filePath;
-      if (!path.isAbsolute(filePath)) {
-        resolvedPath = path.join(process.cwd(), 'uploads', filePath);
-      }
+    // Get page count and dimensions from PDF
+    let pageCount = doc.document.pageCount || 1;
+    const pages: PageInfo[] = [];
 
-      if (fs.existsSync(resolvedPath)) {
+    if (resolvedPath && fs.existsSync(resolvedPath)) {
+      try {
+        const data = new Uint8Array(fs.readFileSync(resolvedPath));
+        const loadingTask = pdfjsLib.getDocument({ data });
+        const pdfDocument = await loadingTask.promise;
+        pageCount = pdfDocument.numPages;
+
+        // Try to get page labels (e.g., "A1.1", "S-101")
+        let pageLabels: string[] | null = null;
         try {
-          const data = new Uint8Array(fs.readFileSync(resolvedPath));
-          const loadingTask = pdfjsLib.getDocument({ data });
-          const pdfDocument = await loadingTask.promise;
-          pageCount = pdfDocument.numPages;
+          pageLabels = await pdfDocument.getPageLabels();
+        } catch {
+          // Page labels not available
+        }
 
-          // Update cache in database
+        // Get dimensions for each page
+        for (let i = 1; i <= pageCount; i++) {
+          const page = await pdfDocument.getPage(i);
+          const viewport = page.getViewport({ scale: 1.0 });
+          pages.push({
+            width: viewport.width,
+            height: viewport.height,
+            rotation: viewport.rotation || 0,
+            label: pageLabels?.[i - 1] || undefined,
+          });
+        }
+
+        // Update page count in database if needed
+        if (doc.document.pageCount !== pageCount) {
           await db
             .update(documents)
             .set({ pageCount })
             .where(eq(documents.id, id));
-        } catch (e) {
-          console.error('Failed to get PDF page count:', e);
-          pageCount = 1; // Default to 1
         }
+      } catch (e) {
+        console.error('Failed to get PDF info:', e);
+        // Use defaults for page dimensions
+        for (let i = 0; i < pageCount; i++) {
+          pages.push({ width: 612, height: 792, rotation: 0 });
+        }
+      }
+    } else {
+      // No file - use defaults
+      for (let i = 0; i < pageCount; i++) {
+        pages.push({ width: 612, height: 792, rotation: 0 });
       }
     }
 
     return NextResponse.json({
       id: doc.document.id,
       filename: doc.document.filename,
-      pageCount: pageCount || 1,
+      pageCount,
+      pages, // Array of page dimensions
       bidId: doc.bid.id,
       bidTitle: doc.bid.title,
       docType: doc.document.docType,

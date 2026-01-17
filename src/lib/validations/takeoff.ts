@@ -156,6 +156,10 @@ export const getVectorsSchema = z.object({
   sheetId: z.string().uuid('Invalid sheet ID'),
 });
 
+export const batchExtractVectorsSchema = z.object({
+  projectId: z.string().uuid('Invalid project ID'),
+});
+
 // ============================================================
 // Render API Schemas
 // ============================================================

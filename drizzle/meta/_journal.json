@@ -29,6 +29,41 @@
       "when": 1768006300008,
       "tag": "0003_add_sheet_calibration",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1768270480536,
+      "tag": "0004_lonely_nicolaos",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1768345515640,
+      "tag": "0005_greedy_sauron",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1768352827181,
+      "tag": "0006_yummy_star_brand",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1768587526375,
+      "tag": "0007_flowery_onslaught",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1768590021934,
+      "tag": "0008_light_slayback",
+      "breakpoints": true
     }
   ]
 }

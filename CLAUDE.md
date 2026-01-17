@@ -1,4 +1,4 @@
-# Stratos Bid Aggregator
+# Stratos Bid Platform
 
 ## What is Stratos?
 
@@ -10,54 +10,48 @@ The platform helps subcontractors:
 3. **Filter noise** to surface only relevant opportunities
 4. **Win more bids** with better information, faster
 
-## What is stratos-bid?
+## Architecture Overview
 
-This repo is the **bid aggregation engine** — the system that scrapes, normalizes, and processes bid opportunities from multiple platforms into a unified database.
-
-### Platforms to Support
-
-| Platform | Type | Auth | Status |
-|----------|------|------|--------|
-| **PlanetBids** | Public/Gov bids | Per-portal registration | ✅ Working |
-| **PlanHub** | Commercial bids | Email/password login | 🚧 Stub created |
-| **BuildingConnected** | Commercial bids | Email/password login | 🚧 Stub created |
-
-### Architecture
+This is a **Next.js 16 full-stack application** using:
+- **Database**: PostgreSQL with Drizzle ORM
+- **Auth**: NextAuth 5 with Google OAuth
+- **Background Jobs**: Inngest
+- **PDF Processing**: pdf.js (client) + PyMuPDF (Python service)
+- **Browser Automation**: Playwright
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│                       STRATOS-BID                              │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│   SCRAPERS (src/scrapers/)                                     │
-│   ┌────────────┐  ┌────────────┐  ┌─────────────────┐         │
-│   │ PlanetBids │  │  PlanHub   │  │ BuildingConnected│         │
-│   └─────┬──────┘  └─────┬──────┘  └───────┬─────────┘         │
-│         └───────────────┼─────────────────┘                   │
-│                         ▼                                      │
-│   ┌─────────────────────────────────────────┐                 │
-│   │           UNIFIED BID SCHEMA            │                 │
-│   │  (src/db/schema.ts)                     │                 │
-│   └─────────────────────┬───────────────────┘                 │
-│                         ▼                                      │
-│   ┌─────────────────────────────────────────┐                 │
-│   │            SQLite DATABASE              │                 │
-│   │  • bids     • documents    • sources    │                 │
-│   └─────────────────────┬───────────────────┘                 │
-│                         ▼                                      │
-│   ┌─────────────────────────────────────────┐                 │
-│   │         DOC PIPELINE (TODO)             │                 │
-│   │  • PDF download   • Text extraction     │                 │
-│   │  • Trade classification                 │                 │
-│   │  • Relevance scoring                    │                 │
-│   └─────────────────────┬───────────────────┘                 │
-│                         ▼                                      │
-│   ┌─────────────────────────────────────────┐                 │
-│   │           DASHBOARD (TODO)              │                 │
-│   │  • View bids   • Filter   • Download    │                 │
-│   └─────────────────────────────────────────┘                 │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                         STRATOS-BID                                 │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  NEXT.JS APP (src/app/)                                            │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │  Dashboard      │  Takeoff Tool  │  Connections Manager     │   │
+│  │  /              │  /takeoff/*    │  /connections            │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                              │                                      │
+│  API ROUTES (src/app/api/)   ▼                                     │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │  /api/takeoff/*     PDF upload, vector extraction, render   │   │
+│  │  /api/connections/* Platform connection management          │   │
+│  │  /api/sync/*        Background sync triggers                │   │
+│  │  /api/documents/*   Document viewing/download               │   │
+│  │  /api/inngest       Background job webhook                  │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                              │                                      │
+│  SCRAPERS (src/scrapers/)    ▼                                     │
+│  ┌────────────┐  ┌────────────┐  ┌─────────────────┐              │
+│  │ PlanetBids │  │  PlanHub   │  │ BuildingConnected│              │
+│  │  (working) │  │  (partial) │  │   (implemented)  │              │
+│  └────────────┘  └────────────┘  └─────────────────┘              │
+│                              │                                      │
+│  PYTHON SERVICE (services/vector-extractor/)                       │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │  FastAPI + PyMuPDF for vector extraction from PDFs          │   │
+│  │  POST / - Extract vectors (base64 PDF → lines + snap points)│   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Project Structure
@@ -65,87 +59,184 @@ This repo is the **bid aggregation engine** — the system that scrapes, normali
 ```
 stratos-bid/
 ├── src/
-│   ├── scrapers/           # Platform-specific scrapers
-│   │   ├── base.ts         # Base scraper class
-│   │   ├── planetbids.ts   # PlanetBids scraper (working)
-│   │   ├── planhub.ts      # PlanHub scraper (stub)
-│   │   └── buildingconnected.ts  # BC scraper (stub)
-│   ├── pipeline/           # Document processing (TODO)
+│   ├── app/
+│   │   ├── (dashboard)/        # Main app pages
+│   │   │   ├── takeoff/        # Takeoff tool (PDF viewer + measurements)
+│   │   │   ├── connections/    # Platform connection management
+│   │   │   └── page.tsx        # Dashboard home
+│   │   ├── api/
+│   │   │   ├── takeoff/        # Takeoff API (upload, vectors, render, export)
+│   │   │   ├── connections/    # Connection CRUD
+│   │   │   ├── documents/      # Document viewing
+│   │   │   ├── sync/           # Sync triggers
+│   │   │   ├── inngest/        # Background job webhook
+│   │   │   ├── extension/      # Chrome extension endpoints
+│   │   │   └── auth/           # NextAuth endpoints
+│   │   └── extension/          # Extension connection page
+│   ├── components/
+│   │   ├── takeoff/            # PDF viewer, sheet panel, measurement tools
+│   │   ├── upload/             # Chunked upload components
+│   │   └── ui/                 # Shared UI components
+│   ├── scrapers/               # Platform-specific scrapers
+│   │   ├── base.ts             # Base scraper with Claude agent fallback
+│   │   ├── planetbids.ts       # PlanetBids (public portals, working)
+│   │   ├── planhub.ts          # PlanHub (login issues)
+│   │   └── buildingconnected.ts # BuildingConnected (implemented)
 │   ├── db/
-│   │   └── schema.ts       # Database schema + operations
-│   ├── api/                # API routes (TODO)
-│   ├── dashboard/          # Web UI (TODO)
-│   └── cli.ts              # CLI entry point
-├── docs/
-│   └── pdfs/               # Downloaded bid documents
-├── screenshots/            # Debug screenshots from scrapers
-├── .env                    # Credentials (gitignored)
-├── .env.example            # Credential template
-└── stratos-bid.db          # SQLite database (gitignored)
+│   │   └── schema.ts           # Drizzle schema (PostgreSQL)
+│   ├── inngest/                # Background job definitions
+│   ├── lib/
+│   │   ├── auth.ts             # NextAuth config
+│   │   ├── crypto.ts           # Credential encryption
+│   │   ├── browser-agent.ts    # Claude agent for browser automation
+│   │   └── validations/        # Zod schemas
+│   └── hooks/                  # React hooks (chunked upload, etc.)
+├── services/
+│   └── vector-extractor/       # Python FastAPI service
+│       ├── src/
+│       │   ├── main.py         # FastAPI app
+│       │   ├── extractor.py    # PyMuPDF extraction logic
+│       │   └── geometry.py     # Geometry utilities
+│       ├── pyproject.toml      # Python dependencies
+│       └── README.md           # Service documentation
+├── drizzle/                    # Database migrations
+├── uploads/                    # Uploaded PDFs (gitignored)
+├── screenshots/                # Debug screenshots from scrapers
+└── docs/plans/                 # Architecture docs
 ```
 
-## CLI Commands
+## Platform Scrapers
+
+| Platform | Status | Auth | Notes |
+|----------|--------|------|-------|
+| **PlanetBids** | ✅ Working | Per-portal (no login) | Public gov bids, uses portal IDs |
+| **PlanHub** | ⚠️ Partial | Email/password | Login fragile, needs testing |
+| **BuildingConnected** | ✅ Implemented | Email/password + Autodesk SSO | Full implementation with SSO support |
+| **Gmail** | 🚧 Partial | OAuth | Bid invite email parsing |
+
+## Key Features
+
+### Takeoff Tool
+- PDF upload with chunked streaming (handles large files)
+- Page-by-page rendering with OpenLayers
+- Vector extraction for snapping (lines, endpoints, midpoints, intersections)
+- Measurement tools (coming soon)
+- Export to Excel
+
+### Vector Extraction
+The system has dual-mode vector extraction:
+
+1. **Python Service (PyMuPDF)** - Higher quality, more accurate
+   - Run: `cd services/vector-extractor && uvicorn src.main:app --port 8001`
+   - Set: `PYTHON_VECTOR_API_URL=http://localhost:8001`
+
+2. **pdf.js fallback** - Built into Next.js, always available
+   - Used when Python service is unavailable
+   - Lower quality but works everywhere
+
+### Background Jobs (Inngest)
+- `dailySync` - Runs at 6 AM, syncs all users
+- `syncUser` - Syncs all connections for a user
+- `syncConnection` - Syncs a single platform connection
+
+## Development
 
 ```bash
-# Seed California PlanetBids portals
-npm run seed
+# Install dependencies
+npm install
 
-# Scrape all platforms
-npm run scrape
+# Set up environment
+cp .env.example .env
+# Edit .env with your credentials
 
-# Scrape specific platform
-npm run cli -- scrape planetbids
-npm run cli -- scrape planetbids 14319  # Specific portal
+# Run database migrations
+npx drizzle-kit push
 
-# List data
-npm run cli -- list bids
-npm run cli -- list sources
+# Start development server
+npm run dev
+
+# Start Python vector service (optional, for better extraction)
+cd services/vector-extractor
+pip install -e .
+uvicorn src.main:app --port 8001
 ```
 
-## Unified Bid Schema
+## Environment Variables
 
-All bids from all platforms are normalized to this schema:
+```bash
+# Database (PostgreSQL required)
+DATABASE_URL=postgresql://user:password@localhost:5432/stratos_bid
+ENCRYPTION_KEY=<64-char hex string>
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | TEXT | `{source_type}-{source_id}-{bid_id}` |
-| `source_type` | TEXT | `planetbids`, `planhub`, `buildingconnected` |
-| `source_id` | TEXT | Portal/account identifier |
-| `source_bid_id` | TEXT | Original ID from platform |
-| `title` | TEXT | Bid/project title |
-| `description` | TEXT | Full description |
-| `bid_number` | TEXT | Official bid number |
-| `status` | TEXT | `open`, `closed`, `awarded` |
-| `posted_date` | DATETIME | When bid was posted |
-| `due_date` | DATETIME | Bid submission deadline |
-| `city` | TEXT | City location |
-| `state` | TEXT | State (e.g., `CA`) |
-| `relevance_score` | REAL | 0-1 computed relevance |
-| `source_url` | TEXT | Link to original bid |
-| `raw_json` | TEXT | Platform-specific raw data |
+# NextAuth
+NEXTAUTH_SECRET=<random string>
+NEXTAUTH_URL=http://localhost:3000
 
-## MVP Roadmap
+# Google OAuth (required for auth)
+GOOGLE_CLIENT_ID=<from Google Cloud Console>
+GOOGLE_CLIENT_SECRET=<from Google Cloud Console>
 
-### Phase 1: Core Aggregation (Current)
-- [x] PlanetBids scraper
-- [ ] PlanHub scraper
-- [ ] BuildingConnected scraper
-- [ ] Document download pipeline
-- [ ] Basic relevance scoring (keywords + Division 08)
+# Inngest (for background jobs)
+INNGEST_EVENT_KEY=<from Inngest dashboard>
+INNGEST_SIGNING_KEY=<from Inngest dashboard>
 
-### Phase 2: Intelligence
-- [ ] PDF text extraction
-- [ ] Trade classification (glazing, signage, etc.)
-- [ ] Improved relevance scoring
+# Python Vector Service (optional)
+PYTHON_VECTOR_API_URL=http://localhost:8001
 
-### Phase 3: Interface
-- [ ] Simple dashboard to view/filter bids
-- [ ] Document viewer
+# Chrome Extension (optional)
+EXTENSION_TOKEN_SECRET=<random string>
+```
 
-### Phase 4: Scale
-- [ ] More platforms
-- [ ] Cron scheduling
-- [ ] Notifications
+## API Routes
+
+### Takeoff
+- `POST /api/takeoff/upload` - Upload PDF
+- `GET/POST /api/takeoff/vectors` - Extract/get vectors for sheet
+- `GET /api/takeoff/render` - Render PDF page as image
+- `GET /api/takeoff/projects` - List projects
+- `POST /api/takeoff/measurements` - Save measurements
+- `GET /api/takeoff/export` - Export to Excel
+
+### Connections
+- `GET/POST /api/connections` - CRUD for platform connections
+- `POST /api/sync` - Trigger manual sync
+
+### Upload (Chunked)
+- `POST /api/upload/init` - Start upload session
+- `PUT /api/upload/chunk` - Upload chunk
+- `POST /api/upload/complete` - Finalize upload
+
+## Database Schema
+
+Key tables:
+- `users` - NextAuth users
+- `connections` - Platform connections (encrypted credentials)
+- `bids` - Scraped bid opportunities
+- `documents` - Downloaded bid documents
+- `syncJobs` - Sync job tracking
+- `takeoffProjects` - Takeoff projects
+- `takeoffSheets` - PDF sheets within projects
+- `sheetVectors` - Extracted vectors per sheet
+- `takeoffMeasurements` - User measurements
+
+## Testing
+
+```bash
+# Run Playwright tests
+npm test
+
+# Run with UI
+npm run test:ui
+
+# Run headed (see browser)
+npm run test:headed
+```
+
+## Known Issues
+
+1. **PlanHub login** - Frequently fails, may need captcha handling
+2. **Python service deployment** - Not yet deployed to production
+3. **Large PDF memory** - Very large PDFs may cause memory issues
 
 ## Trade Keywords for Relevance
 
@@ -169,80 +260,3 @@ All bids from all platforms are normalized to this schema:
 | 65093 | City of Santa Fe Springs |
 | 24103 | City of National City |
 | 16151 | Los Angeles Area Agency |
-
-## Environment Variables
-
-```bash
-# PlanetBids (registration-based, not login)
-PLANETBIDS_COMPANY_NAME=
-PLANETBIDS_FEI_SSN=
-PLANETBIDS_EMAIL=
-
-# PlanHub
-PLANHUB_EMAIL=
-PLANHUB_PASSWORD=
-
-# BuildingConnected
-BUILDINGCONNECTED_EMAIL=
-BUILDINGCONNECTED_PASSWORD=
-
-# Configuration
-TRADES=glazing,signage
-STATES=CA
-```
-
-## Key Decisions Made
-
-1. **SQLite over Postgres** — Simpler for MVP, can migrate later
-2. **Visible browser (headless: false)** — PlanetBids blocks headless
-3. **Per-platform scrapers** — Not a generic plugin system yet
-4. **PDFs only** — Skip DWG/RVT parsing for MVP
-5. **Keyword relevance** — Start simple before ML classification
-
-## Design Document
-
-See [docs/plans/2026-01-07-stratos-bid-architecture.md](docs/plans/2026-01-07-stratos-bid-architecture.md) for the full architecture design including:
-- Tech stack decisions
-- Data model
-- Auth & connection flows
-- Background job system (Inngest)
-- Document pipeline
-- Dashboard UI wireframes
-- Implementation phases
-
-## Implementation Phases
-
-### Phase 1: Foundation
-- [ ] Next.js app with NextAuth (Gmail OAuth)
-- [ ] Postgres schema with Drizzle
-- [ ] Connection management UI
-- [ ] Credential encryption utilities
-
-### Phase 2: Platform Integrations
-- [ ] PlanetBids scraper (port existing)
-- [ ] Gmail sync (bid invite emails)
-- [ ] PlanHub sync (login + scrape)
-- [ ] BuildingConnected sync (login + scrape)
-
-### Phase 3: Document Pipeline
-- [ ] Document download jobs
-- [ ] PDF text extraction
-- [ ] Relevance scoring v1 (keywords)
-
-### Phase 4: Dashboard
-- [ ] Bid inbox view
-- [ ] Bid detail view
-- [ ] Connections view
-
-### Phase 5: Polish
-- [ ] Error handling and retries
-- [ ] Sync status visibility
-- [ ] Manual sync triggers
-
-## Future Enhancements
-
-- [ ] Smarter relevance scoring (ML/LLM-based)
-- [ ] Email/SMS alerts
-- [ ] More platforms
-- [ ] Takeoff generation
-- [ ] AI chat with documents

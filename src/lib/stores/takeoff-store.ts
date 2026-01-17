@@ -103,6 +103,11 @@ interface TakeoffState {
   // Actions
   setProject: (project: TakeoffProject | null) => void;
   setCurrentSheet: (sheetId: string | null) => void;
+
+  // Sheet navigation
+  nextSheet: () => void;
+  prevSheet: () => void;
+  getSheetIndex: () => { current: number; total: number } | null;
   setActiveTool: (tool: MeasurementTool) => void;
   setActiveCategory: (category: TakeoffCategory | null) => void;
   setIsDrawing: (drawing: boolean) => void;
@@ -165,6 +170,41 @@ export const useTakeoffStore = create<TakeoffState>((set, get) => ({
   setProject: (project) => set({ project }),
 
   setCurrentSheet: (sheetId) => set({ currentSheetId: sheetId }),
+
+  nextSheet: () => {
+    const { project, currentSheetId } = get();
+    if (!project || !currentSheetId) return;
+
+    const sheets = project.sheets;
+    const currentIndex = sheets.findIndex(s => s.id === currentSheetId);
+    if (currentIndex === -1) return;
+    if (currentIndex < sheets.length - 1) {
+      set({ currentSheetId: sheets[currentIndex + 1].id });
+    }
+  },
+
+  prevSheet: () => {
+    const { project, currentSheetId } = get();
+    if (!project || !currentSheetId) return;
+
+    const sheets = project.sheets;
+    const currentIndex = sheets.findIndex(s => s.id === currentSheetId);
+    if (currentIndex === -1) return;
+    if (currentIndex > 0) {
+      set({ currentSheetId: sheets[currentIndex - 1].id });
+    }
+  },
+
+  getSheetIndex: () => {
+    const { project, currentSheetId } = get();
+    if (!project || !currentSheetId) return null;
+
+    const sheets = project.sheets;
+    const currentIndex = sheets.findIndex(s => s.id === currentSheetId);
+    if (currentIndex === -1) return null;
+
+    return { current: currentIndex + 1, total: sheets.length };
+  },
 
   setActiveTool: (tool) => set({ activeTool: tool, isDrawing: false }),
 

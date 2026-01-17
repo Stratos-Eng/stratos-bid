@@ -8,6 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import uuid
+import base64
+import tempfile
+import os
+import fitz  # PyMuPDF
 
 app = FastAPI(
     title="Vector Extractor",
@@ -17,7 +21,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],  # Allow all origins for API access
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -26,6 +30,90 @@ app.add_middleware(
 # In-memory job status (replace with Redis in production)
 jobs: dict[str, dict] = {}
 
+
+# === Synchronous extraction (matches Next.js API contract) ===
+
+class SyncExtractionRequest(BaseModel):
+    """Request format expected by Next.js /api/takeoff/vectors endpoint."""
+    pdfData: str  # Base64 encoded PDF
+    pageNum: int  # 1-indexed page number
+    scale: float = 1.5
+
+
+class SnapPointResponse(BaseModel):
+    type: str  # 'endpoint' | 'midpoint' | 'intersection'
+    coords: tuple[float, float]
+
+
+class LineSegmentResponse(BaseModel):
+    start: tuple[float, float]
+    end: tuple[float, float]
+
+
+class SyncExtractionResponse(BaseModel):
+    """Response format expected by Next.js."""
+    success: bool
+    lines: list[dict] = []
+    snapPoints: list[dict] = []
+    rawPathCount: int = 0
+    cleanedPathCount: int = 0
+    quality: str = "none"
+    error: Optional[str] = None
+
+
+@app.post("/", response_model=SyncExtractionResponse)
+async def extract_sync(request: SyncExtractionRequest):
+    """
+    Synchronous vector extraction - matches Next.js API contract.
+
+    This is the primary endpoint called by /api/takeoff/vectors.
+    Accepts base64 PDF data and returns vectors immediately.
+    """
+    from .extractor import extract_page_vectors
+
+    try:
+        # Decode base64 PDF data
+        try:
+            pdf_bytes = base64.b64decode(request.pdfData)
+        except Exception as e:
+            return SyncExtractionResponse(
+                success=False,
+                error=f"Invalid base64 PDF data: {str(e)}"
+            )
+
+        # Write to temp file (PyMuPDF needs a file path)
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(pdf_bytes)
+            tmp_path = tmp.name
+
+        try:
+            # Extract vectors
+            result = extract_page_vectors(
+                pdf_path=tmp_path,
+                page_number=request.pageNum - 1,  # Convert to 0-indexed
+                dpi=request.scale * 72,  # Convert scale to DPI
+            )
+
+            return SyncExtractionResponse(
+                success=True,
+                lines=result["lines"],
+                snapPoints=result["snap_points"],
+                rawPathCount=result["stats"]["raw_count"],
+                cleanedPathCount=result["stats"]["cleaned_count"],
+                quality=result["quality"],
+            )
+        finally:
+            # Clean up temp file
+            os.unlink(tmp_path)
+
+    except Exception as e:
+        return SyncExtractionResponse(
+            success=False,
+            error=str(e)
+        )
+
+
+# === Async extraction (for future use) ===
 
 class ExtractionRequest(BaseModel):
     document_id: str
@@ -44,6 +132,96 @@ class ExtractionStatus(BaseModel):
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "vector-extractor"}
+
+
+# === Page Rendering Endpoint ===
+
+class RenderRequest(BaseModel):
+    """Request format expected by Next.js /api/takeoff/render endpoint."""
+    pdfData: str  # Base64 encoded PDF
+    pageNum: int  # 1-indexed page number
+    scale: float = 1.5
+    returnBase64: bool = True
+
+
+class RenderResponse(BaseModel):
+    """Response format expected by Next.js."""
+    success: bool
+    image: Optional[str] = None  # Base64 encoded PNG
+    width: Optional[int] = None
+    height: Optional[int] = None
+    error: Optional[str] = None
+
+
+@app.post("/render", response_model=RenderResponse)
+async def render_page(request: RenderRequest):
+    """
+    Render a PDF page to a PNG image using PyMuPDF.
+
+    This is the endpoint called by /api/takeoff/render.
+    Returns a base64-encoded PNG image.
+    """
+    try:
+        # Decode base64 PDF data
+        try:
+            pdf_bytes = base64.b64decode(request.pdfData)
+        except Exception as e:
+            return RenderResponse(
+                success=False,
+                error=f"Invalid base64 PDF data: {str(e)}"
+            )
+
+        # Write to temp file (PyMuPDF needs a file path)
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(pdf_bytes)
+            tmp_path = tmp.name
+
+        try:
+            # Open PDF
+            doc = fitz.open(tmp_path)
+
+            # Validate page number (1-indexed from API, 0-indexed internally)
+            page_index = request.pageNum - 1
+            if page_index < 0 or page_index >= len(doc):
+                return RenderResponse(
+                    success=False,
+                    error=f"Invalid page number. Document has {len(doc)} pages."
+                )
+
+            page = doc[page_index]
+
+            # Calculate matrix for scaling (PDF default is 72 DPI)
+            # scale=1.5 means 1.5x the default, so 108 DPI
+            mat = fitz.Matrix(request.scale, request.scale)
+
+            # Render page to pixmap (PNG)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+
+            # Convert to PNG bytes
+            png_bytes = pix.tobytes("png")
+
+            # Encode as base64
+            image_b64 = base64.b64encode(png_bytes).decode("utf-8")
+
+            result = RenderResponse(
+                success=True,
+                image=image_b64,
+                width=pix.width,
+                height=pix.height,
+            )
+
+            doc.close()
+            return result
+
+        finally:
+            # Clean up temp file
+            os.unlink(tmp_path)
+
+    except Exception as e:
+        return RenderResponse(
+            success=False,
+            error=str(e)
+        )
 
 
 @app.post("/extract", response_model=ExtractionStatus)

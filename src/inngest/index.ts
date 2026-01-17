@@ -1,2 +1,2 @@
 export { inngest } from './client';
-export { functions, dailySync, syncUser, syncConnection } from './functions';
+export { functions, dailySync, syncUser, syncConnection, cleanupUploadSessions } from './functions';

@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { useChunkedUpload, type FileToUpload } from '@/hooks/use-chunked-upload';
+import { UploadProgress } from '@/components/upload/upload-progress';
 
 interface Project {
   id: string;
@@ -14,10 +16,6 @@ interface Project {
 interface FileWithPath extends File {
   relativePath?: string;
 }
-
-// Max file size: 100MB (construction drawings can be large)
-const MAX_FILE_SIZE_MB = 100;
-const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
 // Helper to recursively get files from a directory entry
 async function getFilesFromEntry(entry: FileSystemEntry, path = ''): Promise<FileWithPath[]> {
@@ -65,11 +63,33 @@ export default function TakeoffProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState('');
-  const [uploadDetails, setUploadDetails] = useState<{ current: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+
+  // Chunked upload hook - projectId is set when project is created
+  const {
+    uploads,
+    isUploading,
+    uploadFiles,
+    pause,
+    resume,
+    cancel,
+    pauseAll,
+    resumeAll,
+    cancelAll,
+    reset,
+  } = useChunkedUpload({
+    projectId: currentProjectId || '',
+    onAllComplete: (results) => {
+      if (currentProjectId && results.length > 0) {
+        router.push(`/takeoff/${currentProjectId}`);
+      }
+    },
+    onError: (filename, errorMsg) => {
+      console.error(`Upload failed for ${filename}:`, errorMsg);
+    },
+  });
 
   // Fetch projects on mount
   useEffect(() => {
@@ -133,9 +153,9 @@ export default function TakeoffProjectsPage() {
     return groups;
   };
 
-  // Handle file drop - create project and upload
+  // Handle file drop - create project and upload with chunking
   const handleFileDrop = useCallback(async (files: FileWithPath[]) => {
-    // Filter for PDFs
+    // Filter for PDFs only
     const pdfFiles = files.filter(
       (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
     );
@@ -146,27 +166,11 @@ export default function TakeoffProjectsPage() {
       return;
     }
 
-    // Check file sizes
-    const oversized = pdfFiles.filter((f) => f.size > MAX_FILE_SIZE_BYTES);
-    if (oversized.length > 0) {
-      setError(
-        `${oversized.length} file(s) exceed ${MAX_FILE_SIZE_MB}MB limit and will be skipped`
-      );
-      setTimeout(() => setError(null), 5000);
-      // Continue with valid files
-      const validFiles = pdfFiles.filter((f) => f.size <= MAX_FILE_SIZE_BYTES);
-      if (validFiles.length === 0) return;
-    }
-
-    const validFiles = pdfFiles.filter((f) => f.size <= MAX_FILE_SIZE_BYTES);
-
-    setUploading(true);
     setError(null);
 
     try {
       // 1. Create project with derived name
-      const projectName = getProjectName(validFiles);
-      setUploadProgress('Creating project...');
+      const projectName = getProjectName(pdfFiles);
 
       const projectRes = await fetch('/api/takeoff/projects', {
         method: 'POST',
@@ -179,51 +183,29 @@ export default function TakeoffProjectsPage() {
       }
 
       const { project } = await projectRes.json();
+      setCurrentProjectId(project.id);
 
-      // 2. Organize and upload PDFs
-      const organized = organizeFiles(validFiles);
-      let uploadedCount = 0;
-      const totalFiles = validFiles.length;
+      // 2. Organize files and prepare for chunked upload
+      const organized = organizeFiles(pdfFiles);
+      const filesToUpload: FileToUpload[] = [];
 
       for (const [groupName, groupFiles] of organized) {
         for (const file of groupFiles) {
-          uploadedCount++;
-          setUploadProgress(`Uploading ${file.name}`);
-          setUploadDetails({ current: uploadedCount, total: totalFiles });
-
-          const formData = new FormData();
-          formData.append('file', file);
-          formData.append('projectId', project.id);
-          // Pass folder/group info for sheet naming
-          if (groupName !== 'Drawings') {
-            formData.append('folderName', groupName);
-          }
-          if (file.relativePath) {
-            formData.append('relativePath', file.relativePath);
-          }
-
-          const uploadRes = await fetch('/api/takeoff/upload', {
-            method: 'POST',
-            body: formData,
+          filesToUpload.push({
+            file,
+            folderName: groupName !== 'Drawings' ? groupName : undefined,
+            relativePath: file.relativePath,
           });
-
-          if (!uploadRes.ok) {
-            const err = await uploadRes.json();
-            console.error(`Failed to upload ${file.name}:`, err);
-            // Continue with other files instead of failing completely
-          }
         }
       }
 
-      // 3. Redirect to project
-      setUploadProgress('Opening project...');
-      router.push(`/takeoff/${project.id}`);
+      // 3. Start chunked uploads - the hook handles progress and completion
+      await uploadFiles(filesToUpload);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed');
-      setUploading(false);
-      setUploadDetails(null);
+      reset();
     }
-  }, [router]);
+  }, [uploadFiles, reset]);
 
   // Drag and drop handlers
   const handleDragOver = (e: React.DragEvent) => {
@@ -329,35 +311,34 @@ export default function TakeoffProjectsPage() {
         </div>
       )}
 
-      {/* Upload progress overlay */}
-      {uploading && (
-        <div className="fixed inset-0 bg-charcoal/50 z-50 flex items-center justify-center">
-          <div className="bg-card rounded-xl p-8 text-center shadow-2xl border border-border min-w-80">
-            <div className="animate-spin w-12 h-12 border-4 border-primary border-t-transparent rounded-full mx-auto mb-4" />
-            <p className="text-foreground font-medium mb-2">{uploadProgress}</p>
-            {uploadDetails && (
-              <>
-                <div className="w-full bg-secondary rounded-full h-2 mb-2">
-                  <div
-                    className="bg-primary h-2 rounded-full transition-all duration-300"
-                    style={{
-                      width: `${(uploadDetails.current / uploadDetails.total) * 100}%`,
-                    }}
-                  />
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  {uploadDetails.current} of {uploadDetails.total} files
-                </p>
-              </>
-            )}
-          </div>
-        </div>
+      {/* Chunked upload progress overlay */}
+      {isUploading && uploads.length > 0 && (
+        <UploadProgress
+          uploads={uploads}
+          onPause={pause}
+          onResume={resume}
+          onCancel={cancel}
+          onPauseAll={pauseAll}
+          onResumeAll={resumeAll}
+          onCancelAll={cancelAll}
+        />
       )}
 
       {/* Error toast */}
       {error && (
-        <div className="fixed bottom-4 right-4 z-50 bg-destructive text-white px-4 py-3 rounded-lg shadow-lg animate-slide-up">
-          {error}
+        <div className="fixed bottom-4 right-4 z-50 bg-destructive text-white px-4 py-3 rounded-lg shadow-lg animate-slide-up max-w-md">
+          <div className="flex items-start gap-3">
+            <span className="text-lg">⚠️</span>
+            <div className="flex-1">
+              <p className="font-medium">{error}</p>
+            </div>
+            <button
+              onClick={() => setError(null)}
+              className="text-white/70 hover:text-white"
+            >
+              ✕
+            </button>
+          </div>
         </div>
       )}
 
@@ -424,7 +405,7 @@ export default function TakeoffProjectsPage() {
               or drag files/folders anywhere on this page
             </p>
             <p className="text-xs text-muted-foreground/70 mt-2">
-              Supports folders with multiple PDFs • Max {MAX_FILE_SIZE_MB}MB per file
+              Supports folders with multiple PDFs • Large files are automatically chunked
             </p>
           </div>
 

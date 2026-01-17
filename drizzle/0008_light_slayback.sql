@@ -1,0 +1,2 @@
+ALTER TABLE "upload_sessions" ADD COLUMN "bid_id" uuid;--> statement-breakpoint
+ALTER TABLE "upload_sessions" ADD CONSTRAINT "upload_sessions_bid_id_bids_id_fk" FOREIGN KEY ("bid_id") REFERENCES "public"."bids"("id") ON DELETE cascade ON UPDATE no action;

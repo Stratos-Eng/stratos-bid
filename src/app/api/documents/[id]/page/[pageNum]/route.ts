@@ -5,9 +5,13 @@ import { documents, bids } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import path from 'path';
 import fs from 'fs';
-// Use legacy build for Node.js environment
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { createCanvas, type Canvas } from 'canvas';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { randomUUID } from 'crypto';
+
+const execFileAsync = promisify(execFile);
+const unlinkAsync = promisify(fs.unlink);
+const readFileAsync = promisify(fs.readFile);
 
 // GET /api/documents/[id]/page/[pageNum] - Render a specific PDF page as an image
 export async function GET(
@@ -30,9 +34,12 @@ export async function GET(
       );
     }
 
-    // Get scale from query params
+    // Get scale from query params (1-3, default 1.5)
     const { searchParams } = new URL(request.url);
-    const scale = parseFloat(searchParams.get('scale') || '1.5');
+    const scale = Math.min(3, Math.max(0.5, parseFloat(searchParams.get('scale') || '1.5')));
+
+    // Map scale to DPI (72 DPI is baseline, scale 1 = 72 DPI)
+    const dpi = Math.round(72 * scale);
 
     // Get document and verify ownership through bid
     const [doc] = await db
@@ -62,13 +69,14 @@ export async function GET(
     // Resolve the file path
     let resolvedPath = filePath;
     if (!path.isAbsolute(filePath)) {
-      resolvedPath = path.join(process.cwd(), 'uploads', filePath);
+      resolvedPath = path.join(process.cwd(), filePath);
     }
 
-    // Normalize and security check
+    // Normalize and security check - allow files in uploads/ or docs/ directories
     const normalizedPath = path.normalize(resolvedPath);
     const uploadsDir = path.normalize(path.join(process.cwd(), 'uploads'));
-    if (!normalizedPath.startsWith(uploadsDir)) {
+    const docsDir = path.normalize(path.join(process.cwd(), 'docs'));
+    if (!normalizedPath.startsWith(uploadsDir) && !normalizedPath.startsWith(docsDir)) {
       return NextResponse.json({ error: 'Invalid file path' }, { status: 400 });
     }
 
@@ -79,46 +87,46 @@ export async function GET(
       );
     }
 
-    // Load the PDF document
-    const data = new Uint8Array(fs.readFileSync(normalizedPath));
-    const loadingTask = pdfjsLib.getDocument({ data });
-    const pdfDocument = await loadingTask.promise;
+    // Use pdftoppm to render the page (much more reliable than pdf.js with node-canvas)
+    // Note: pdftoppm doesn't support stdout piping on macOS, so we use temp files
+    const tempPrefix = path.join('/tmp', `pdf-page-${randomUUID()}`);
+    const tempFile = `${tempPrefix}.png`;
 
-    // Check page number
-    if (pageNum > pdfDocument.numPages) {
+    try {
+      await execFileAsync('pdftoppm', [
+        '-f', String(pageNum),
+        '-l', String(pageNum),
+        '-png',
+        '-r', String(dpi),
+        '-singlefile',
+        normalizedPath,
+        tempPrefix
+      ], {
+        timeout: 30000 // 30 second timeout
+      });
+
+      // Read the generated file
+      const imageBuffer = await readFileAsync(tempFile);
+
+      // Clean up temp file (don't await, do it async)
+      unlinkAsync(tempFile).catch(() => {});
+
+      // Return the image
+      return new NextResponse(imageBuffer, {
+        headers: {
+          'Content-Type': 'image/png',
+          'Cache-Control': 'public, max-age=86400', // Cache for 1 day
+        },
+      });
+    } catch (renderError) {
+      // Clean up temp file on error
+      unlinkAsync(tempFile).catch(() => {});
+      console.error('pdftoppm render error:', renderError);
       return NextResponse.json(
-        { error: `Invalid page number. Document has ${pdfDocument.numPages} pages.` },
-        { status: 400 }
+        { error: 'Failed to render PDF page' },
+        { status: 500 }
       );
     }
-
-    // Get the page
-    const page = await pdfDocument.getPage(pageNum);
-    const viewport = page.getViewport({ scale });
-
-    // Create canvas using node-canvas
-    const canvas: Canvas = createCanvas(viewport.width, viewport.height);
-    const context = canvas.getContext('2d');
-
-    // Render the page to the canvas
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const renderContext: any = {
-      canvasContext: context,
-      viewport,
-    };
-
-    await page.render(renderContext).promise;
-
-    // Convert canvas to PNG buffer
-    const pngBuffer = canvas.toBuffer('image/png');
-
-    // Return the image
-    return new NextResponse(new Uint8Array(pngBuffer), {
-      headers: {
-        'Content-Type': 'image/png',
-        'Cache-Control': 'public, max-age=86400', // Cache for 1 day
-      },
-    });
   } catch (error) {
     console.error('Document page render error:', error);
     return NextResponse.json(

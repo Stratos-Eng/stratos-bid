@@ -40,9 +40,9 @@ async function resync() {
     console.log(`     URL: ${bid.sourceUrl || 'NONE'}\n`);
   }
 
-  // 5. Save (without deep fetch for speed)
+  // 5. Save bids
   console.log('5. Saving bids...');
-  const savedCount = await scanner.saveBids(extractedBids, false);
+  const savedCount = await scanner.saveBids(extractedBids);
   console.log(`   Saved ${savedCount} bids`);
 
   // 6. Verify

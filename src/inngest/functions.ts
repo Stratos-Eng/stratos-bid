@@ -1,10 +1,12 @@
 import { inngest } from './client';
 import { db } from '@/db';
-import { users, connections, syncJobs, documents, userSettings } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { users, connections, syncJobs, documents, userSettings, uploadSessions } from '@/db/schema';
+import { eq, lt, or } from 'drizzle-orm';
 import { createScraper, createGmailScanner, usesBrowserScraping, type Platform } from '@/scrapers';
 import { extractDocument } from '@/extraction';
 import { TradeCode } from '@/lib/trade-definitions';
+import { generateThumbnails } from '@/lib/thumbnail-generator';
+import { rm } from 'fs/promises';
 
 // Daily sync - runs for all users every day at 6 AM
 export const dailySync = inngest.createFunction(
@@ -160,7 +162,7 @@ async function syncConnectionInternal(
   }
 
   if (usesBrowserScraping(platform) && platform !== 'planetbids') {
-    const scraper = createScraper(platform as 'planhub' | 'buildingconnected', {
+    const scraper = createScraper(platform as 'buildingconnected', {
       connectionId: connection.id,
       userId,
     });
@@ -180,6 +182,97 @@ async function syncConnectionInternal(
 
   return { bidsFound: 0, platform };
 }
+
+// Signage extraction - triggered after document download or manually
+// Uses the orchestrator which SAVES items to the database
+export const extractSignageJob = inngest.createFunction(
+  {
+    id: 'extract-signage',
+    name: 'Extract Signage Line Items',
+    retries: 2,
+  },
+  { event: 'extraction/signage' },
+  async ({ event, step }) => {
+    const { documentId, userId } = event.data;
+
+    // Run extraction via orchestrator - this SAVES items to DB
+    const result = await step.run('extract-signage', async () => {
+      return await extractDocument(documentId, userId, {
+        trades: ['division_10'], // Signage trade
+        useVision: false,
+        maxPagesForAI: 25,
+        concurrency: 3,
+      });
+    });
+
+    // Extract legend/room info from plugin results if available
+    const signagePlugin = result.pluginResults?.find(p => p.pluginId === 'signage-division-10');
+    const legendMetadata = signagePlugin?.preProcess?.metadata?.legend as { found?: boolean } | undefined;
+    const roomCountsMetadata = signagePlugin?.preProcess?.metadata?.roomCounts as { totalRooms?: number } | undefined;
+    const legendFound = legendMetadata?.found ?? false;
+    const roomsFound = roomCountsMetadata?.totalRooms ?? 0;
+
+    return {
+      documentId,
+      jobId: result.jobId,
+      itemsExtracted: result.totalItemsExtracted,
+      legendFound,
+      roomsFound,
+      totalTimeMs: result.totalTimeMs,
+    };
+  }
+);
+
+// Generate thumbnails for all pages of a document
+export const generateThumbnailsJob = inngest.createFunction(
+  {
+    id: 'generate-thumbnails',
+    name: 'Generate Document Thumbnails',
+    retries: 1,
+  },
+  { event: 'document/generate-thumbnails' },
+  async ({ event, step }) => {
+    const { documentId } = event.data;
+
+    // Get document info
+    const [doc] = await step.run('get-document', async () => {
+      return await db
+        .select()
+        .from(documents)
+        .where(eq(documents.id, documentId))
+        .limit(1);
+    });
+
+    if (!doc || !doc.storagePath) {
+      throw new Error(`Document ${documentId} not found or has no storage path`);
+    }
+
+    // Generate thumbnails
+    const result = await step.run('generate-thumbnails', async () => {
+      return await generateThumbnails({
+        documentId,
+        storagePath: doc.storagePath!,
+      });
+    });
+
+    // Update document with thumbnail info
+    await step.run('update-document', async () => {
+      await db
+        .update(documents)
+        .set({
+          thumbnailsGenerated: true,
+          updatedAt: new Date(),
+        })
+        .where(eq(documents.id, documentId));
+    });
+
+    return {
+      documentId,
+      pageCount: result.pageCount,
+      thumbnailsGenerated: result.thumbnailsGenerated,
+    };
+  }
+);
 
 // Document extraction - triggered after document download or manually
 export const extractDocumentJob = inngest.createFunction(
@@ -215,7 +308,7 @@ export const extractDocumentJob = inngest.createFunction(
     return {
       documentId,
       jobId: result.jobId,
-      itemsExtracted: result.itemsExtracted,
+      itemsExtracted: result.totalItemsExtracted,
     };
   }
 );
@@ -287,13 +380,104 @@ export const autoExtractOnDownload = inngest.createFunction(
       return { skipped: true, reason: 'auto_extract_disabled' };
     }
 
-    // Queue extraction
-    await step.sendEvent('queue-extraction', {
-      name: 'extraction/document',
-      data: { documentId, userId },
+    // Get user's trade preferences to determine which extractions to run
+    const trades = await step.run('get-user-trades', async () => {
+      const [settings] = await db
+        .select()
+        .from(userSettings)
+        .where(eq(userSettings.userId, userId))
+        .limit(1);
+
+      return (settings?.trades as TradeCode[]) || ['division_08', 'division_10'];
     });
 
-    return { queued: true, documentId };
+    const queued: string[] = [];
+
+    // Queue signage extraction if division_10 is in user's trades
+    if (trades.includes('division_10')) {
+      await step.sendEvent('queue-signage-extraction', {
+        name: 'extraction/signage',
+        data: { documentId, userId },
+      });
+      queued.push('signage');
+    }
+
+    // Queue general extraction for other trades
+    const otherTrades = trades.filter(t => t !== 'division_10');
+    if (otherTrades.length > 0) {
+      await step.sendEvent('queue-general-extraction', {
+        name: 'extraction/document',
+        data: { documentId, userId, trades: otherTrades },
+      });
+      queued.push('general');
+    }
+
+    // Always queue thumbnail generation
+    await step.sendEvent('queue-thumbnails', {
+      name: 'document/generate-thumbnails',
+      data: { documentId },
+    });
+    queued.push('thumbnails');
+
+    return { queued: true, documentId, extractionTypes: queued };
+  }
+);
+
+// Cleanup stale upload sessions - runs every 6 hours
+export const cleanupUploadSessions = inngest.createFunction(
+  { id: 'cleanup-upload-sessions', name: 'Cleanup Stale Upload Sessions' },
+  { cron: '0 */6 * * *' },
+  async ({ step }) => {
+    const now = new Date();
+
+    // Find expired or stale sessions
+    const staleSessions = await step.run('get-stale-sessions', async () => {
+      return await db
+        .select()
+        .from(uploadSessions)
+        .where(
+          or(
+            // Expired sessions
+            lt(uploadSessions.expiresAt, now),
+            // Failed sessions older than 1 hour
+            lt(uploadSessions.updatedAt, new Date(now.getTime() - 60 * 60 * 1000))
+          )
+        );
+    });
+
+    let cleanedCount = 0;
+    let errorCount = 0;
+
+    for (const session of staleSessions) {
+      // Skip completed sessions with a finalPath (these are valid)
+      if (session.status === 'completed' && session.finalPath) {
+        continue;
+      }
+
+      // Clean up temp directory
+      await step.run(`cleanup-temp-${session.id}`, async () => {
+        try {
+          if (session.tempDir) {
+            await rm(session.tempDir, { recursive: true, force: true });
+          }
+          cleanedCount++;
+        } catch (err) {
+          console.error(`Failed to cleanup temp dir for session ${session.id}:`, err);
+          errorCount++;
+        }
+      });
+
+      // Delete session record
+      await step.run(`delete-session-${session.id}`, async () => {
+        await db.delete(uploadSessions).where(eq(uploadSessions.id, session.id));
+      });
+    }
+
+    return {
+      sessionsFound: staleSessions.length,
+      cleanedCount,
+      errorCount,
+    };
   }
 );
 
@@ -302,7 +486,10 @@ export const functions = [
   dailySync,
   syncUser,
   syncConnection,
+  extractSignageJob,
+  generateThumbnailsJob,
   extractDocumentJob,
   extractBidDocuments,
   autoExtractOnDownload,
+  cleanupUploadSessions,
 ];
