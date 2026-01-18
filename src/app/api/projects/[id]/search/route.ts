@@ -53,15 +53,16 @@ export async function GET(
       return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
 
-    // Get indexing status
+    // Get indexing status (separate queries to avoid join multiplication)
     const indexingStatus = await db.execute(sql`
       SELECT
-        COALESCE(SUM(d.page_count), 0)::int as total_pages,
-        COUNT(DISTINCT pt.id)::int as indexed_pages,
-        COUNT(DISTINCT CASE WHEN pt.needs_ocr THEN pt.id END)::int as pages_needing_ocr
-      FROM documents d
-      LEFT JOIN page_text pt ON pt.document_id = d.id
-      WHERE d.bid_id = ${projectId}
+        (SELECT COALESCE(SUM(page_count), 0)::int FROM documents WHERE bid_id = ${projectId}) as total_pages,
+        (SELECT COUNT(*)::int FROM page_text pt
+         JOIN documents d ON d.id = pt.document_id
+         WHERE d.bid_id = ${projectId}) as indexed_pages,
+        (SELECT COUNT(*)::int FROM page_text pt
+         JOIN documents d ON d.id = pt.document_id
+         WHERE d.bid_id = ${projectId} AND pt.needs_ocr = true) as pages_needing_ocr
     `);
 
     const statusRow = indexingStatus.rows[0] as {

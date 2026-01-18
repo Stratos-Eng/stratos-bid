@@ -50,13 +50,19 @@ export default function ProjectPage() {
     toggleSearch,
   } = useProjectStore()
 
-  // Fetch project data
+  // Fetch project data - poll faster when extraction is in progress
   const { data, error, mutate } = useSWR(`/api/projects/${projectId}`, fetcher, {
-    refreshInterval: 5000, // Poll while extraction may be running
+    refreshInterval: (latestData) => {
+      if (!latestData?.documents) return 0
+      const statuses = latestData.documents.map((d: any) => d.extractionStatus || "not_started")
+      const isExtracting = statuses.some((s: string) => s === "extracting" || s === "queued")
+      return isExtracting ? 2000 : 0 // Poll every 2s during extraction, stop when done
+    },
   })
 
   // Local UI state
   const [filmstripCollapsed, setFilmstripCollapsed] = useState(false)
+  const [highlightTerms, setHighlightTerms] = useState<string[]>([])
 
   // Load data into store
   useEffect(() => {
@@ -274,12 +280,14 @@ export default function ProjectPage() {
   const selectedItem = items.find((i) => i.id === selectedItemId)
 
   // Compute overall extraction status
+  // "queued" means waiting for background job - only show "extracting" if actively processing
   const extractionStatus = (() => {
     if (documents.length === 0) return "no_documents"
     const statuses = documents.map((d: any) => d.extractionStatus || "not_started")
     if (statuses.every((s: string) => s === "completed")) return "completed"
-    if (statuses.some((s: string) => s === "extracting" || s === "queued")) return "extracting"
+    if (statuses.some((s: string) => s === "extracting")) return "extracting"
     if (statuses.some((s: string) => s === "failed")) return "failed"
+    if (statuses.some((s: string) => s === "queued")) return "queued"
     return "not_started"
   })()
 
@@ -305,6 +313,20 @@ export default function ProjectPage() {
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />
               <span>Extracting items...</span>
+            </div>
+          )}
+          {extractionStatus === "queued" && (
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 bg-amber-500 rounded-full" />
+              <span className="text-sm text-amber-600">Queued</span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExtract}
+                disabled={extracting}
+              >
+                {extracting ? "Starting..." : "Retry"}
+              </Button>
             </div>
           )}
           {extractionStatus === "failed" && (
@@ -416,9 +438,10 @@ export default function ProjectPage() {
             projectId={projectId}
             isOpen={isSearchOpen}
             onClose={() => setSearchOpen(false)}
-            onSelectResult={(docId, pageNum) => {
+            onSelectResult={(docId, pageNum, terms) => {
               setCurrentDocument(docId)
               setCurrentPage(pageNum)
+              setHighlightTerms(terms)
             }}
           />
         )}
@@ -441,7 +464,7 @@ export default function ProjectPage() {
               </div>
             </div>
           ) : (
-            <div className="relative">
+            <div className="relative h-full">
               <button
                 onClick={() => setFilmstripCollapsed(true)}
                 className="absolute top-2 right-2 z-10 p-1 rounded hover:bg-muted transition-colors"
@@ -458,6 +481,7 @@ export default function ProjectPage() {
                 onSelectPage={(docId, page) => {
                   setCurrentDocument(docId)
                   setCurrentPage(page)
+                  setHighlightTerms([]) // Clear highlights on manual navigation
                 }}
                 items={items}
               />
@@ -482,6 +506,8 @@ export default function ProjectPage() {
                   { x: coords.pdfX, y: coords.pdfY }
                 )
               }}
+              extractionStatus={extractionStatus}
+              highlightTerms={highlightTerms}
             />
 
             {/* Quick Add Form Overlay */}

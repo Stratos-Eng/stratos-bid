@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, uuid, real, jsonb, integer, boolean, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, uuid, real, jsonb, integer, boolean, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 // NextAuth requires specific table names: user, account, session, verificationToken
 export const users = pgTable('user', {
@@ -126,7 +126,7 @@ export const pageText = pgTable('page_text', {
   needsOcr: boolean('needs_ocr').default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
-  documentPageIdx: index('page_text_document_page_idx').on(table.documentId, table.pageNumber),
+  documentPageUnique: uniqueIndex('page_text_document_page_unique').on(table.documentId, table.pageNumber),
   needsOcrIdx: index('page_text_needs_ocr_idx').on(table.needsOcr),
 }));
 

@@ -13,7 +13,9 @@ import { defaults as defaultInteractions } from "ol/interaction"
 import Feature from "ol/Feature"
 import { Point } from "ol/geom"
 import { Style, Circle as CircleStyle, Fill, Stroke, Text } from "ol/style"
+import { Polygon } from "ol/geom"
 import "ol/ol.css"
+import { findMatchingPositions, pdfToOLCoords, type TextPosition } from "@/lib/highlight-matcher"
 
 import type { SignageItem } from "@/lib/stores/project-store"
 import { cn } from "@/lib/utils"
@@ -34,6 +36,8 @@ interface ProjectViewerProps {
   onSelectItem: (id: string | null) => void
   quickAddMode: boolean
   onQuickAddClick: (coords: QuickAddCoords) => void
+  extractionStatus?: "not_started" | "extracting" | "queued" | "completed" | "failed" | "no_documents"
+  highlightTerms?: string[]
 }
 
 export function ProjectViewer({
@@ -45,11 +49,14 @@ export function ProjectViewer({
   onSelectItem,
   quickAddMode,
   onQuickAddClick,
+  extractionStatus,
+  highlightTerms = [],
 }: ProjectViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<Map | null>(null)
   const imageLayerRef = useRef<ImageLayer<Static> | null>(null)
   const vectorSourceRef = useRef<VectorSource | null>(null)
+  const highlightSourceRef = useRef<VectorSource | null>(null)
   const [zoom, setZoom] = useState(100)
   const [pageSize, setPageSize] = useState({ width: 612, height: 792 })
   const [loading, setLoading] = useState(true)
@@ -123,8 +130,22 @@ export function ProjectViewer({
     const vectorSource = new VectorSource()
     vectorSourceRef.current = vectorSource
 
+    // Highlight layer for search results (below marker layer)
+    const highlightSource = new VectorSource()
+    highlightSourceRef.current = highlightSource
+
+    const highlightLayer = new VectorLayer({
+      source: highlightSource,
+      style: new Style({
+        fill: new Fill({ color: "rgba(255, 235, 59, 0.5)" }), // Yellow with transparency
+        stroke: new Stroke({ color: "rgba(255, 193, 7, 0.8)", width: 1 }),
+      }),
+      zIndex: 1,
+    })
+
     const vectorLayer = new VectorLayer({
       source: vectorSource,
+      zIndex: 2, // Above highlight layer
       style: (feature) => {
         const isSelected = feature.get("id") === selectedItemIdRef.current
         const status = feature.get("status")
@@ -161,7 +182,7 @@ export function ProjectViewer({
 
     const map = new Map({
       target: containerRef.current,
-      layers: [vectorLayer],
+      layers: [highlightLayer, vectorLayer],
       view: new View({
         projection,
         center: [pageSize.width, pageSize.height],
@@ -394,6 +415,77 @@ export function ProjectViewer({
     vectorSourceRef.current?.changed()
   }, [selectedItemId])
 
+  // Clear highlights when document or page changes
+  useEffect(() => {
+    if (highlightSourceRef.current) {
+      highlightSourceRef.current.clear()
+    }
+  }, [documentId, pageNumber])
+
+  // Update highlight layer when search terms change
+  useEffect(() => {
+    if (!highlightSourceRef.current) return
+
+    // Clear existing highlights
+    highlightSourceRef.current.clear()
+
+    // Skip if no search terms or no document
+    if (!highlightTerms.length || !documentId) return
+
+    const fetchAndHighlight = async () => {
+      try {
+        // Fetch text positions for this page
+        const res = await fetch(`/api/documents/${documentId}/page/${pageNumber}/text`)
+        if (!res.ok) return
+
+        const data = await res.json()
+        const textPositions: TextPosition[] = data.textPositions || []
+        const pdfPageHeight = data.pageHeight || 792
+        const pdfPageWidth = data.pageWidth || 612
+
+        // Check if dimensions match - if not, skip this render and wait for pageSize to update
+        if (Math.abs(pageSize.width - pdfPageWidth) > 1 || Math.abs(pageSize.height - pdfPageHeight) > 1) {
+          return
+        }
+
+        // Find matching positions
+        const matches = findMatchingPositions(textPositions, highlightTerms)
+
+        // Convert to OpenLayers coordinates and create features
+        const dpi = 150
+
+        for (const match of matches) {
+          const rect = pdfToOLCoords(
+            match.x,
+            match.y,
+            match.width,
+            match.height,
+            pdfPageHeight,
+            dpi
+          )
+
+          // Create polygon for highlight rectangle
+          // Rectangle extends UP from baseline (y) to (y + height)
+          const feature = new Feature({
+            geometry: new Polygon([[
+              [rect.x, rect.y],
+              [rect.x + rect.width, rect.y],
+              [rect.x + rect.width, rect.y + rect.height],
+              [rect.x, rect.y + rect.height],
+              [rect.x, rect.y],
+            ]]),
+          })
+
+          highlightSourceRef.current?.addFeature(feature)
+        }
+      } catch (err) {
+        console.error("Failed to fetch text positions:", err)
+      }
+    }
+
+    fetchAndHighlight()
+  }, [highlightTerms, documentId, pageNumber, pageSize])
+
   // Zoom controls
   const handleZoomIn = () => {
     if (!mapRef.current) return
@@ -446,6 +538,20 @@ export function ProjectViewer({
       {quickAddMode && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-primary text-primary-foreground px-3 py-1 rounded text-sm">
           Click on the page to add an item
+        </div>
+      )}
+
+      {/* Extraction in progress indicator - prominent pulsing banner */}
+      {extractionStatus === "extracting" && (
+        <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-20">
+          <div className="bg-blue-600 text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-3 animate-pulse">
+            <div className="flex gap-1">
+              <div className="w-2 h-2 bg-white rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+              <div className="w-2 h-2 bg-white rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+              <div className="w-2 h-2 bg-white rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+            </div>
+            <span className="font-medium">AI is extracting signage items...</span>
+          </div>
         </div>
       )}
 

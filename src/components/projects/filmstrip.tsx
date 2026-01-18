@@ -358,7 +358,7 @@ export function Filmstrip({
   }
 
   return (
-    <div className="w-32 border-r border-border bg-muted/30 flex flex-col">
+    <div className="w-32 h-full border-r border-border bg-muted/30 flex flex-col">
       <div className="px-2 py-2 border-b border-border">
         {documents.length > 1 ? (
           <DocumentSearchSelect
@@ -373,7 +373,7 @@ export function Filmstrip({
         )}
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">
         {documents.map((doc) => (
           <DocumentGroup
             key={doc.id}

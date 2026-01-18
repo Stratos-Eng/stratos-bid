@@ -72,6 +72,9 @@ export async function analyzePageText(
       ],
     });
 
+    // Log token usage
+    console.log(`[Claude] Page ${pageNumber} (text): ${response.usage.input_tokens} input, ${response.usage.output_tokens} output tokens`);
+
     const rawResponse =
       response.content[0].type === 'text' ? response.content[0].text : '';
     const items = parseExtractionResponse(rawResponse, tradeCode);
@@ -131,6 +134,9 @@ export async function analyzePageVision(
         },
       ],
     });
+
+    // Log token usage (vision includes image tokens)
+    console.log(`[Claude] Page ${pageNumber} (vision): ${response.usage.input_tokens} input, ${response.usage.output_tokens} output tokens`);
 
     const rawResponse =
       response.content[0].type === 'text' ? response.content[0].text : '';

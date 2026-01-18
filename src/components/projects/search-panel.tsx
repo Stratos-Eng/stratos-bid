@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react"
 import { cn } from "@/lib/utils"
+import { extractSearchTerms } from "@/lib/highlight-matcher"
 
 interface SearchResult {
   documentId: string
@@ -21,7 +22,7 @@ interface SearchPanelProps {
   projectId: string
   isOpen: boolean
   onClose: () => void
-  onSelectResult: (documentId: string, pageNumber: number) => void
+  onSelectResult: (documentId: string, pageNumber: number, searchTerms: string[]) => void
 }
 
 export function SearchPanel({
@@ -99,7 +100,8 @@ export function SearchPanel({
           e.preventDefault()
           if (results[activeIndex]) {
             const result = results[activeIndex]
-            onSelectResult(result.documentId, result.pageNumber)
+            const terms = extractSearchTerms(query)
+            onSelectResult(result.documentId, result.pageNumber, terms)
           }
           break
         case "Escape":
@@ -191,7 +193,7 @@ export function SearchPanel({
           <button
             key={`${result.documentId}-${result.pageNumber}`}
             data-index={index}
-            onClick={() => onSelectResult(result.documentId, result.pageNumber)}
+            onClick={() => onSelectResult(result.documentId, result.pageNumber, extractSearchTerms(query))}
             className={cn(
               "w-full text-left p-3 border-b border-border hover:bg-muted/50 transition-colors",
               index === activeIndex && "bg-muted"
