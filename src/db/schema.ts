@@ -1,4 +1,19 @@
-import { pgTable, text, timestamp, uuid, real, jsonb, integer, boolean, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, uuid, real, jsonb, integer, boolean, index, uniqueIndex, customType } from 'drizzle-orm/pg-core';
+
+// Custom type for pgvector
+const vector = customType<{ data: number[]; driverData: string }>({
+  dataType(config) {
+    const dimensions = (config as { dimensions?: number })?.dimensions ?? 512;
+    return `vector(${dimensions})`;
+  },
+  toDriver(value: number[]): string {
+    return `[${value.join(',')}]`;
+  },
+  fromDriver(value: string): number[] {
+    // Parse "[0.1,0.2,...]" format
+    return JSON.parse(value.replace(/^\[/, '[').replace(/\]$/, ']'));
+  },
+});
 
 // NextAuth requires specific table names: user, account, session, verificationToken
 export const users = pgTable('user', {
@@ -328,6 +343,33 @@ export const sheetVectors = pgTable('sheet_vectors', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+// Symbol regions for visual similarity search
+export const symbolRegions = pgTable('symbol_regions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  documentId: uuid('document_id').notNull().references(() => documents.id, { onDelete: 'cascade' }),
+  pageNumber: integer('page_number').notNull(),
+
+  // Region coordinates (normalized 0-1)
+  x: real('x').notNull(),
+  y: real('y').notNull(),
+  width: real('width').notNull(),
+  height: real('height').notNull(),
+
+  // CLIP embedding for visual similarity (512 dimensions)
+  embedding: vector('embedding', { dimensions: 512 }),
+
+  // OCR text if detected
+  ocrText: text('ocr_text'),
+  ocrConfidence: real('ocr_confidence'),
+
+  // Metadata
+  source: text('source').default('user_click'), // 'user_click' | 'auto_detected' | 'sliding_window'
+  createdAt: timestamp('created_at').defaultNow(),
+}, (table) => ({
+  documentIdx: index('symbol_regions_document_idx').on(table.documentId),
+  pageIdx: index('symbol_regions_page_idx').on(table.documentId, table.pageNumber),
+}));
+
 // PlanetBids portal tracking
 export const planetbidsPortals = pgTable('planetbids_portals', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -389,3 +431,5 @@ export type NewUploadSession = typeof uploadSessions.$inferInsert;
 export type UploadSession = typeof uploadSessions.$inferSelect;
 export type NewPageText = typeof pageText.$inferInsert;
 export type PageText = typeof pageText.$inferSelect;
+export type NewSymbolRegion = typeof symbolRegions.$inferInsert;
+export type SymbolRegion = typeof symbolRegions.$inferSelect;

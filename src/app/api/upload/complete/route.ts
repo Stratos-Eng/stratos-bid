@@ -9,6 +9,7 @@ import { join } from 'path';
 import { pipeline } from 'stream/promises';
 import { PDFParse } from 'pdf-parse';
 import { inngest } from '@/inngest';
+import { uploadFile, isLocalStorage } from '@/lib/storage';
 
 // POST /api/upload/complete - Assemble chunks and process the PDF
 export async function POST(request: NextRequest) {
@@ -90,18 +91,18 @@ export async function POST(request: NextRequest) {
         throw new Error('No project or bid associated with upload');
       }
 
-      // Create final directory - use bidId for projects flow, projectId for takeoff flow
-      const storageId = uploadSession.projectId || uploadSession.bidId;
-      const finalDir = join(process.cwd(), 'uploads', uploadSession.projectId ? 'takeoff' : 'projects', storageId!);
-      await mkdir(finalDir, { recursive: true });
-
       // Generate unique filename
       const sanitizedFilename = uploadSession.filename.replace(/[^a-zA-Z0-9.-]/g, '_');
       const filename = `${Date.now()}-${sanitizedFilename}`;
-      const finalPath = join(finalDir, filename);
 
-      // Assemble chunks into final file using streaming
-      const writeStream = createWriteStream(finalPath);
+      // Create final storage path
+      const storageId = uploadSession.projectId || uploadSession.bidId;
+      const storageDir = uploadSession.projectId ? 'takeoff' : 'projects';
+      const storagePath = `${storageDir}/${storageId}/${filename}`;
+
+      // First, assemble chunks into a temporary file
+      const tempAssembledPath = join(uploadSession.tempDir, 'assembled.pdf');
+      const writeStream = createWriteStream(tempAssembledPath);
 
       for (const chunkFile of sortedChunks) {
         const chunkPath = join(uploadSession.tempDir, chunkFile);
@@ -117,8 +118,24 @@ export async function POST(request: NextRequest) {
         writeStream.on('error', reject);
       });
 
-      // Parse PDF to get page count and dimensions
-      const buffer = await readFile(finalPath);
+      // Read assembled file
+      const buffer = await readFile(tempAssembledPath);
+
+      // Upload to storage (Vercel Blob in production, local in development)
+      let finalPath: string;
+      if (isLocalStorage()) {
+        // For local development, write to uploads directory
+        const localDir = join(process.cwd(), 'uploads', storageDir, storageId!);
+        await mkdir(localDir, { recursive: true });
+        finalPath = join(localDir, filename);
+        await require('fs').promises.writeFile(finalPath, buffer);
+      } else {
+        // For production, upload to Vercel Blob
+        const result = await uploadFile(buffer, storagePath, { contentType: 'application/pdf' });
+        finalPath = result.url; // This will be the Vercel Blob URL
+      }
+
+      // Parse PDF to get page count and dimensions (use the buffer we already have)
       const pdfData = new Uint8Array(buffer);
       const parser = new PDFParse({ data: pdfData });
 

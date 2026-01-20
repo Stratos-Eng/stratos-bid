@@ -10,6 +10,7 @@ import { ItemPanel } from "@/components/projects/item-panel"
 import { QuickAddForm } from "@/components/projects/quick-add-form"
 import { ItemsList } from "@/components/projects/items-list"
 import { SearchPanel } from "@/components/projects/search-panel"
+import { SymbolSearchResults } from "@/components/projects/symbol-search-results"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
@@ -63,6 +64,29 @@ export default function ProjectPage() {
   // Local UI state
   const [filmstripCollapsed, setFilmstripCollapsed] = useState(false)
   const [highlightTerms, setHighlightTerms] = useState<string[]>([])
+
+  // Symbol picker state
+  const [symbolPickerMode, setSymbolPickerMode] = useState(false)
+  const [symbolSearchLoading, setSymbolSearchLoading] = useState(false)
+  const [symbolSearchQuery, setSymbolSearchQuery] = useState<{
+    documentId: string
+    pageNumber: number
+    x: number
+    y: number
+    thumbnail: string
+    ocrText?: string
+    ocrConfidence?: number
+  } | undefined>()
+  const [symbolSearchMethod, setSymbolSearchMethod] = useState<"text" | "visual" | "none">("none")
+  const [symbolSearchMatches, setSymbolSearchMatches] = useState<{
+    documentId: string
+    documentName: string
+    pageNumber: number
+    x: number
+    y: number
+    similarity: number
+    ocrText?: string
+  }[]>([])
 
   // Load data into store
   useEffect(() => {
@@ -153,6 +177,13 @@ export default function ProjectPage() {
           setSelectedItemId(null)
           setQuickAddMode(false)
           setQuickAddPosition(null)
+          setSymbolPickerMode(false)
+          break
+        case "f":
+          // 'f' for find symbol (visual search)
+          e.preventDefault()
+          setSymbolPickerMode((prev) => !prev)
+          setQuickAddMode(false) // Turn off quick add if symbol picker is toggled
           break
         case "+":
         case "=":
@@ -173,7 +204,7 @@ export default function ProjectPage() {
 
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [selectedItemId, prevPage, nextPage, nextDocument, prevDocument, setPanelOpen, setSelectedItemId, setQuickAddMode, setQuickAddPosition, setFilmstripCollapsed, toggleSearch, setSearchOpen])
+  }, [selectedItemId, prevPage, nextPage, nextDocument, prevDocument, setPanelOpen, setSelectedItemId, setQuickAddMode, setQuickAddPosition, setFilmstripCollapsed, toggleSearch, setSearchOpen, setSymbolPickerMode])
 
   const handleApprove = useCallback(
     async (id: string) => {
@@ -230,6 +261,45 @@ export default function ProjectPage() {
   const handleExport = () => {
     window.open(`/api/export?bidId=${projectId}`, "_blank")
   }
+
+  // Symbol picker click handler
+  const handleSymbolPickerClick = useCallback(
+    async (coords: { documentId: string; pageNumber: number; pdfX: number; pdfY: number }) => {
+      if (!coords.documentId) return
+
+      setSymbolSearchLoading(true)
+      setSymbolSearchQuery(undefined)
+      setSymbolSearchMatches([])
+      setSymbolSearchMethod("none")
+
+      try {
+        const res = await fetch(`/api/projects/${projectId}/visual-search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            documentId: coords.documentId,
+            pageNum: coords.pageNumber,
+            x: coords.pdfX,
+            y: coords.pdfY,
+          }),
+        })
+
+        if (res.ok) {
+          const data = await res.json()
+          if (data.success) {
+            setSymbolSearchQuery(data.query)
+            setSymbolSearchMethod(data.searchMethod)
+            setSymbolSearchMatches(data.matches || [])
+          }
+        }
+      } catch (err) {
+        console.error("Symbol search failed:", err)
+      } finally {
+        setSymbolSearchLoading(false)
+      }
+    },
+    [projectId]
+  )
 
   const [extracting, setExtracting] = useState(false)
   const [viewMode, setViewMode] = useState<"pdf" | "list">("pdf")
@@ -414,6 +484,23 @@ export default function ProjectPage() {
             </Button>
           )}
 
+          {/* Symbol Picker Toggle */}
+          {viewMode === "pdf" && (
+            <Button
+              variant={symbolPickerMode ? "primary" : "outline"}
+              size="sm"
+              onClick={() => {
+                setSymbolPickerMode(!symbolPickerMode)
+                if (!symbolPickerMode) setQuickAddMode(false)
+              }}
+              title="Find similar symbols (F)"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
+              </svg>
+            </Button>
+          )}
+
           {/* Quick Add Toggle */}
           {viewMode === "pdf" && (
             <Button
@@ -508,6 +595,15 @@ export default function ProjectPage() {
               }}
               extractionStatus={extractionStatus}
               highlightTerms={highlightTerms}
+              symbolPickerMode={symbolPickerMode}
+              onSymbolPickerClick={(coords) => {
+                handleSymbolPickerClick({
+                  documentId: currentDocumentId || "",
+                  pageNumber: currentPage,
+                  pdfX: coords.pdfX,
+                  pdfY: coords.pdfY,
+                })
+              }}
             />
 
             {/* Quick Add Form Overlay */}
@@ -558,6 +654,26 @@ export default function ProjectPage() {
             }}
           />
         )}
+
+        {/* Symbol Search Results Panel */}
+        {viewMode === "pdf" && (symbolPickerMode || symbolSearchLoading || symbolSearchQuery) && (
+          <SymbolSearchResults
+            isOpen={symbolPickerMode || symbolSearchLoading || !!symbolSearchQuery}
+            loading={symbolSearchLoading}
+            query={symbolSearchQuery}
+            searchMethod={symbolSearchMethod}
+            matches={symbolSearchMatches}
+            onClose={() => {
+              setSymbolPickerMode(false)
+              setSymbolSearchQuery(undefined)
+              setSymbolSearchMatches([])
+            }}
+            onSelectMatch={(documentId, pageNumber) => {
+              setCurrentDocument(documentId)
+              setCurrentPage(pageNumber)
+            }}
+          />
+        )}
       </div>
 
       {/* Footer Status Bar */}
@@ -568,7 +684,7 @@ export default function ProjectPage() {
         <div className="flex items-center gap-4 text-muted-foreground">
           <span>{items.length} items</span>
           <span>·</span>
-          <span>⌘F=search, A=approve, S=skip, ←→=pages, [=sidebar</span>
+          <span>⌘F=search, F=find symbol, A=approve, S=skip, ←→=pages, [=sidebar</span>
         </div>
       </footer>
     </div>

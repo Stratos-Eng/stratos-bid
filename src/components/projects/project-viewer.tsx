@@ -27,6 +27,11 @@ interface QuickAddCoords {
   pdfY: number
 }
 
+interface SymbolPickerCoords {
+  pdfX: number // Normalized PDF coordinates (0-1)
+  pdfY: number
+}
+
 interface ProjectViewerProps {
   documentId: string | null
   pageNumber: number
@@ -36,6 +41,8 @@ interface ProjectViewerProps {
   onSelectItem: (id: string | null) => void
   quickAddMode: boolean
   onQuickAddClick: (coords: QuickAddCoords) => void
+  symbolPickerMode?: boolean
+  onSymbolPickerClick?: (coords: SymbolPickerCoords) => void
   extractionStatus?: "not_started" | "extracting" | "queued" | "completed" | "failed" | "no_documents"
   highlightTerms?: string[]
 }
@@ -49,6 +56,8 @@ export function ProjectViewer({
   onSelectItem,
   quickAddMode,
   onQuickAddClick,
+  symbolPickerMode = false,
+  onSymbolPickerClick,
   extractionStatus,
   highlightTerms = [],
 }: ProjectViewerProps) {
@@ -65,6 +74,8 @@ export function ProjectViewer({
   // Use refs to access current values in map event handlers
   const quickAddModeRef = useRef(quickAddMode)
   const onQuickAddClickRef = useRef(onQuickAddClick)
+  const symbolPickerModeRef = useRef(symbolPickerMode)
+  const onSymbolPickerClickRef = useRef(onSymbolPickerClick)
   const onSelectItemRef = useRef(onSelectItem)
   const selectedItemIdRef = useRef(selectedItemId)
   const pageSizeRef = useRef(pageSize)
@@ -72,6 +83,8 @@ export function ProjectViewer({
   // Keep refs in sync with props
   useEffect(() => { quickAddModeRef.current = quickAddMode }, [quickAddMode])
   useEffect(() => { onQuickAddClickRef.current = onQuickAddClick }, [onQuickAddClick])
+  useEffect(() => { symbolPickerModeRef.current = symbolPickerMode }, [symbolPickerMode])
+  useEffect(() => { onSymbolPickerClickRef.current = onSymbolPickerClick }, [onSymbolPickerClick])
   useEffect(() => { onSelectItemRef.current = onSelectItem }, [onSelectItem])
   useEffect(() => { selectedItemIdRef.current = selectedItemId }, [selectedItemId])
   useEffect(() => { pageSizeRef.current = pageSize }, [pageSize])
@@ -209,7 +222,7 @@ export function ProjectViewer({
 
     // Click handler
     map.on("click", (e) => {
-      const features = map.getFeaturesAtPixel(e.pixel)
+      const features = map.getFeaturesAtPixel(e.pixel, { hitTolerance: 15 })
       if (features && features.length > 0) {
         const id = features[0].get("id")
         if (id) {
@@ -218,19 +231,21 @@ export function ProjectViewer({
         }
       }
 
-      if (quickAddModeRef.current) {
-        const coord = e.coordinate
-        // Calculate extent for normalization
-        const dpi = 150
-        const scale = dpi / 72
-        const currentPageSize = pageSizeRef.current
-        const extentWidth = currentPageSize.width * scale
-        const extentHeight = currentPageSize.height * scale
+      // Calculate normalized coordinates (shared by both modes)
+      const coord = e.coordinate
+      const dpi = 150
+      const scale = dpi / 72
+      const currentPageSize = pageSizeRef.current
+      const extentWidth = currentPageSize.width * scale
+      const extentHeight = currentPageSize.height * scale
+      const pdfX = Math.max(0, Math.min(1, coord[0] / extentWidth))
+      const pdfY = Math.max(0, Math.min(1, 1 - (coord[1] / extentHeight))) // Flip Y
 
-        // Normalize to 0-1 range
-        const pdfX = Math.max(0, Math.min(1, coord[0] / extentWidth))
-        const pdfY = Math.max(0, Math.min(1, 1 - (coord[1] / extentHeight))) // Flip Y
-
+      if (symbolPickerModeRef.current && onSymbolPickerClickRef.current) {
+        // Symbol picker mode - search for similar symbols
+        onSymbolPickerClickRef.current({ pdfX, pdfY })
+      } else if (quickAddModeRef.current) {
+        // Quick add mode - add item at location
         onQuickAddClickRef.current({
           screenX: e.pixel[0] + (containerRef.current?.getBoundingClientRect().left || 0),
           screenY: e.pixel[1] + (containerRef.current?.getBoundingClientRect().top || 0),
@@ -244,10 +259,12 @@ export function ProjectViewer({
 
     // Cursor
     map.on("pointermove", (e) => {
-      const hit = map.hasFeatureAtPixel(e.pixel)
+      const hit = map.hasFeatureAtPixel(e.pixel, { hitTolerance: 15 })
       const target = map.getTargetElement()
       if (target) {
-        if (quickAddModeRef.current) {
+        if (symbolPickerModeRef.current) {
+          target.style.cursor = "crosshair"
+        } else if (quickAddModeRef.current) {
           target.style.cursor = "crosshair"
         } else {
           target.style.cursor = hit ? "pointer" : "grab"
@@ -515,7 +532,7 @@ export function ProjectViewer({
         ref={containerRef}
         className={cn(
           "h-full w-full bg-muted",
-          quickAddMode && "cursor-crosshair"
+          (quickAddMode || symbolPickerMode) && "cursor-crosshair"
         )}
       />
 
@@ -538,6 +555,16 @@ export function ProjectViewer({
       {quickAddMode && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-primary text-primary-foreground px-3 py-1 rounded text-sm">
           Click on the page to add an item
+        </div>
+      )}
+
+      {/* Symbol picker mode indicator */}
+      {symbolPickerMode && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-amber-600 text-white px-3 py-1 rounded text-sm flex items-center gap-2">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          Click on a symbol to find similar
         </div>
       )}
 

@@ -6,6 +6,7 @@ import { eq, and } from 'drizzle-orm';
 import { mkdir } from 'fs/promises';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
+import { applyRateLimit, createRateLimitResponse, rateLimitConfigs } from '@/lib/rate-limit';
 
 // Default chunk size: 5MB (good balance for PDF uploads)
 const DEFAULT_CHUNK_SIZE = 5 * 1024 * 1024;
@@ -16,6 +17,12 @@ export async function POST(request: NextRequest) {
     const session = await auth();
     if (!session?.user?.id) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Rate limiting: 10 uploads per minute
+    const rateLimit = applyRateLimit(request, rateLimitConfigs.upload, session.user.id);
+    if (!rateLimit.success) {
+      return createRateLimitResponse(rateLimit);
     }
 
     const body = await request.json();

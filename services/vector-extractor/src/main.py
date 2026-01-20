@@ -304,6 +304,255 @@ async def extract_text(request: TextExtractionRequest):
         )
 
 
+# === Region Crop Endpoint ===
+
+class CropRequest(BaseModel):
+    """Request for cropping a region from a PDF page."""
+    pdfData: str  # Base64 encoded PDF
+    pageNum: int  # 1-indexed page number
+    x: float      # Center X coordinate (normalized 0-1)
+    y: float      # Center Y coordinate (normalized 0-1)
+    width: float = 100   # Width in pixels at 150 DPI
+    height: float = 100  # Height in pixels at 150 DPI
+
+
+class CropResponse(BaseModel):
+    """Response with cropped region as base64 PNG."""
+    success: bool
+    image: Optional[str] = None  # Base64 encoded PNG
+    width: Optional[int] = None
+    height: Optional[int] = None
+    error: Optional[str] = None
+
+
+@app.post("/crop", response_model=CropResponse)
+async def crop_region(request: CropRequest):
+    """
+    Crop a region from a PDF page around the specified coordinates.
+
+    Input coordinates are normalized (0-1), output is a base64 PNG.
+    """
+    try:
+        # Decode base64 PDF data
+        try:
+            pdf_bytes = base64.b64decode(request.pdfData)
+        except Exception as e:
+            return CropResponse(success=False, error=f"Invalid base64 PDF data: {str(e)}")
+
+        # Open PDF from bytes
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        except Exception as e:
+            return CropResponse(success=False, error=f"Failed to open PDF: {str(e)}")
+
+        # Validate page number
+        page_index = request.pageNum - 1
+        if page_index < 0 or page_index >= len(doc):
+            return CropResponse(
+                success=False,
+                error=f"Invalid page number. Document has {len(doc)} pages."
+            )
+
+        page = doc[page_index]
+
+        # Get page dimensions
+        page_rect = page.rect
+        page_width = page_rect.width
+        page_height = page_rect.height
+
+        # Convert normalized coordinates to page coordinates
+        center_x = request.x * page_width
+        center_y = request.y * page_height
+
+        # Calculate crop rectangle (in PDF points)
+        # Scale from 150 DPI pixels to 72 DPI PDF points
+        dpi_scale = 72 / 150
+        half_width = (request.width / 2) * dpi_scale
+        half_height = (request.height / 2) * dpi_scale
+
+        # Create clip rectangle
+        clip_rect = fitz.Rect(
+            max(0, center_x - half_width),
+            max(0, center_y - half_height),
+            min(page_width, center_x + half_width),
+            min(page_height, center_y + half_height)
+        )
+
+        # Render the cropped region at 150 DPI
+        mat = fitz.Matrix(150 / 72, 150 / 72)
+        pix = page.get_pixmap(matrix=mat, clip=clip_rect, alpha=False)
+
+        # Convert to PNG bytes
+        png_bytes = pix.tobytes("png")
+        image_b64 = base64.b64encode(png_bytes).decode("utf-8")
+
+        doc.close()
+
+        return CropResponse(
+            success=True,
+            image=image_b64,
+            width=pix.width,
+            height=pix.height,
+        )
+
+    except Exception as e:
+        return CropResponse(success=False, error=str(e))
+
+
+# === OCR Endpoint ===
+
+# Lazy-load OCR reader to avoid startup delay
+_ocr_reader = None
+
+def get_ocr_reader():
+    global _ocr_reader
+    if _ocr_reader is None:
+        import easyocr
+        _ocr_reader = easyocr.Reader(['en'], gpu=False)
+    return _ocr_reader
+
+
+class OcrRequest(BaseModel):
+    """Request for OCR on an image."""
+    image: str  # Base64 encoded PNG
+
+
+class OcrResponse(BaseModel):
+    """Response with OCR results."""
+    success: bool
+    text: Optional[str] = None
+    confidence: Optional[float] = None
+    boxes: list = []  # List of detected text boxes
+    error: Optional[str] = None
+
+
+@app.post("/ocr", response_model=OcrResponse)
+async def ocr_image(request: OcrRequest):
+    """
+    Perform OCR on a base64-encoded image.
+
+    Returns detected text and confidence score.
+    """
+    try:
+        import io
+        from PIL import Image
+        import numpy as np
+
+        # Decode base64 image
+        try:
+            image_bytes = base64.b64decode(request.image)
+            image = Image.open(io.BytesIO(image_bytes))
+            image_array = np.array(image)
+        except Exception as e:
+            return OcrResponse(success=False, error=f"Invalid image data: {str(e)}")
+
+        # Get OCR reader
+        reader = get_ocr_reader()
+
+        # Perform OCR
+        results = reader.readtext(image_array)
+
+        if not results:
+            return OcrResponse(
+                success=True,
+                text="",
+                confidence=0.0,
+                boxes=[],
+            )
+
+        # Combine all text and calculate average confidence
+        texts = []
+        confidences = []
+        boxes = []
+
+        for (bbox, text, conf) in results:
+            texts.append(text)
+            confidences.append(conf)
+            boxes.append({
+                "text": text,
+                "confidence": conf,
+                "bbox": bbox,
+            })
+
+        combined_text = " ".join(texts)
+        avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+
+        return OcrResponse(
+            success=True,
+            text=combined_text,
+            confidence=avg_confidence,
+            boxes=boxes,
+        )
+
+    except Exception as e:
+        return OcrResponse(success=False, error=str(e))
+
+
+# === CLIP Embedding Endpoint ===
+
+# Lazy-load CLIP model to avoid startup delay
+_clip_model = None
+
+def get_clip_model():
+    global _clip_model
+    if _clip_model is None:
+        from sentence_transformers import SentenceTransformer
+        # Use a small, fast CLIP model
+        _clip_model = SentenceTransformer('clip-ViT-B-32')
+    return _clip_model
+
+
+class EmbedRequest(BaseModel):
+    """Request for generating image embedding."""
+    image: str  # Base64 encoded PNG
+
+
+class EmbedResponse(BaseModel):
+    """Response with image embedding."""
+    success: bool
+    embedding: Optional[list] = None  # 512-dim float array
+    error: Optional[str] = None
+
+
+@app.post("/embed", response_model=EmbedResponse)
+async def generate_embedding(request: EmbedRequest):
+    """
+    Generate a CLIP embedding for a base64-encoded image.
+
+    Returns a 512-dimensional float vector for similarity search.
+    """
+    try:
+        import io
+        from PIL import Image
+
+        # Decode base64 image
+        try:
+            image_bytes = base64.b64decode(request.image)
+            image = Image.open(io.BytesIO(image_bytes))
+            # Convert to RGB if necessary
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+        except Exception as e:
+            return EmbedResponse(success=False, error=f"Invalid image data: {str(e)}")
+
+        # Get CLIP model
+        model = get_clip_model()
+
+        # Generate embedding
+        embedding = model.encode(image)
+
+        # Convert to list of floats
+        embedding_list = embedding.tolist()
+
+        return EmbedResponse(
+            success=True,
+            embedding=embedding_list,
+        )
+
+    except Exception as e:
+        return EmbedResponse(success=False, error=str(e))
+
+
 @app.post("/extract", response_model=ExtractionStatus)
 async def extract_vectors(request: ExtractionRequest, background_tasks: BackgroundTasks):
     """

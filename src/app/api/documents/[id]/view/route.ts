@@ -3,8 +3,7 @@ import { auth } from '@/lib/auth';
 import { db } from '@/db';
 import { documents, bids } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import path from 'path';
-import fs from 'fs';
+import { downloadFile, fileExists, isBlobUrl } from '@/lib/storage';
 
 // GET /api/documents/[id]/view - Serve PDF file for viewing
 export async function GET(
@@ -34,45 +33,39 @@ export async function GET(
       return NextResponse.json({ error: 'Document not found' }, { status: 404 });
     }
 
-    // Get file path - could be from storagePath or pdfFilePath
-    const filePath = doc.document.storagePath;
+    // Get file path - could be a Vercel Blob URL or local path
+    const storagePath = doc.document.storagePath;
 
-    if (!filePath) {
+    if (!storagePath) {
       return NextResponse.json(
         { error: 'Document file path not available' },
         { status: 404 }
       );
     }
 
-    // Resolve the file path (could be relative to uploads directory or absolute)
-    let resolvedPath = filePath;
-    if (!path.isAbsolute(filePath)) {
-      resolvedPath = path.join(process.cwd(), 'uploads', filePath);
+    // For Vercel Blob URLs, redirect to the blob URL directly for better performance
+    if (isBlobUrl(storagePath)) {
+      return NextResponse.redirect(storagePath);
     }
 
-    // Normalize and security check
-    const normalizedPath = path.normalize(resolvedPath);
-    const uploadsDir = path.normalize(path.join(process.cwd(), 'uploads'));
-    if (!normalizedPath.startsWith(uploadsDir)) {
-      return NextResponse.json({ error: 'Invalid file path' }, { status: 400 });
-    }
-
-    if (!fs.existsSync(normalizedPath)) {
+    // For local files, check existence and serve
+    const exists = await fileExists(storagePath);
+    if (!exists) {
       return NextResponse.json(
-        { error: 'File not found on disk' },
+        { error: 'File not found' },
         { status: 404 }
       );
     }
 
-    // Read file and serve as PDF
-    const fileBuffer = fs.readFileSync(normalizedPath);
+    // Download and serve the file
+    const fileBuffer = await downloadFile(storagePath);
     const filename = doc.document.filename || 'document.pdf';
 
     // Check for page parameter (for deep linking to specific page)
     // Note: This is handled client-side via #page=N fragment, but we include
     // the Open-In-Browser headers for PDF viewer compatibility
 
-    return new NextResponse(fileBuffer, {
+    return new NextResponse(new Uint8Array(fileBuffer), {
       headers: {
         'Content-Type': 'application/pdf',
         'Content-Disposition': `inline; filename="${encodeURIComponent(filename)}"`,
