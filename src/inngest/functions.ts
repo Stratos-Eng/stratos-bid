@@ -1,7 +1,7 @@
 import { inngest } from './client';
 import { db } from '@/db';
-import { users, connections, syncJobs, documents, userSettings, uploadSessions, pageText } from '@/db/schema';
-import { eq, lt, or } from 'drizzle-orm';
+import { connections, syncJobs, documents, userSettings, uploadSessions, pageText } from '@/db/schema';
+import { eq, lt, or, sql } from 'drizzle-orm';
 import { createScraper, createGmailScanner, usesBrowserScraping, type Platform } from '@/scrapers';
 import { extractDocument } from '@/extraction';
 import { TradeCode } from '@/lib/trade-definitions';
@@ -13,18 +13,23 @@ export const dailySync = inngest.createFunction(
   { id: 'daily-sync', name: 'Daily Sync All Users' },
   { cron: '0 6 * * *' },
   async ({ step }) => {
-    const allUsers = await step.run('get-users', async () => {
-      return await db.select().from(users);
+    // Get distinct user IDs from connections table (users who have connections need syncing)
+    const userIds = await step.run('get-users-with-connections', async () => {
+      const result = await db
+        .selectDistinct({ userId: connections.userId })
+        .from(connections)
+        .where(eq(connections.status, 'active'));
+      return result.map(r => r.userId);
     });
 
-    for (const user of allUsers) {
+    for (const userId of userIds) {
       await step.sendEvent('sync/user', {
         name: 'sync/user',
-        data: { userId: user.id },
+        data: { userId },
       });
     }
 
-    return { usersQueued: allUsers.length };
+    return { usersQueued: userIds.length };
   }
 );
 

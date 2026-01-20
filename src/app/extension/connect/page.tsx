@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useSession } from 'next-auth/react';
-import { redirect } from 'next/navigation';
+import { useUser, useAuth } from '@clerk/nextjs';
+import { useRouter } from 'next/navigation';
 
 interface TokenResponse {
   token: string;
@@ -11,24 +11,26 @@ interface TokenResponse {
 }
 
 export default function ExtensionConnectPage() {
-  const { data: session, status } = useSession();
+  const { user, isLoaded, isSignedIn } = useUser();
+  const { isLoaded: authLoaded } = useAuth();
+  const router = useRouter();
   const [tokenData, setTokenData] = useState<TokenResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
 
   // Redirect to login if not authenticated
   useEffect(() => {
-    if (status === 'unauthenticated') {
-      redirect('/login?callbackUrl=/extension/connect');
+    if (isLoaded && authLoaded && !isSignedIn) {
+      router.push('/login?redirect_url=/extension/connect');
     }
-  }, [status]);
+  }, [isLoaded, authLoaded, isSignedIn, router]);
 
   // Fetch extension token when authenticated
   useEffect(() => {
-    if (status === 'authenticated' && !tokenData && !error) {
+    if (isSignedIn && !tokenData && !error) {
       fetchExtensionToken();
     }
-  }, [status, tokenData, error]);
+  }, [isSignedIn, tokenData, error]);
 
   async function fetchExtensionToken() {
     try {
@@ -76,7 +78,7 @@ export default function ExtensionConnectPage() {
     }
   }
 
-  if (status === 'loading') {
+  if (!isLoaded || !authLoaded) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
@@ -177,7 +179,7 @@ export default function ExtensionConnectPage() {
             </div>
 
             <div className="text-center text-sm text-gray-500">
-              <p>Logged in as {session?.user?.email}</p>
+              <p>Logged in as {user?.primaryEmailAddress?.emailAddress}</p>
             </div>
           </div>
         ) : (
@@ -189,7 +191,7 @@ export default function ExtensionConnectPage() {
 
         <div className="mt-6 pt-6 border-t">
           <a
-            href="/dashboard"
+            href="/bids"
             className="block text-center text-blue-600 hover:text-blue-700 text-sm"
           >
             Go to Dashboard

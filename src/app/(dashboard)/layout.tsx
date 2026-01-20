@@ -1,17 +1,24 @@
 import { redirect } from 'next/navigation';
-import { auth, signOut } from '@/lib/auth';
+import { auth, currentUser } from '@clerk/nextjs/server';
+import { UserButton } from '@clerk/nextjs';
 import Link from 'next/link';
+
+// Force dynamic rendering - dashboard requires auth
+export const dynamic = 'force-dynamic';
 
 export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const session = await auth();
+  const { userId } = await auth();
 
-  if (!session) {
+  if (!userId) {
     redirect('/login');
   }
+
+  const user = await currentUser();
+  const email = user?.primaryEmailAddress?.emailAddress;
 
   return (
     <div className="min-h-screen bg-background">
@@ -46,21 +53,9 @@ export default async function DashboardLayout({
             </div>
             <div className="flex items-center gap-4">
               <span className="text-sm text-muted-foreground">
-                {session.user?.email}
+                {email}
               </span>
-              <form
-                action={async () => {
-                  'use server';
-                  await signOut({ redirectTo: '/login' });
-                }}
-              >
-                <button
-                  type="submit"
-                  className="text-sm text-muted-foreground hover:text-foreground transition-smooth"
-                >
-                  Sign out
-                </button>
-              </form>
+              <UserButton afterSignOutUrl="/login" />
             </div>
           </div>
         </div>

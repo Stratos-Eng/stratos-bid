@@ -1,10 +1,12 @@
-import { auth } from '@/lib/auth';
+import { auth } from '@clerk/nextjs/server';
 import { redirect } from 'next/navigation';
 
-export default async function Home() {
-  const session = await auth();
+export const dynamic = 'force-dynamic';
 
-  if (session) {
+export default async function Home() {
+  const { userId } = await auth();
+
+  if (userId) {
     redirect('/bids');
   } else {
     redirect('/login');

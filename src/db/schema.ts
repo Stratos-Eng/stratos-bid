@@ -15,47 +15,11 @@ const vector = customType<{ data: number[]; driverData: string }>({
   },
 });
 
-// NextAuth requires specific table names: user, account, session, verificationToken
-export const users = pgTable('user', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  email: text('email').notNull().unique(),
-  emailVerified: timestamp('emailVerified'),
-  name: text('name'),
-  image: text('image'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-});
-
-export const accounts = pgTable('account', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('userId').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  type: text('type').notNull(),
-  provider: text('provider').notNull(),
-  providerAccountId: text('providerAccountId').notNull(),
-  refresh_token: text('refresh_token'),
-  access_token: text('access_token'),
-  expires_at: integer('expires_at'),
-  token_type: text('token_type'),
-  scope: text('scope'),
-  id_token: text('id_token'),
-  session_state: text('session_state'),
-});
-
-export const sessions = pgTable('session', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  sessionToken: text('sessionToken').notNull().unique(),
-  userId: uuid('userId').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  expires: timestamp('expires').notNull(),
-});
-
-export const verificationTokens = pgTable('verificationToken', {
-  identifier: text('identifier').notNull(),
-  token: text('token').notNull().unique(),
-  expires: timestamp('expires').notNull(),
-});
+// Note: With Clerk, users are managed externally. user_id is the Clerk user ID (string like "user_xxx")
 
 export const connections = pgTable('connections', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull(), // Clerk user ID
   platform: text('platform').notNull(), // 'gmail' | 'planhub' | 'buildingconnected' | 'planetbids'
   authType: text('auth_type').notNull(), // 'oauth' | 'password' | 'api_key'
   credentials: text('credentials'), // encrypted JSON
@@ -66,7 +30,7 @@ export const connections = pgTable('connections', {
 
 export const bids = pgTable('bids', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull(), // Clerk user ID
   connectionId: uuid('connection_id').references(() => connections.id),
   sourcePlatform: text('source_platform').notNull(),
   sourceBidId: text('source_bid_id').notNull(),
@@ -119,7 +83,7 @@ export const documents = pgTable('documents', {
 
 export const syncJobs = pgTable('sync_jobs', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull(), // Clerk user ID
   connectionId: uuid('connection_id').references(() => connections.id),
   status: text('status').notNull().default('pending'), // 'pending' | 'running' | 'completed' | 'failed'
   startedAt: timestamp('started_at'),
@@ -150,7 +114,7 @@ export const lineItems = pgTable('line_items', {
   id: uuid('id').primaryKey().defaultRandom(),
   documentId: uuid('document_id').notNull().references(() => documents.id, { onDelete: 'cascade' }),
   bidId: uuid('bid_id').notNull().references(() => bids.id, { onDelete: 'cascade' }),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull(), // Clerk user ID
 
   // Classification
   tradeCode: text('trade_code').notNull(), // 'division_08' | 'division_10'
@@ -181,7 +145,7 @@ export const lineItems = pgTable('line_items', {
   // Review status
   reviewStatus: text('review_status').notNull().default('pending'), // 'pending' | 'approved' | 'rejected' | 'modified'
   reviewedAt: timestamp('reviewed_at'),
-  reviewedBy: uuid('reviewed_by').references(() => users.id),
+  reviewedBy: text('reviewed_by'), // Clerk user ID
 
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -196,7 +160,7 @@ export const lineItems = pgTable('line_items', {
 export const extractionJobs = pgTable('extraction_jobs', {
   id: uuid('id').primaryKey().defaultRandom(),
   documentId: uuid('document_id').notNull().references(() => documents.id, { onDelete: 'cascade' }),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull(), // Clerk user ID
 
   status: text('status').notNull().default('pending'), // 'pending' | 'processing' | 'completed' | 'failed'
   tradeFilter: jsonb('trade_filter'), // ['division_08', 'division_10']
@@ -220,7 +184,7 @@ export const extractionJobs = pgTable('extraction_jobs', {
 // User preferences for trades and settings
 export const userSettings = pgTable('user_settings', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }).unique(),
+  userId: text('user_id').notNull().unique(), // Clerk user ID
   trades: jsonb('trades').default(['division_08', 'division_10']), // User's trade specialties
   locations: jsonb('locations'), // State/region filters
   autoExtract: boolean('auto_extract').default(true), // Auto-extract when docs downloaded
@@ -231,7 +195,7 @@ export const userSettings = pgTable('user_settings', {
 // Takeoff projects (for full takeoff builder)
 export const takeoffProjects = pgTable('takeoff_projects', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull(), // Clerk user ID
   bidId: uuid('bid_id').references(() => bids.id, { onDelete: 'set null' }),
 
   name: text('name').notNull(),
@@ -310,7 +274,7 @@ export const takeoffMeasurements = pgTable('takeoff_measurements', {
   quantity: real('quantity').notNull(), // count=1, linear=feet, area=sqft
 
   // Metadata
-  createdBy: uuid('created_by').references(() => users.id),
+  createdBy: text('created_by'), // Clerk user ID
   source: text('source').notNull().default('manual'), // 'manual' | 'find_similar' | 'ai_detected'
   confidence: real('confidence'), // For AI-generated
 
@@ -384,7 +348,7 @@ export const planetbidsPortals = pgTable('planetbids_portals', {
 // Upload sessions for chunked file uploads
 export const uploadSessions = pgTable('upload_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull(), // Clerk user ID
   projectId: uuid('project_id').references(() => takeoffProjects.id, { onDelete: 'cascade' }),
   bidId: uuid('bid_id').references(() => bids.id, { onDelete: 'cascade' }), // For projects flow
 
