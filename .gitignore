@@ -54,3 +54,4 @@ __pycache__/
 /test-results/
 *.db
 docs/manual/
+docs/
