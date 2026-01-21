@@ -3,7 +3,7 @@ import { auth } from '@/lib/auth';
 import { db } from '@/db';
 import { takeoffSheets, takeoffProjects, documents, bids } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { PDFParse } from 'pdf-parse';
+import { PDFDocument } from 'pdf-lib';
 import { inngest } from '@/inngest';
 import { downloadFile } from '@/lib/storage';
 
@@ -85,25 +85,21 @@ export async function POST(request: NextRequest) {
     console.log('[blob-complete] Downloading PDF for parsing:', blobUrl);
     const buffer = await downloadFile(blobUrl);
 
-    const pdfData = new Uint8Array(buffer);
-    const parser = new PDFParse({ data: pdfData });
-
-    const info = await parser.getInfo({ parsePageInfo: true, first: 1, last: 1 });
-    const pageCount = info.total || 0;
+    const pdfDoc = await PDFDocument.load(buffer);
+    const pageCount = pdfDoc.getPageCount();
 
     // Get first page dimensions
     let defaultWidth = 3300; // 11" at 300dpi
     let defaultHeight = 2550; // 8.5" at 300dpi
 
-    if (info.pages && info.pages.length > 0) {
-      const firstPage = info.pages[0];
+    if (pageCount > 0) {
+      const firstPage = pdfDoc.getPage(0);
+      const { width, height } = firstPage.getSize();
       // Convert from PDF points (72 DPI) to 300 DPI for better quality
       const scaleFactor = 300 / 72;
-      defaultWidth = Math.round(firstPage.width * scaleFactor);
-      defaultHeight = Math.round(firstPage.height * scaleFactor);
+      defaultWidth = Math.round(width * scaleFactor);
+      defaultHeight = Math.round(height * scaleFactor);
     }
-
-    await parser.destroy();
 
     console.log('[blob-complete] PDF parsed:', { pageCount, defaultWidth, defaultHeight });
 
