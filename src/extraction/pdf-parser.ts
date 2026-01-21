@@ -1,12 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-
-// Dynamic import to avoid loading pdf-parse at build time
-// pdf-parse v2 uses pdfjs-dist which requires DOMMatrix (browser API)
-async function getPdfParse() {
-  const { PDFParse } = await import('pdf-parse');
-  return PDFParse;
-}
+import { extractText, getDocumentProxy } from 'unpdf';
 
 export interface ParsedPage {
   pageNumber: number;
@@ -22,23 +16,33 @@ export interface PdfMetadata {
 }
 
 /**
+ * Load PDF and get document proxy
+ */
+async function loadPdf(filePath: string) {
+  const dataBuffer = fs.readFileSync(filePath);
+  return getDocumentProxy(new Uint8Array(dataBuffer));
+}
+
+/**
  * Get metadata from a PDF file
  */
 export async function getPdfMetadata(filePath: string): Promise<PdfMetadata> {
-  const PDFParse = await getPdfParse();
-  const dataBuffer = fs.readFileSync(filePath);
-  const parser = new PDFParse({ data: dataBuffer });
+  const pdf = await loadPdf(filePath);
 
-  const info = await parser.getInfo();
+  // Get metadata from PDF
+  const metadata = await pdf.getMetadata();
+  const info = metadata?.info as Record<string, unknown> | undefined;
 
   const result = {
-    pageCount: info.total,
-    title: info.info?.Title as string | undefined,
-    author: info.info?.Author as string | undefined,
-    creator: info.info?.Creator as string | undefined,
+    pageCount: pdf.numPages,
+    title: info?.Title as string | undefined,
+    author: info?.Author as string | undefined,
+    creator: info?.Creator as string | undefined,
   };
 
-  await parser.destroy();
+  // Clean up
+  await pdf.cleanup();
+
   return result;
 }
 
@@ -46,14 +50,12 @@ export async function getPdfMetadata(filePath: string): Promise<PdfMetadata> {
  * Extract text from all pages of a PDF
  */
 export async function extractPdfText(filePath: string): Promise<string> {
-  const PDFParse = await getPdfParse();
-  const dataBuffer = fs.readFileSync(filePath);
-  const parser = new PDFParse({ data: dataBuffer });
+  const pdf = await loadPdf(filePath);
 
-  const textResult = await parser.getText();
-  const text = textResult.text;
+  const { text } = await extractText(pdf, { mergePages: true });
 
-  await parser.destroy();
+  await pdf.cleanup();
+
   return text;
 }
 
@@ -62,23 +64,29 @@ export async function extractPdfText(filePath: string): Promise<string> {
  * Returns array of parsed pages with their text content
  */
 export async function extractPdfPageByPage(filePath: string): Promise<ParsedPage[]> {
-  const PDFParse = await getPdfParse();
-  const dataBuffer = fs.readFileSync(filePath);
-  const parser = new PDFParse({ data: dataBuffer });
+  const pdf = await loadPdf(filePath);
 
-  const textResult = await parser.getText();
+  // Extract text per page (mergePages: false is default)
+  const { text: pageTexts } = await extractText(pdf, { mergePages: false });
+
   const pages: ParsedPage[] = [];
 
-  // The text result has pages array with PageTextResult objects
-  for (const page of textResult.pages) {
+  // pageTexts is an array when mergePages is false
+  const textArray = Array.isArray(pageTexts) ? pageTexts : [pageTexts];
+
+  for (let i = 0; i < textArray.length; i++) {
+    const pageText = textArray[i] || '';
+    const cleanedText = pageText.replace(/\s+/g, ' ').trim();
+
     pages.push({
-      pageNumber: page.num,
-      text: page.text.replace(/\s+/g, ' ').trim(),
-      hasContent: page.text.length > 50,
+      pageNumber: i + 1,
+      text: cleanedText,
+      hasContent: cleanedText.length > 50,
     });
   }
 
-  await parser.destroy();
+  await pdf.cleanup();
+
   return pages;
 }
 
