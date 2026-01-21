@@ -20,16 +20,12 @@ export default function NewTakeoffProjectPage() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [isCreatingProject, setIsCreatingProject] = useState(false);
 
-  // Chunked upload hook
+  // Upload hook
   const {
     uploads,
     isUploading,
     uploadFiles,
-    pause,
-    resume,
     cancel,
-    pauseAll,
-    resumeAll,
     cancelAll,
     reset,
   } = useChunkedUpload({
@@ -113,15 +109,11 @@ export default function NewTakeoffProjectPage() {
     <div className="max-w-2xl mx-auto">
       <h1 className="text-2xl font-serif font-bold text-foreground mb-6">New Takeoff Project</h1>
 
-      {/* Chunked upload progress overlay */}
+      {/* Upload progress overlay */}
       {isUploading && uploads.length > 0 && (
         <UploadProgress
           uploads={uploads}
-          onPause={pause}
-          onResume={resume}
           onCancel={cancel}
-          onPauseAll={pauseAll}
-          onResumeAll={resumeAll}
           onCancelAll={cancelAll}
         />
       )}

@@ -1,23 +1,23 @@
 'use client';
 
 import { useState, useCallback, useRef } from 'react';
+import { upload } from '@vercel/blob/client';
 
 export interface UploadProgress {
   filename: string;
   fileSize: number;
   progress: number; // 0-100
-  status: 'pending' | 'uploading' | 'assembling' | 'completed' | 'error' | 'paused';
+  status: 'pending' | 'uploading' | 'processing' | 'completed' | 'error' | 'cancelled';
   error?: string;
-  uploadId?: string;
 }
 
-export interface ChunkedUploadOptions {
-  projectId: string;
+export interface UploadOptions {
+  projectId?: string; // For takeoff flow
+  bidId?: string; // For projects flow
   onProgress?: (files: UploadProgress[]) => void;
-  onFileComplete?: (result: { filename: string; sheets: string[] }) => void;
-  onAllComplete?: (results: { filename: string; sheets: string[] }[]) => void;
+  onFileComplete?: (result: { filename: string; sheets?: string[]; documentId?: string }) => void;
+  onAllComplete?: (results: { filename: string; sheets?: string[]; documentId?: string }[]) => void;
   onError?: (filename: string, error: string) => void;
-  chunkSize?: number; // Default 5MB
 }
 
 export interface FileToUpload {
@@ -25,28 +25,22 @@ export interface FileToUpload {
   folderName?: string;
   relativePath?: string;
   projectId?: string; // Override projectId for this file
+  bidId?: string; // Override bidId for this file
 }
 
-// Simple AbortController wrapper for cancellation
-interface UploadController {
-  abort: () => void;
-  paused: boolean;
-  aborted: boolean;
-}
-
-export function useChunkedUpload(options: ChunkedUploadOptions) {
+export function useChunkedUpload(options: UploadOptions) {
   const {
     projectId,
+    bidId,
     onProgress,
     onFileComplete,
     onAllComplete,
     onError,
-    chunkSize = 5 * 1024 * 1024, // 5MB chunks - good balance for PDFs
   } = options;
 
   const [uploads, setUploads] = useState<UploadProgress[]>([]);
   const [isUploading, setIsUploading] = useState(false);
-  const controllersRef = useRef<Map<string, UploadController>>(new Map());
+  const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
 
   const updateUpload = useCallback(
     (filename: string, update: Partial<UploadProgress>) => {
@@ -60,110 +54,98 @@ export function useChunkedUpload(options: ChunkedUploadOptions) {
   );
 
   const uploadFile = useCallback(
-    async (fileInfo: FileToUpload): Promise<{ filename: string; sheets: string[] }> => {
-      const { file, folderName, relativePath, projectId: fileProjectId } = fileInfo;
+    async (fileInfo: FileToUpload): Promise<{ filename: string; sheets?: string[]; documentId?: string }> => {
+      const { file, folderName, relativePath, projectId: fileProjectId, bidId: fileBidId } = fileInfo;
 
-      // Use per-file projectId if provided, otherwise use hook-level projectId
+      // Use per-file IDs if provided, otherwise use hook-level IDs
       const effectiveProjectId = fileProjectId || projectId;
+      const effectiveBidId = fileBidId || bidId;
 
-      console.log('[upload] Starting upload for:', file.name, 'size:', file.size, 'projectId:', effectiveProjectId);
-
-      // Create controller for this upload
-      const controller: UploadController = {
-        abort: () => { controller.aborted = true; },
-        paused: false,
-        aborted: false,
-      };
-      controllersRef.current.set(file.name, controller);
-
-      // Initialize upload session
-      const initRes = await fetch('/api/upload/init', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filename: file.name,
-          fileSize: file.size,
-          mimeType: file.type || 'application/pdf',
-          projectId: effectiveProjectId,
-          chunkSize,
-          folderName,
-          relativePath,
-        }),
-      });
-
-      if (!initRes.ok) {
-        const err = await initRes.json();
-        throw new Error(err.error || 'Failed to initialize upload');
+      if (!effectiveProjectId && !effectiveBidId) {
+        throw new Error('Either projectId or bidId is required');
       }
 
-      const { uploadId, totalChunks } = await initRes.json();
-      console.log('[upload] Init successful. uploadId:', uploadId, 'totalChunks:', totalChunks);
+      console.log('[upload] Starting upload for:', file.name, 'size:', file.size);
 
-      updateUpload(file.name, { uploadId, status: 'uploading' });
+      // Create abort controller for this upload
+      const abortController = new AbortController();
+      abortControllersRef.current.set(file.name, abortController);
 
-      // Upload chunks using fetch
-      const totalSize = file.size;
-      let uploadedBytes = 0;
+      try {
+        // Determine storage path
+        const timestamp = Date.now();
+        const sanitizedFilename = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+        const storageFilename = `${timestamp}-${sanitizedFilename}`;
 
-      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-        // Check if aborted
-        if (controller.aborted) {
+        let pathname: string;
+        if (effectiveProjectId) {
+          pathname = `takeoff/${effectiveProjectId}/${storageFilename}`;
+        } else {
+          pathname = `projects/${effectiveBidId}/${storageFilename}`;
+        }
+
+        updateUpload(file.name, { status: 'uploading', progress: 0 });
+
+        // Upload directly to Vercel Blob
+        const blob = await upload(pathname, file, {
+          access: 'public',
+          handleUploadUrl: '/api/upload/token',
+          onUploadProgress: (event) => {
+            const progress = Math.round((event.loaded / event.total) * 100);
+            updateUpload(file.name, { progress, status: 'uploading' });
+          },
+        });
+
+        console.log('[upload] Blob upload complete:', blob.url);
+
+        // Check if cancelled during upload
+        if (abortController.signal.aborted) {
           throw new Error('Upload cancelled');
         }
 
-        // Wait if paused
-        while (controller.paused && !controller.aborted) {
-          await new Promise(resolve => setTimeout(resolve, 100));
-        }
+        updateUpload(file.name, { status: 'processing', progress: 100 });
 
-        const start = chunkIndex * chunkSize;
-        const end = Math.min(start + chunkSize, totalSize);
-        const chunk = file.slice(start, end);
-
-        console.log(`[upload] Uploading chunk ${chunkIndex + 1}/${totalChunks} (${start}-${end})`);
-
-        const chunkRes = await fetch(`/api/upload/chunk?uploadId=${uploadId}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/octet-stream',
-            'Content-Range': `bytes ${start}-${end - 1}/${totalSize}`,
-          },
-          body: chunk,
+        // Call blob-complete to process the uploaded file
+        const completeRes = await fetch('/api/upload/blob-complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            blobUrl: blob.url,
+            pathname: blob.pathname,
+            filename: file.name,
+            projectId: effectiveProjectId,
+            bidId: effectiveBidId,
+            folderName,
+            relativePath,
+          }),
+          signal: abortController.signal,
         });
 
-        if (!chunkRes.ok) {
-          const err = await chunkRes.json().catch(() => ({ error: 'Chunk upload failed' }));
-          throw new Error(err.error || `Failed to upload chunk ${chunkIndex + 1}`);
+        if (!completeRes.ok) {
+          const err = await completeRes.json();
+          throw new Error(err.error || 'Failed to process file');
         }
 
-        uploadedBytes = end;
-        const progress = Math.round((uploadedBytes / totalSize) * 100);
-        updateUpload(file.name, { progress, status: 'uploading' });
+        const result = await completeRes.json();
+        console.log('[upload] Processing complete:', result);
+
+        updateUpload(file.name, { status: 'completed' });
+        abortControllersRef.current.delete(file.name);
+
+        const uploadResult = {
+          filename: file.name,
+          sheets: result.sheets,
+          documentId: result.documentId,
+        };
+
+        onFileComplete?.(uploadResult);
+        return uploadResult;
+      } catch (error) {
+        abortControllersRef.current.delete(file.name);
+        throw error;
       }
-
-      console.log('[upload] All chunks uploaded, completing...');
-      updateUpload(file.name, { status: 'assembling', progress: 100 });
-
-      // Complete the upload (assemble chunks + process PDF)
-      const completeRes = await fetch('/api/upload/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uploadId }),
-      });
-
-      if (!completeRes.ok) {
-        const err = await completeRes.json();
-        throw new Error(err.error || 'Failed to process file');
-      }
-
-      const result = await completeRes.json();
-      console.log('[upload] Upload complete:', result);
-      updateUpload(file.name, { status: 'completed' });
-      controllersRef.current.delete(file.name);
-      onFileComplete?.({ filename: file.name, sheets: result.sheets });
-      return { filename: file.name, sheets: result.sheets };
     },
-    [projectId, chunkSize, updateUpload, onFileComplete]
+    [projectId, bidId, updateUpload, onFileComplete]
   );
 
   const uploadFiles = useCallback(
@@ -183,7 +165,7 @@ export function useChunkedUpload(options: ChunkedUploadOptions) {
         }))
       );
 
-      const results: { filename: string; sheets: string[] }[] = [];
+      const results: { filename: string; sheets?: string[]; documentId?: string }[] = [];
       const errors: { filename: string; error: string }[] = [];
 
       // Upload files sequentially to avoid overwhelming the server
@@ -193,12 +175,20 @@ export function useChunkedUpload(options: ChunkedUploadOptions) {
           results.push(result);
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          errors.push({
-            filename: fileInfo.file.name,
-            error: errorMessage,
+
+          // Don't report cancelled uploads as errors
+          if (errorMessage !== 'Upload cancelled') {
+            errors.push({
+              filename: fileInfo.file.name,
+              error: errorMessage,
+            });
+            onError?.(fileInfo.file.name, errorMessage);
+          }
+
+          updateUpload(fileInfo.file.name, {
+            status: errorMessage === 'Upload cancelled' ? 'cancelled' : 'error',
+            error: errorMessage === 'Upload cancelled' ? undefined : errorMessage,
           });
-          onError?.(fileInfo.file.name, errorMessage);
-          updateUpload(fileInfo.file.name, { status: 'error', error: errorMessage });
         }
       }
 
@@ -213,57 +203,25 @@ export function useChunkedUpload(options: ChunkedUploadOptions) {
     [uploadFile, onAllComplete, onError, updateUpload]
   );
 
-  const pause = useCallback(
-    (filename: string) => {
-      const controller = controllersRef.current.get(filename);
-      if (controller) {
-        controller.paused = true;
-        updateUpload(filename, { status: 'paused' });
-      }
-    },
-    [updateUpload]
-  );
-
-  const resume = useCallback(
-    (filename: string) => {
-      const controller = controllersRef.current.get(filename);
-      if (controller) {
-        controller.paused = false;
-        updateUpload(filename, { status: 'uploading' });
-      }
-    },
-    [updateUpload]
-  );
-
   const cancel = useCallback((filename: string) => {
-    const controller = controllersRef.current.get(filename);
+    const controller = abortControllersRef.current.get(filename);
     if (controller) {
       controller.abort();
-      controllersRef.current.delete(filename);
-      setUploads((prev) => prev.filter((u) => u.filename !== filename));
+      abortControllersRef.current.delete(filename);
+      updateUpload(filename, { status: 'cancelled' });
     }
-  }, []);
-
-  const pauseAll = useCallback(() => {
-    controllersRef.current.forEach((controller, filename) => {
-      controller.paused = true;
-      updateUpload(filename, { status: 'paused' });
-    });
-  }, [updateUpload]);
-
-  const resumeAll = useCallback(() => {
-    controllersRef.current.forEach((controller, filename) => {
-      controller.paused = false;
-      updateUpload(filename, { status: 'uploading' });
-    });
   }, [updateUpload]);
 
   const cancelAll = useCallback(() => {
-    controllersRef.current.forEach((controller) => {
+    abortControllersRef.current.forEach((controller) => {
       controller.abort();
     });
-    controllersRef.current.clear();
-    setUploads([]);
+    abortControllersRef.current.clear();
+    setUploads((prev) => prev.map((u) =>
+      u.status === 'uploading' || u.status === 'pending'
+        ? { ...u, status: 'cancelled' as const }
+        : u
+    ));
     setIsUploading(false);
   }, []);
 
@@ -276,12 +234,11 @@ export function useChunkedUpload(options: ChunkedUploadOptions) {
     uploads,
     isUploading,
     uploadFiles,
-    pause,
-    resume,
     cancel,
-    pauseAll,
-    resumeAll,
     cancelAll,
     reset,
   };
 }
+
+// Legacy export for backwards compatibility
+export { useChunkedUpload as useBlobUpload };

@@ -4,11 +4,7 @@ import { type UploadProgress as UploadProgressType } from '@/hooks/use-chunked-u
 
 interface UploadProgressProps {
   uploads: UploadProgressType[];
-  onPause?: (filename: string) => void;
-  onResume?: (filename: string) => void;
   onCancel?: (filename: string) => void;
-  onPauseAll?: () => void;
-  onResumeAll?: () => void;
   onCancelAll?: () => void;
 }
 
@@ -21,11 +17,7 @@ function formatFileSize(bytes: number): string {
 
 export function UploadProgress({
   uploads,
-  onPause,
-  onResume,
   onCancel,
-  onPauseAll,
-  onResumeAll,
   onCancelAll,
 }: UploadProgressProps) {
   if (uploads.length === 0) return null;
@@ -33,8 +25,7 @@ export function UploadProgress({
   const completedCount = uploads.filter((u) => u.status === 'completed').length;
   const totalCount = uploads.length;
   const overallProgress = uploads.reduce((sum, u) => sum + u.progress, 0) / totalCount;
-  const hasActive = uploads.some((u) => u.status === 'uploading' || u.status === 'assembling');
-  const hasPaused = uploads.some((u) => u.status === 'paused');
+  const hasActive = uploads.some((u) => u.status === 'uploading' || u.status === 'processing' || u.status === 'pending');
   const hasErrors = uploads.some((u) => u.status === 'error');
 
   return (
@@ -46,23 +37,7 @@ export function UploadProgress({
             Uploading Files ({completedCount}/{totalCount})
           </h3>
           <div className="flex gap-2">
-            {hasActive && onPauseAll && (
-              <button
-                onClick={onPauseAll}
-                className="px-3 py-1 text-sm bg-yellow-100 text-yellow-700 rounded hover:bg-yellow-200 transition-colors"
-              >
-                Pause All
-              </button>
-            )}
-            {hasPaused && onResumeAll && (
-              <button
-                onClick={onResumeAll}
-                className="px-3 py-1 text-sm bg-green-100 text-green-700 rounded hover:bg-green-200 transition-colors"
-              >
-                Resume All
-              </button>
-            )}
-            {onCancelAll && (hasActive || hasPaused) && (
+            {onCancelAll && hasActive && (
               <button
                 onClick={onCancelAll}
                 className="px-3 py-1 text-sm bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
@@ -99,8 +74,8 @@ export function UploadProgress({
                   ? 'bg-destructive/10 border-destructive/30'
                   : upload.status === 'completed'
                     ? 'bg-sage/10 border-sage/30'
-                    : upload.status === 'paused'
-                      ? 'bg-yellow-50 border-yellow-200'
+                    : upload.status === 'cancelled'
+                      ? 'bg-gray-50 border-gray-200'
                       : 'bg-secondary/50 border-border'
               }`}
             >
@@ -119,56 +94,26 @@ export function UploadProgress({
                     className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap ${
                       upload.status === 'uploading'
                         ? 'bg-blue-100 text-blue-700'
-                        : upload.status === 'assembling'
+                        : upload.status === 'processing'
                           ? 'bg-purple-100 text-purple-700'
                           : upload.status === 'completed'
                             ? 'bg-green-100 text-green-700'
-                            : upload.status === 'paused'
-                              ? 'bg-yellow-100 text-yellow-700'
+                            : upload.status === 'cancelled'
+                              ? 'bg-gray-100 text-gray-700'
                               : upload.status === 'error'
                                 ? 'bg-red-100 text-red-700'
                                 : 'bg-gray-100 text-gray-700'
                     }`}
                   >
-                    {upload.status === 'assembling'
+                    {upload.status === 'processing'
                       ? 'Processing...'
                       : upload.status === 'uploading'
                         ? `${Math.round(upload.progress)}%`
                         : upload.status}
                   </span>
 
-                  {/* Actions */}
-                  {upload.status === 'uploading' && onPause && (
-                    <button
-                      onClick={() => onPause(upload.filename)}
-                      className="w-6 h-6 flex items-center justify-center text-yellow-600 hover:bg-yellow-100 rounded transition-colors"
-                      title="Pause"
-                    >
-                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                        <path
-                          fillRule="evenodd"
-                          d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z"
-                          clipRule="evenodd"
-                        />
-                      </svg>
-                    </button>
-                  )}
-                  {upload.status === 'paused' && onResume && (
-                    <button
-                      onClick={() => onResume(upload.filename)}
-                      className="w-6 h-6 flex items-center justify-center text-green-600 hover:bg-green-100 rounded transition-colors"
-                      title="Resume"
-                    >
-                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                        <path
-                          fillRule="evenodd"
-                          d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z"
-                          clipRule="evenodd"
-                        />
-                      </svg>
-                    </button>
-                  )}
-                  {(upload.status === 'uploading' || upload.status === 'paused') && onCancel && (
+                  {/* Cancel button */}
+                  {(upload.status === 'uploading' || upload.status === 'pending') && onCancel && (
                     <button
                       onClick={() => onCancel(upload.filename)}
                       className="w-6 h-6 flex items-center justify-center text-red-600 hover:bg-red-100 rounded transition-colors"
@@ -187,15 +132,13 @@ export function UploadProgress({
               </div>
 
               {/* Progress bar */}
-              {upload.status !== 'completed' && upload.status !== 'error' && (
+              {upload.status !== 'completed' && upload.status !== 'error' && upload.status !== 'cancelled' && (
                 <div className="w-full bg-secondary rounded-full h-1.5">
                   <div
                     className={`h-1.5 rounded-full transition-all duration-300 ${
-                      upload.status === 'paused'
-                        ? 'bg-yellow-500'
-                        : upload.status === 'assembling'
-                          ? 'bg-purple-500'
-                          : 'bg-primary'
+                      upload.status === 'processing'
+                        ? 'bg-purple-500'
+                        : 'bg-primary'
                     }`}
                     style={{ width: `${upload.progress}%` }}
                   />

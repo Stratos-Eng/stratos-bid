@@ -67,16 +67,12 @@ export default function TakeoffProjectsPage() {
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
-  // Chunked upload hook - projectId is set when project is created
+  // Upload hook - projectId is set when project is created
   const {
     uploads,
     isUploading,
     uploadFiles,
-    pause,
-    resume,
     cancel,
-    pauseAll,
-    resumeAll,
     cancelAll,
     reset,
   } = useChunkedUpload({
@@ -311,15 +307,11 @@ export default function TakeoffProjectsPage() {
         </div>
       )}
 
-      {/* Chunked upload progress overlay */}
+      {/* Upload progress overlay */}
       {isUploading && uploads.length > 0 && (
         <UploadProgress
           uploads={uploads}
-          onPause={pause}
-          onResume={resume}
           onCancel={cancel}
-          onPauseAll={pauseAll}
-          onResumeAll={resumeAll}
           onCancelAll={cancelAll}
         />
       )}
