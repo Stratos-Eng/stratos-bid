@@ -17,10 +17,15 @@ import psutil
 import time
 import fitz  # PyMuPDF
 
-# Memory limits
-MAX_PDF_SIZE_MB = 200  # Max PDF size in MB
+# Memory limits - conservative for 512MB Render free tier
+MAX_PDF_SIZE_MB = 100  # Max PDF size in MB (reduced)
 MAX_PDF_SIZE_BYTES = MAX_PDF_SIZE_MB * 1024 * 1024
-MEMORY_THRESHOLD_MB = 400  # Trigger cleanup when memory usage exceeds this
+MEMORY_THRESHOLD_MB = 200  # Trigger cleanup earlier
+MEMORY_CRITICAL_MB = 350  # Reject new requests above this
+
+# Concurrency limit - only process one PDF at a time to prevent memory spikes
+import asyncio
+_processing_semaphore = asyncio.Semaphore(1)  # Single concurrent PDF processing
 
 app = FastAPI(
     title="Vector Extractor",
@@ -47,9 +52,26 @@ def get_memory_usage_mb() -> float:
     return process.memory_info().rss / 1024 / 1024
 
 
+def check_memory_critical() -> tuple[bool, float]:
+    """Check if memory is at critical level. Returns (is_critical, current_mb)."""
+    current = get_memory_usage_mb()
+    return current > MEMORY_CRITICAL_MB, current
+
+
 def cleanup_memory():
     """Force garbage collection and cleanup."""
     gc.collect()
+
+
+def unload_heavy_models():
+    """Unload heavy models to free memory."""
+    global _ocr_reader, _clip_model
+    if _ocr_reader is not None:
+        _ocr_reader = None
+        gc.collect()
+    if _clip_model is not None:
+        _clip_model = None
+        gc.collect()
 
 
 def cleanup_old_jobs():
@@ -114,59 +136,74 @@ async def extract_sync(request: SyncExtractionRequest):
     """
     from .extractor import extract_page_vectors
 
-    tmp_path = None
-    try:
-        # Check memory before processing
-        if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
-            cleanup_memory()
+    # Check if memory is critical - reject early
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
+        cleanup_memory()
+        unload_heavy_models()
+        # Re-check after cleanup
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
+            return SyncExtractionResponse(
+                success=False,
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
+            )
 
-        # Decode base64 PDF data
+    # Use semaphore to limit concurrent PDF processing
+    async with _processing_semaphore:
+        tmp_path = None
         try:
-            pdf_bytes = base64.b64decode(request.pdfData)
+            # Check memory before processing
+            if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                cleanup_memory()
+
+            # Decode base64 PDF data
+            try:
+                pdf_bytes = base64.b64decode(request.pdfData)
+            except Exception as e:
+                return SyncExtractionResponse(
+                    success=False,
+                    error=f"Invalid base64 PDF data: {str(e)}"
+                )
+
+            # Check PDF size
+            if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
+                return SyncExtractionResponse(
+                    success=False,
+                    error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
+                )
+
+            # Write to temp file (extractor needs a file path)
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(pdf_bytes)
+                tmp_path = tmp.name
+
+            # Extract vectors
+            result = extract_page_vectors(
+                pdf_path=tmp_path,
+                page_number=request.pageNum - 1,  # Convert to 0-indexed
+                dpi=request.scale * 72,  # Convert scale to DPI
+            )
+
+            return SyncExtractionResponse(
+                success=True,
+                lines=result["lines"],
+                snapPoints=result["snap_points"],
+                rawPathCount=result["stats"]["raw_count"],
+                cleanedPathCount=result["stats"]["cleaned_count"],
+                quality=result["quality"],
+            )
+
         except Exception as e:
             return SyncExtractionResponse(
                 success=False,
-                error=f"Invalid base64 PDF data: {str(e)}"
+                error=str(e)
             )
-
-        # Check PDF size
-        if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
-            return SyncExtractionResponse(
-                success=False,
-                error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
-            )
-
-        # Write to temp file (extractor needs a file path)
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(pdf_bytes)
-            tmp_path = tmp.name
-
-        # Extract vectors
-        result = extract_page_vectors(
-            pdf_path=tmp_path,
-            page_number=request.pageNum - 1,  # Convert to 0-indexed
-            dpi=request.scale * 72,  # Convert scale to DPI
-        )
-
-        return SyncExtractionResponse(
-            success=True,
-            lines=result["lines"],
-            snapPoints=result["snap_points"],
-            rawPathCount=result["stats"]["raw_count"],
-            cleanedPathCount=result["stats"]["cleaned_count"],
-            quality=result["quality"],
-        )
-
-    except Exception as e:
-        return SyncExtractionResponse(
-            success=False,
-            error=str(e)
-        )
-    finally:
-        # Always clean up temp file
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        cleanup_memory()
+        finally:
+            # Always clean up temp file
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            cleanup_memory()
 
 
 # === Async extraction (for future use) ===
@@ -195,16 +232,21 @@ async def memory_stats():
     """Get memory usage statistics for debugging."""
     process = psutil.Process(os.getpid())
     mem_info = process.memory_info()
+    rss_mb = mem_info.rss / 1024 / 1024
 
     # Clean up old jobs
     cleanup_old_jobs()
 
     return {
-        "rss_mb": mem_info.rss / 1024 / 1024,
-        "vms_mb": mem_info.vms / 1024 / 1024,
+        "rss_mb": round(rss_mb, 2),
+        "vms_mb": round(mem_info.vms / 1024 / 1024, 2),
         "active_jobs": len(jobs),
         "threshold_mb": MEMORY_THRESHOLD_MB,
+        "critical_mb": MEMORY_CRITICAL_MB,
         "max_pdf_size_mb": MAX_PDF_SIZE_MB,
+        "is_critical": rss_mb > MEMORY_CRITICAL_MB,
+        "ocr_loaded": _ocr_reader is not None,
+        "clip_loaded": _clip_model is not None,
     }
 
 
@@ -250,72 +292,85 @@ async def render_page(request: RenderRequest):
     This is the endpoint called by /api/takeoff/render.
     Returns a base64-encoded PNG image.
     """
-    try:
-        # Check memory before processing
-        mem_mb = get_memory_usage_mb()
-        if mem_mb > MEMORY_THRESHOLD_MB:
-            cleanup_memory()
+    # Check if memory is critical - reject early
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
+        cleanup_memory()
+        unload_heavy_models()
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
+            return RenderResponse(
+                success=False,
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
+            )
 
-        # Decode base64 PDF data
+    # Use semaphore to limit concurrent PDF processing
+    async with _processing_semaphore:
         try:
-            pdf_bytes = base64.b64decode(request.pdfData)
-        except Exception as e:
-            return RenderResponse(
-                success=False,
-                error=f"Invalid base64 PDF data: {str(e)}"
-            )
+            # Check memory before processing
+            if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                cleanup_memory()
 
-        # Check PDF size
-        if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
-            return RenderResponse(
-                success=False,
-                error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
-            )
-
-        # Use context manager for safe cleanup
-        with open_pdf_safely(pdf_bytes) as doc:
-            # Validate page number (1-indexed from API, 0-indexed internally)
-            page_index = request.pageNum - 1
-            if page_index < 0 or page_index >= len(doc):
+            # Decode base64 PDF data
+            try:
+                pdf_bytes = base64.b64decode(request.pdfData)
+            except Exception as e:
                 return RenderResponse(
                     success=False,
-                    error=f"Invalid page number. Document has {len(doc)} pages."
+                    error=f"Invalid base64 PDF data: {str(e)}"
                 )
 
-            page = doc[page_index]
+            # Check PDF size
+            if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
+                return RenderResponse(
+                    success=False,
+                    error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
+                )
 
-            # Calculate matrix for scaling (PDF default is 72 DPI)
-            # scale=1.5 means 1.5x the default, so 108 DPI
-            mat = fitz.Matrix(request.scale, request.scale)
+            # Use context manager for safe cleanup
+            with open_pdf_safely(pdf_bytes) as doc:
+                # Validate page number (1-indexed from API, 0-indexed internally)
+                page_index = request.pageNum - 1
+                if page_index < 0 or page_index >= len(doc):
+                    return RenderResponse(
+                        success=False,
+                        error=f"Invalid page number. Document has {len(doc)} pages."
+                    )
 
-            # Render page to pixmap (PNG)
-            pix = page.get_pixmap(matrix=mat, alpha=False)
+                page = doc[page_index]
 
-            # Convert to PNG bytes
-            png_bytes = pix.tobytes("png")
+                # Calculate matrix for scaling (PDF default is 72 DPI)
+                # scale=1.5 means 1.5x the default, so 108 DPI
+                mat = fitz.Matrix(request.scale, request.scale)
 
-            # Encode as base64
-            image_b64 = base64.b64encode(png_bytes).decode("utf-8")
+                # Render page to pixmap (PNG)
+                pix = page.get_pixmap(matrix=mat, alpha=False)
 
-            result = RenderResponse(
-                success=True,
-                image=image_b64,
-                width=pix.width,
-                height=pix.height,
+                # Convert to PNG bytes
+                png_bytes = pix.tobytes("png")
+
+                # Encode as base64
+                image_b64 = base64.b64encode(png_bytes).decode("utf-8")
+
+                result = RenderResponse(
+                    success=True,
+                    image=image_b64,
+                    width=pix.width,
+                    height=pix.height,
+                )
+
+                # Explicitly clear pixmap
+                del pix
+                del png_bytes
+
+                return result
+
+        except Exception as e:
+            cleanup_memory()
+            return RenderResponse(
+                success=False,
+                error=str(e)
             )
-
-            # Explicitly clear pixmap
-            del pix
-            del png_bytes
-
-            return result
-
-    except Exception as e:
-        cleanup_memory()
-        return RenderResponse(
-            success=False,
-            error=str(e)
-        )
 
 
 # === Text Extraction Endpoint ===
@@ -349,55 +404,69 @@ async def extract_text(request: TextExtractionRequest):
     embedded text (CAD exports, digital documents). Pages with very
     little text (<50 chars) are flagged as needing OCR.
     """
-    try:
-        # Check memory before processing
-        if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
-            cleanup_memory()
-
-        # Decode base64 PDF data
-        try:
-            pdf_bytes = base64.b64decode(request.pdfData)
-        except Exception as e:
-            return TextExtractionResponse(
-                success=False,
-                error=f"Invalid base64 PDF data: {str(e)}"
-            )
-
-        # Check PDF size
-        if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
-            return TextExtractionResponse(
-                success=False,
-                error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
-            )
-
-        # Use context manager for safe cleanup
-        with open_pdf_safely(pdf_bytes) as doc:
-            pages = []
-            for i in range(len(doc)):
-                page = doc[i]
-                text = page.get_text()
-
-                # Flag pages with very little text as needing OCR
-                needs_ocr = len(text.strip()) < 50
-
-                pages.append(PageTextResult(
-                    page=i + 1,  # 1-indexed
-                    text=text,
-                    needsOcr=needs_ocr,
-                ))
-
-            return TextExtractionResponse(
-                success=True,
-                pages=pages,
-                totalPages=len(pages),
-            )
-
-    except Exception as e:
+    # Check if memory is critical - reject early
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
         cleanup_memory()
-        return TextExtractionResponse(
-            success=False,
-            error=str(e)
-        )
+        unload_heavy_models()
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
+            return TextExtractionResponse(
+                success=False,
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
+            )
+
+    # Use semaphore to limit concurrent PDF processing
+    async with _processing_semaphore:
+        try:
+            # Check memory before processing
+            if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                cleanup_memory()
+
+            # Decode base64 PDF data
+            try:
+                pdf_bytes = base64.b64decode(request.pdfData)
+            except Exception as e:
+                return TextExtractionResponse(
+                    success=False,
+                    error=f"Invalid base64 PDF data: {str(e)}"
+                )
+
+            # Check PDF size
+            if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
+                return TextExtractionResponse(
+                    success=False,
+                    error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
+                )
+
+            # Use context manager for safe cleanup
+            with open_pdf_safely(pdf_bytes) as doc:
+                pages = []
+                for i in range(len(doc)):
+                    page = doc[i]
+                    text = page.get_text()
+
+                    # Flag pages with very little text as needing OCR
+                    needs_ocr = len(text.strip()) < 50
+
+                    pages.append(PageTextResult(
+                        page=i + 1,  # 1-indexed
+                        text=text,
+                        needsOcr=needs_ocr,
+                    ))
+
+                return TextExtractionResponse(
+                    success=True,
+                    pages=pages,
+                    totalPages=len(pages),
+                )
+
+        except Exception as e:
+            cleanup_memory()
+            return TextExtractionResponse(
+                success=False,
+                error=str(e)
+            )
 
 
 # === Region Crop Endpoint ===
@@ -428,81 +497,95 @@ async def crop_region(request: CropRequest):
 
     Input coordinates are normalized (0-1), output is a base64 PNG.
     """
-    try:
-        # Check memory before processing
-        if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
-            cleanup_memory()
-
-        # Decode base64 PDF data
-        try:
-            pdf_bytes = base64.b64decode(request.pdfData)
-        except Exception as e:
-            return CropResponse(success=False, error=f"Invalid base64 PDF data: {str(e)}")
-
-        # Check PDF size
-        if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
+    # Check if memory is critical - reject early
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
+        cleanup_memory()
+        unload_heavy_models()
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
             return CropResponse(
                 success=False,
-                error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
             )
 
-        # Use context manager for safe cleanup
-        with open_pdf_safely(pdf_bytes) as doc:
-            # Validate page number
-            page_index = request.pageNum - 1
-            if page_index < 0 or page_index >= len(doc):
+    # Use semaphore to limit concurrent PDF processing
+    async with _processing_semaphore:
+        try:
+            # Check memory before processing
+            if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                cleanup_memory()
+
+            # Decode base64 PDF data
+            try:
+                pdf_bytes = base64.b64decode(request.pdfData)
+            except Exception as e:
+                return CropResponse(success=False, error=f"Invalid base64 PDF data: {str(e)}")
+
+            # Check PDF size
+            if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
                 return CropResponse(
                     success=False,
-                    error=f"Invalid page number. Document has {len(doc)} pages."
+                    error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
                 )
 
-            page = doc[page_index]
+            # Use context manager for safe cleanup
+            with open_pdf_safely(pdf_bytes) as doc:
+                # Validate page number
+                page_index = request.pageNum - 1
+                if page_index < 0 or page_index >= len(doc):
+                    return CropResponse(
+                        success=False,
+                        error=f"Invalid page number. Document has {len(doc)} pages."
+                    )
 
-            # Get page dimensions
-            page_rect = page.rect
-            page_width = page_rect.width
-            page_height = page_rect.height
+                page = doc[page_index]
 
-            # Convert normalized coordinates to page coordinates
-            center_x = request.x * page_width
-            center_y = request.y * page_height
+                # Get page dimensions
+                page_rect = page.rect
+                page_width = page_rect.width
+                page_height = page_rect.height
 
-            # Calculate crop rectangle (in PDF points)
-            dpi_scale = 72 / 150
-            half_width = (request.width / 2) * dpi_scale
-            half_height = (request.height / 2) * dpi_scale
+                # Convert normalized coordinates to page coordinates
+                center_x = request.x * page_width
+                center_y = request.y * page_height
 
-            # Create clip rectangle
-            clip_rect = fitz.Rect(
-                max(0, center_x - half_width),
-                max(0, center_y - half_height),
-                min(page_width, center_x + half_width),
-                min(page_height, center_y + half_height)
-            )
+                # Calculate crop rectangle (in PDF points)
+                dpi_scale = 72 / 150
+                half_width = (request.width / 2) * dpi_scale
+                half_height = (request.height / 2) * dpi_scale
 
-            # Render the cropped region at 150 DPI
-            mat = fitz.Matrix(150 / 72, 150 / 72)
-            pix = page.get_pixmap(matrix=mat, clip=clip_rect, alpha=False)
+                # Create clip rectangle
+                clip_rect = fitz.Rect(
+                    max(0, center_x - half_width),
+                    max(0, center_y - half_height),
+                    min(page_width, center_x + half_width),
+                    min(page_height, center_y + half_height)
+                )
 
-            # Convert to PNG bytes
-            png_bytes = pix.tobytes("png")
-            image_b64 = base64.b64encode(png_bytes).decode("utf-8")
+                # Render the cropped region at 150 DPI
+                mat = fitz.Matrix(150 / 72, 150 / 72)
+                pix = page.get_pixmap(matrix=mat, clip=clip_rect, alpha=False)
 
-            result = CropResponse(
-                success=True,
-                image=image_b64,
-                width=pix.width,
-                height=pix.height,
-            )
+                # Convert to PNG bytes
+                png_bytes = pix.tobytes("png")
+                image_b64 = base64.b64encode(png_bytes).decode("utf-8")
 
-            del pix
-            del png_bytes
+                result = CropResponse(
+                    success=True,
+                    image=image_b64,
+                    width=pix.width,
+                    height=pix.height,
+                )
 
-            return result
+                del pix
+                del png_bytes
 
-    except Exception as e:
-        cleanup_memory()
-        return CropResponse(success=False, error=str(e))
+                return result
+
+        except Exception as e:
+            cleanup_memory()
+            return CropResponse(success=False, error=str(e))
 
 
 # === OCR Endpoint ===
@@ -539,59 +622,73 @@ async def ocr_image(request: OcrRequest):
 
     Returns detected text and confidence score.
     """
-    try:
-        import io
-        from PIL import Image
-        import numpy as np
-
-        # Decode base64 image
-        try:
-            image_bytes = base64.b64decode(request.image)
-            image = Image.open(io.BytesIO(image_bytes))
-            image_array = np.array(image)
-        except Exception as e:
-            return OcrResponse(success=False, error=f"Invalid image data: {str(e)}")
-
-        # Get OCR reader
-        reader = get_ocr_reader()
-
-        # Perform OCR
-        results = reader.readtext(image_array)
-
-        if not results:
+    # Check if memory is critical - reject early (OCR loads ~200MB model)
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
+        cleanup_memory()
+        # Don't unload OCR model here since we're about to use it
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
             return OcrResponse(
-                success=True,
-                text="",
-                confidence=0.0,
-                boxes=[],
+                success=False,
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
             )
 
-        # Combine all text and calculate average confidence
-        texts = []
-        confidences = []
-        boxes = []
+    # Use semaphore to limit concurrent processing
+    async with _processing_semaphore:
+        try:
+            import io
+            from PIL import Image
+            import numpy as np
 
-        for (bbox, text, conf) in results:
-            texts.append(text)
-            confidences.append(conf)
-            boxes.append({
-                "text": text,
-                "confidence": conf,
-                "bbox": bbox,
-            })
+            # Decode base64 image
+            try:
+                image_bytes = base64.b64decode(request.image)
+                image = Image.open(io.BytesIO(image_bytes))
+                image_array = np.array(image)
+            except Exception as e:
+                return OcrResponse(success=False, error=f"Invalid image data: {str(e)}")
 
-        combined_text = " ".join(texts)
-        avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+            # Get OCR reader
+            reader = get_ocr_reader()
 
-        return OcrResponse(
-            success=True,
-            text=combined_text,
-            confidence=avg_confidence,
-            boxes=boxes,
-        )
+            # Perform OCR
+            results = reader.readtext(image_array)
 
-    except Exception as e:
-        return OcrResponse(success=False, error=str(e))
+            if not results:
+                return OcrResponse(
+                    success=True,
+                    text="",
+                    confidence=0.0,
+                    boxes=[],
+                )
+
+            # Combine all text and calculate average confidence
+            texts = []
+            confidences = []
+            boxes = []
+
+            for (bbox, text, conf) in results:
+                texts.append(text)
+                confidences.append(conf)
+                boxes.append({
+                    "text": text,
+                    "confidence": conf,
+                    "bbox": bbox,
+                })
+
+            combined_text = " ".join(texts)
+            avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+
+            return OcrResponse(
+                success=True,
+                text=combined_text,
+                confidence=avg_confidence,
+                boxes=boxes,
+            )
+
+        except Exception as e:
+            return OcrResponse(success=False, error=str(e))
 
 
 # === CLIP Embedding Endpoint ===
@@ -627,36 +724,50 @@ async def generate_embedding(request: EmbedRequest):
 
     Returns a 512-dimensional float vector for similarity search.
     """
-    try:
-        import io
-        from PIL import Image
+    # Check if memory is critical - reject early (CLIP loads ~400MB model)
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
+        cleanup_memory()
+        # Don't unload CLIP model here since we're about to use it
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
+            return EmbedResponse(
+                success=False,
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
+            )
 
-        # Decode base64 image
+    # Use semaphore to limit concurrent processing
+    async with _processing_semaphore:
         try:
-            image_bytes = base64.b64decode(request.image)
-            image = Image.open(io.BytesIO(image_bytes))
-            # Convert to RGB if necessary
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
+            import io
+            from PIL import Image
+
+            # Decode base64 image
+            try:
+                image_bytes = base64.b64decode(request.image)
+                image = Image.open(io.BytesIO(image_bytes))
+                # Convert to RGB if necessary
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
+            except Exception as e:
+                return EmbedResponse(success=False, error=f"Invalid image data: {str(e)}")
+
+            # Get CLIP model
+            model = get_clip_model()
+
+            # Generate embedding
+            embedding = model.encode(image)
+
+            # Convert to list of floats
+            embedding_list = embedding.tolist()
+
+            return EmbedResponse(
+                success=True,
+                embedding=embedding_list,
+            )
+
         except Exception as e:
-            return EmbedResponse(success=False, error=f"Invalid image data: {str(e)}")
-
-        # Get CLIP model
-        model = get_clip_model()
-
-        # Generate embedding
-        embedding = model.encode(image)
-
-        # Convert to list of floats
-        embedding_list = embedding.tolist()
-
-        return EmbedResponse(
-            success=True,
-            embedding=embedding_list,
-        )
-
-    except Exception as e:
-        return EmbedResponse(success=False, error=str(e))
+            return EmbedResponse(success=False, error=str(e))
 
 
 @app.post("/extract", response_model=ExtractionStatus)
