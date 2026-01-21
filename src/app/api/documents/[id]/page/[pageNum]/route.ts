@@ -8,10 +8,12 @@ import fs from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { randomUUID } from 'crypto';
+import { downloadFile, isBlobUrl } from '@/lib/storage';
 
 const execFileAsync = promisify(execFile);
 const unlinkAsync = promisify(fs.unlink);
 const readFileAsync = promisify(fs.readFile);
+const writeFileAsync = promisify(fs.writeFile);
 
 // GET /api/documents/[id]/page/[pageNum] - Render a specific PDF page as an image
 export async function GET(
@@ -57,71 +59,120 @@ export async function GET(
     }
 
     // Get file path
-    const filePath = doc.document.storagePath;
+    const storagePath = doc.document.storagePath;
 
-    if (!filePath) {
+    if (!storagePath) {
       return NextResponse.json(
         { error: 'Document file path not available' },
         { status: 404 }
       );
     }
 
-    // Resolve the file path
-    let resolvedPath = filePath;
-    if (!path.isAbsolute(filePath)) {
-      resolvedPath = path.join(process.cwd(), filePath);
-    }
+    // Prepare the PDF file for rendering
+    let pdfPath: string;
+    let tempPdfPath: string | null = null;
 
-    // Normalize and security check - allow files in uploads/ or docs/ directories
-    const normalizedPath = path.normalize(resolvedPath);
-    const uploadsDir = path.normalize(path.join(process.cwd(), 'uploads'));
-    const docsDir = path.normalize(path.join(process.cwd(), 'docs'));
-    if (!normalizedPath.startsWith(uploadsDir) && !normalizedPath.startsWith(docsDir)) {
-      return NextResponse.json({ error: 'Invalid file path' }, { status: 400 });
-    }
+    if (isBlobUrl(storagePath)) {
+      // Download Blob to temp file for rendering
+      const buffer = await downloadFile(storagePath);
+      tempPdfPath = path.join('/tmp', `pdf-download-${randomUUID()}.pdf`);
+      await writeFileAsync(tempPdfPath, buffer);
+      pdfPath = tempPdfPath;
+    } else {
+      // Resolve local file path
+      pdfPath = path.isAbsolute(storagePath)
+        ? storagePath
+        : path.join(process.cwd(), storagePath);
 
-    if (!fs.existsSync(normalizedPath)) {
-      return NextResponse.json(
-        { error: 'File not found on disk' },
-        { status: 404 }
-      );
+      // Security check for local files - allow files in uploads/ or docs/ directories
+      const normalizedPath = path.normalize(pdfPath);
+      const uploadsDir = path.normalize(path.join(process.cwd(), 'uploads'));
+      const docsDir = path.normalize(path.join(process.cwd(), 'docs'));
+      if (!normalizedPath.startsWith(uploadsDir) && !normalizedPath.startsWith(docsDir)) {
+        return NextResponse.json({ error: 'Invalid file path' }, { status: 400 });
+      }
+
+      if (!fs.existsSync(pdfPath)) {
+        return NextResponse.json(
+          { error: 'File not found on disk' },
+          { status: 404 }
+        );
+      }
     }
 
     // Use pdftoppm to render the page (much more reliable than pdf.js with node-canvas)
-    // Note: pdftoppm doesn't support stdout piping on macOS, so we use temp files
     const tempPrefix = path.join('/tmp', `pdf-page-${randomUUID()}`);
     const tempFile = `${tempPrefix}.png`;
 
     try {
-      await execFileAsync('pdftoppm', [
-        '-f', String(pageNum),
-        '-l', String(pageNum),
-        '-png',
-        '-r', String(dpi),
-        '-singlefile',
-        normalizedPath,
-        tempPrefix
-      ], {
-        timeout: 30000 // 30 second timeout
-      });
+      // Try pdftoppm first (local only, not available on Vercel)
+      let imageBuffer: Buffer | null = null;
 
-      // Read the generated file
-      const imageBuffer = await readFileAsync(tempFile);
+      try {
+        await execFileAsync('pdftoppm', [
+          '-f', String(pageNum),
+          '-l', String(pageNum),
+          '-png',
+          '-r', String(dpi),
+          '-singlefile',
+          pdfPath,
+          tempPrefix
+        ], {
+          timeout: 30000 // 30 second timeout
+        });
+        imageBuffer = await readFileAsync(tempFile);
+        unlinkAsync(tempFile).catch(() => {});
+      } catch {
+        // pdftoppm not available (serverless) - try Python service
+        const pythonApiUrl = process.env.PYTHON_VECTOR_API_URL || 'http://localhost:8001';
+        const pdfBuffer = await readFileAsync(pdfPath);
+        const pdfBase64 = pdfBuffer.toString('base64');
 
-      // Clean up temp file (don't await, do it async)
-      unlinkAsync(tempFile).catch(() => {});
+        const response = await fetch(`${pythonApiUrl}/render`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pdfData: pdfBase64,
+            pageNum: pageNum,
+            scale: scale,
+            returnBase64: true,
+          }),
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          if (result.success && result.image) {
+            imageBuffer = Buffer.from(result.image, 'base64');
+          }
+        }
+      }
+
+      // Clean up temp PDF if we downloaded it
+      if (tempPdfPath) {
+        unlinkAsync(tempPdfPath).catch(() => {});
+      }
+
+      if (!imageBuffer) {
+        return NextResponse.json(
+          { error: 'Failed to render PDF page - no renderer available' },
+          { status: 500 }
+        );
+      }
 
       // Return the image
-      return new NextResponse(imageBuffer, {
+      return new NextResponse(new Uint8Array(imageBuffer), {
         headers: {
           'Content-Type': 'image/png',
           'Cache-Control': 'public, max-age=86400', // Cache for 1 day
         },
       });
     } catch (renderError) {
-      // Clean up temp file on error
+      // Clean up temp files on error
       unlinkAsync(tempFile).catch(() => {});
-      console.error('pdftoppm render error:', renderError);
+      if (tempPdfPath) {
+        unlinkAsync(tempPdfPath).catch(() => {});
+      }
+      console.error('Page render error:', renderError);
       return NextResponse.json(
         { error: 'Failed to render PDF page' },
         { status: 500 }

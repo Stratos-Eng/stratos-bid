@@ -6,6 +6,7 @@ import { eq, sql, and } from 'drizzle-orm';
 import fs from 'fs';
 import path from 'path';
 import { applyRateLimit, createRateLimitResponse, rateLimitConfigs } from '@/lib/rate-limit';
+import { downloadFile, isBlobUrl } from '@/lib/storage';
 
 const PYTHON_SERVICE_URL = process.env.PYTHON_VECTOR_API_URL || 'http://localhost:8001';
 
@@ -89,17 +90,25 @@ export async function POST(
       return NextResponse.json({ error: 'Document not found' }, { status: 404 });
     }
 
-    // Read PDF file
-    let resolvedPath = doc.storagePath;
-    if (!path.isAbsolute(resolvedPath)) {
-      resolvedPath = path.join(process.cwd(), resolvedPath);
+    // Get PDF data from storage
+    const storagePath = doc.storagePath;
+    let pdfData: Buffer;
+
+    if (isBlobUrl(storagePath)) {
+      // Download from Vercel Blob
+      pdfData = await downloadFile(storagePath);
+    } else {
+      // Read from local file system
+      let resolvedPath = storagePath;
+      if (!path.isAbsolute(resolvedPath)) {
+        resolvedPath = path.join(process.cwd(), resolvedPath);
+      }
+      if (!fs.existsSync(resolvedPath)) {
+        return NextResponse.json({ error: 'PDF file not found' }, { status: 404 });
+      }
+      pdfData = fs.readFileSync(resolvedPath);
     }
 
-    if (!fs.existsSync(resolvedPath)) {
-      return NextResponse.json({ error: 'PDF file not found' }, { status: 404 });
-    }
-
-    const pdfData = fs.readFileSync(resolvedPath);
     const pdfBase64 = pdfData.toString('base64');
 
     // Step 1: Crop region around click point

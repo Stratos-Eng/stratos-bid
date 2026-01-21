@@ -7,6 +7,7 @@ import path from 'path';
 import fs from 'fs';
 // Use legacy build for Node.js environment
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { downloadFile, isBlobUrl } from '@/lib/storage';
 
 interface PageInfo {
   width: number;
@@ -43,19 +44,31 @@ export async function GET(
       return NextResponse.json({ error: 'Document not found' }, { status: 404 });
     }
 
-    // Resolve the file path
-    let resolvedPath = doc.document.storagePath;
-    if (resolvedPath && !path.isAbsolute(resolvedPath)) {
-      resolvedPath = path.join(process.cwd(), resolvedPath);
-    }
-
     // Get page count and dimensions from PDF
     let pageCount = doc.document.pageCount || 1;
     const pages: PageInfo[] = [];
+    const storagePath = doc.document.storagePath;
 
-    if (resolvedPath && fs.existsSync(resolvedPath)) {
+    if (storagePath) {
       try {
-        const data = new Uint8Array(fs.readFileSync(resolvedPath));
+        let data: Uint8Array;
+
+        if (isBlobUrl(storagePath)) {
+          // Download from Vercel Blob
+          const buffer = await downloadFile(storagePath);
+          data = new Uint8Array(buffer);
+        } else {
+          // Read from local file system
+          let resolvedPath = storagePath;
+          if (!path.isAbsolute(resolvedPath)) {
+            resolvedPath = path.join(process.cwd(), resolvedPath);
+          }
+          if (!fs.existsSync(resolvedPath)) {
+            throw new Error(`File not found: ${resolvedPath}`);
+          }
+          data = new Uint8Array(fs.readFileSync(resolvedPath));
+        }
+
         const loadingTask = pdfjsLib.getDocument({ data });
         const pdfDocument = await loadingTask.promise;
         pageCount = pdfDocument.numPages;
@@ -95,7 +108,7 @@ export async function GET(
         }
       }
     } else {
-      // No file - use defaults
+      // No storage path - use defaults
       for (let i = 0; i < pageCount; i++) {
         pages.push({ width: 612, height: 792, rotation: 0 });
       }

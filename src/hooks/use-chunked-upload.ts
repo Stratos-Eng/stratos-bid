@@ -3,12 +3,18 @@
 import { useState, useCallback, useRef } from 'react';
 import { upload } from '@vercel/blob/client';
 
+// Configuration for uploads
+const LARGE_FILE_THRESHOLD = 50 * 1024 * 1024; // 50MB - use server-side multipart above this
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 1000;
+
 export interface UploadProgress {
   filename: string;
   fileSize: number;
   progress: number; // 0-100
-  status: 'pending' | 'uploading' | 'processing' | 'completed' | 'error' | 'cancelled';
+  status: 'pending' | 'uploading' | 'processing' | 'completed' | 'error' | 'cancelled' | 'retrying';
   error?: string;
+  retryCount?: number;
 }
 
 export interface UploadOptions {
@@ -53,6 +59,92 @@ export function useChunkedUpload(options: UploadOptions) {
     [onProgress]
   );
 
+  // Helper function to delay execution
+  const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  // Upload with retry logic
+  const uploadWithRetry = useCallback(
+    async (
+      pathname: string,
+      file: File,
+      filename: string,
+      retryCount = 0
+    ): Promise<{ url: string; pathname: string }> => {
+      try {
+        const blob = await upload(pathname, file, {
+          access: 'public',
+          handleUploadUrl: '/api/upload/token',
+          onUploadProgress: (event) => {
+            const progress = Math.round((event.loaded / event.total) * 100);
+            updateUpload(filename, { progress, status: 'uploading' });
+          },
+        });
+        return blob;
+      } catch (error) {
+        const isNetworkError =
+          error instanceof Error &&
+          (error.message.includes('network') ||
+           error.message.includes('Failed to fetch') ||
+           error.message.includes('ERR_FAILED') ||
+           error.message.includes('timeout'));
+
+        if (isNetworkError && retryCount < MAX_RETRIES) {
+          const nextRetry = retryCount + 1;
+          const delayMs = RETRY_DELAY_MS * Math.pow(2, retryCount); // Exponential backoff
+
+          console.log(`[upload] Retry ${nextRetry}/${MAX_RETRIES} for ${filename} after ${delayMs}ms`);
+          updateUpload(filename, {
+            status: 'retrying',
+            retryCount: nextRetry,
+            error: `Retrying (${nextRetry}/${MAX_RETRIES})...`
+          });
+
+          await delay(delayMs);
+          return uploadWithRetry(pathname, file, filename, nextRetry);
+        }
+        throw error;
+      }
+    },
+    [updateUpload]
+  );
+
+  // Chunked upload for large files using server-side multipart
+  const uploadLargeFile = useCallback(
+    async (
+      file: File,
+      pathname: string,
+      filename: string,
+      abortSignal: AbortSignal
+    ): Promise<{ url: string; pathname: string }> => {
+      console.log(`[upload] Using chunked upload for large file: ${filename} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+
+      // For large files, upload through server-side multipart endpoint
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('pathname', pathname);
+
+      const response = await fetch('/api/upload/multipart', {
+        method: 'POST',
+        body: formData,
+        signal: abortSignal,
+      });
+
+      if (!response.ok) {
+        // If multipart endpoint doesn't exist, fall back to regular upload with retry
+        if (response.status === 404) {
+          console.log('[upload] Multipart endpoint not available, falling back to regular upload');
+          return uploadWithRetry(pathname, file, filename);
+        }
+        const err = await response.json().catch(() => ({ error: 'Upload failed' }));
+        throw new Error(err.error || 'Failed to upload large file');
+      }
+
+      const result = await response.json();
+      return { url: result.url, pathname: result.pathname };
+    },
+    [uploadWithRetry]
+  );
+
   const uploadFile = useCallback(
     async (fileInfo: FileToUpload): Promise<{ filename: string; sheets?: string[]; documentId?: string }> => {
       const { file, folderName, relativePath, projectId: fileProjectId, bidId: fileBidId } = fileInfo;
@@ -65,7 +157,8 @@ export function useChunkedUpload(options: UploadOptions) {
         throw new Error('Either projectId or bidId is required');
       }
 
-      console.log('[upload] Starting upload for:', file.name, 'size:', file.size);
+      const fileSizeMB = (file.size / 1024 / 1024).toFixed(1);
+      console.log(`[upload] Starting upload for: ${file.name} (${fileSizeMB}MB)`);
 
       // Create abort controller for this upload
       const abortController = new AbortController();
@@ -86,15 +179,16 @@ export function useChunkedUpload(options: UploadOptions) {
 
         updateUpload(file.name, { status: 'uploading', progress: 0 });
 
-        // Upload directly to Vercel Blob
-        const blob = await upload(pathname, file, {
-          access: 'public',
-          handleUploadUrl: '/api/upload/token',
-          onUploadProgress: (event) => {
-            const progress = Math.round((event.loaded / event.total) * 100);
-            updateUpload(file.name, { progress, status: 'uploading' });
-          },
-        });
+        // Choose upload method based on file size
+        let blob: { url: string; pathname: string };
+
+        if (file.size > LARGE_FILE_THRESHOLD) {
+          // Use chunked/multipart upload for large files
+          blob = await uploadLargeFile(file, pathname, file.name, abortController.signal);
+        } else {
+          // Use regular upload with retry for smaller files
+          blob = await uploadWithRetry(pathname, file, file.name);
+        }
 
         console.log('[upload] Blob upload complete:', blob.url);
 
@@ -145,7 +239,7 @@ export function useChunkedUpload(options: UploadOptions) {
         throw error;
       }
     },
-    [projectId, bidId, updateUpload, onFileComplete]
+    [projectId, bidId, updateUpload, onFileComplete, uploadWithRetry, uploadLargeFile]
   );
 
   const uploadFiles = useCallback(

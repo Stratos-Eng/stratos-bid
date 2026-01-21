@@ -6,6 +6,7 @@ import { eq } from 'drizzle-orm';
 import path from 'path';
 import fs from 'fs';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { downloadFile, isBlobUrl } from '@/lib/storage';
 
 interface TextPosition {
   text: string;
@@ -48,18 +49,32 @@ export async function GET(
       return NextResponse.json({ error: 'Document not found' }, { status: 404 });
     }
 
-    // Resolve the file path
-    let resolvedPath = doc.document.storagePath;
-    if (resolvedPath && !path.isAbsolute(resolvedPath)) {
-      resolvedPath = path.join(process.cwd(), resolvedPath);
-    }
+    // Get PDF data from storage
+    const storagePath = doc.document.storagePath;
 
-    if (!resolvedPath || !fs.existsSync(resolvedPath)) {
+    if (!storagePath) {
       return NextResponse.json({ error: 'PDF file not found' }, { status: 404 });
     }
 
+    let data: Uint8Array;
+
+    if (isBlobUrl(storagePath)) {
+      // Download from Vercel Blob
+      const buffer = await downloadFile(storagePath);
+      data = new Uint8Array(buffer);
+    } else {
+      // Read from local file system
+      let resolvedPath = storagePath;
+      if (!path.isAbsolute(resolvedPath)) {
+        resolvedPath = path.join(process.cwd(), resolvedPath);
+      }
+      if (!fs.existsSync(resolvedPath)) {
+        return NextResponse.json({ error: 'PDF file not found' }, { status: 404 });
+      }
+      data = new Uint8Array(fs.readFileSync(resolvedPath));
+    }
+
     // Load PDF and extract text positions
-    const data = new Uint8Array(fs.readFileSync(resolvedPath));
     const loadingTask = pdfjsLib.getDocument({ data });
     const pdfDocument = await loadingTask.promise;
 
