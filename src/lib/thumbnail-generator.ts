@@ -20,7 +20,9 @@ const execFileAsync = promisify(execFile);
 // Thumbnail settings
 const THUMBNAIL_WIDTH = 150;  // Width in pixels
 const THUMBNAIL_DPI = 72;     // Low DPI for fast generation
-const THUMBNAILS_DIR = 'thumbnails';
+
+// Use /tmp for serverless environments (Vercel has read-only filesystem except /tmp)
+const THUMBNAILS_DIR = process.env.VERCEL ? '/tmp/thumbnails' : 'thumbnails';
 
 export interface ThumbnailConfig {
   documentId: string;
@@ -45,6 +47,10 @@ function validateDocumentId(id: string): boolean {
  * Get the output directory for a document's thumbnails
  */
 export function getThumbnailDir(documentId: string): string {
+  // On Vercel, THUMBNAILS_DIR is already an absolute path (/tmp/thumbnails)
+  if (process.env.VERCEL) {
+    return join(THUMBNAILS_DIR, documentId);
+  }
   return join(process.cwd(), THUMBNAILS_DIR, documentId);
 }
 
