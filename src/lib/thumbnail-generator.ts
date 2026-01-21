@@ -13,7 +13,7 @@ import { promisify } from 'util';
 import { PDFDocument } from 'pdf-lib';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
-import { put, head } from '@vercel/blob';
+import { put, list } from '@vercel/blob';
 import { downloadFile, isBlobUrl } from '@/lib/storage';
 
 const execFileAsync = promisify(execFile);
@@ -50,15 +50,51 @@ export function getThumbnailBlobPath(documentId: string, pageNumber: number): st
 
 /**
  * Check if a thumbnail exists in Blob storage
+ * Returns the Blob URL if exists, null otherwise
  */
 export async function thumbnailExistsInBlob(documentId: string, pageNumber: number): Promise<string | null> {
   try {
     const pathname = getThumbnailBlobPath(documentId, pageNumber);
-    // Try to get the blob info - if it exists, return the URL
-    const blobInfo = await head(`https://${process.env.BLOB_STORE_ID}.public.blob.vercel-storage.com/${pathname}`);
-    return blobInfo.url;
+    // List blobs with exact pathname prefix
+    const { blobs } = await list({ prefix: pathname, limit: 1 });
+    // Check if we found the exact file (not just prefix match)
+    const match = blobs.find(b => b.pathname === pathname);
+    return match?.url || null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Get all thumbnail URLs for a document from Blob storage
+ * Returns an array where index corresponds to page number - 1
+ * Null values indicate missing thumbnails
+ */
+export async function getAllThumbnailUrls(documentId: string, pageCount: number): Promise<(string | null)[]> {
+  try {
+    // List all blobs under this document's thumbnail prefix
+    const prefix = `thumbnails/${documentId}/`;
+    const { blobs } = await list({ prefix, limit: pageCount + 10 }); // +10 buffer
+
+    // Build a map of page number -> URL
+    const urlMap = new Map<number, string>();
+    for (const blob of blobs) {
+      // Extract page number from pathname like "thumbnails/{docId}/1.webp"
+      const match = blob.pathname.match(/\/(\d+)\.webp$/);
+      if (match) {
+        urlMap.set(parseInt(match[1], 10), blob.url);
+      }
+    }
+
+    // Build result array
+    const urls: (string | null)[] = [];
+    for (let i = 1; i <= pageCount; i++) {
+      urls.push(urlMap.get(i) || null);
+    }
+    return urls;
+  } catch (error) {
+    console.error('Failed to list thumbnail URLs:', error);
+    return new Array(pageCount).fill(null);
   }
 }
 

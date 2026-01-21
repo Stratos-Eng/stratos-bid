@@ -7,7 +7,7 @@ import path from 'path';
 import fs from 'fs';
 import { getDocumentProxy } from 'unpdf';
 import { downloadFile, isBlobUrl } from '@/lib/storage';
-import { getThumbnailBlobPath } from '@/lib/thumbnail-generator';
+import { getAllThumbnailUrls } from '@/lib/thumbnail-generator';
 
 interface PageInfo {
   width: number;
@@ -115,19 +115,19 @@ export async function GET(
       }
     }
 
-    // Generate thumbnail URLs - use API pattern as fallback
-    // Client will load directly from these URLs
-    const thumbnailUrls = Array.from({ length: pageCount }, (_, i) =>
-      `/api/documents/${id}/thumbnail/${i + 1}`
-    );
+    // Get thumbnail URLs from Blob storage (direct CDN URLs)
+    // If thumbnails aren't ready, this returns nulls and client should use the batch endpoint
+    // to poll for when they're ready, or fall back to API endpoint
+    const thumbnailUrls = await getAllThumbnailUrls(id, pageCount);
+    const thumbnailsReady = thumbnailUrls.every(url => url !== null);
 
     return NextResponse.json({
       id: doc.document.id,
       filename: doc.document.filename,
       pageCount,
       pages, // Array of page dimensions
-      thumbnailUrls, // Array of thumbnail URLs (API endpoints that redirect to Blob)
-      thumbnailsReady: doc.document.thumbnailsGenerated || false,
+      thumbnailUrls, // Direct Blob CDN URLs (or null if not generated)
+      thumbnailsReady,
       bidId: doc.bid.id,
       bidTitle: doc.bid.title,
       docType: doc.document.docType,
