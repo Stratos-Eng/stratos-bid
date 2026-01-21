@@ -5,9 +5,13 @@ import { takeoffSheets, sheetVectors, takeoffProjects, documents } from '@/db/sc
 import { eq } from 'drizzle-orm';
 import path from 'path';
 import fs from 'fs';
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { getDocumentProxy } from 'unpdf';
+import * as pdfjs from 'unpdf/pdfjs';
 import { extractVectorsSchema, getVectorsSchema, formatZodError } from '@/lib/validations/takeoff';
+import { downloadFile, isBlobUrl } from '@/lib/storage';
+
+// OPS constants for PDF operator list (moveTo, lineTo, etc.)
+const OPS = pdfjs.OPS;
 
 // Python serverless function URL (set in environment)
 const PYTHON_VECTOR_API_URL = process.env.PYTHON_VECTOR_API_URL;
@@ -75,7 +79,8 @@ function dedupePoints(points: SnapPoint[], tolerance: number = 2): SnapPoint[] {
 
 // Extract vectors from PDF page using operator list
 async function extractVectorsFromPage(
-  page: pdfjsLib.PDFPageProxy,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  page: any,
   scale: number
 ): Promise<{ lines: LineSegment[]; snapPoints: SnapPoint[]; rawCount: number; cleanedCount: number }> {
   const operatorList = await page.getOperatorList();
@@ -326,31 +331,40 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Sheet not found' }, { status: 404 });
     }
 
-    // Find the PDF file
-    let filePath: string | null = null;
+    // Find the PDF file and load data
+    let pdfData: Uint8Array;
+    const storagePath = sheet.document?.storagePath;
 
-    if (sheet.document?.storagePath) {
-      filePath = sheet.document.storagePath;
-      if (!path.isAbsolute(filePath)) {
-        filePath = path.join(process.cwd(), 'uploads', filePath);
+    if (storagePath) {
+      // Document has storage path - could be local or Blob URL
+      if (isBlobUrl(storagePath)) {
+        // Download from Vercel Blob
+        const buffer = await downloadFile(storagePath);
+        pdfData = new Uint8Array(buffer);
+      } else {
+        // Local file
+        let filePath = storagePath;
+        if (!path.isAbsolute(filePath)) {
+          filePath = path.join(process.cwd(), 'uploads', filePath);
+        }
+        if (!fs.existsSync(filePath)) {
+          return NextResponse.json({ error: 'PDF file not found' }, { status: 404 });
+        }
+        pdfData = new Uint8Array(fs.readFileSync(filePath));
       }
     } else {
-      // Check takeoff uploads directory
+      // Check takeoff uploads directory (local only)
       const uploadsDir = path.join(process.cwd(), 'uploads', 'takeoff', sheet.project.id);
-      if (fs.existsSync(uploadsDir)) {
-        const files = fs.readdirSync(uploadsDir).filter((f) => f.toLowerCase().endsWith('.pdf'));
-        if (files.length > 0) {
-          filePath = path.join(uploadsDir, files[0]);
-        }
+      if (!fs.existsSync(uploadsDir)) {
+        return NextResponse.json({ error: 'PDF file not found' }, { status: 404 });
       }
+      const files = fs.readdirSync(uploadsDir).filter((f) => f.toLowerCase().endsWith('.pdf'));
+      if (files.length === 0) {
+        return NextResponse.json({ error: 'PDF file not found' }, { status: 404 });
+      }
+      const filePath = path.join(uploadsDir, files[0]);
+      pdfData = new Uint8Array(fs.readFileSync(filePath));
     }
-
-    if (!filePath || !fs.existsSync(filePath)) {
-      return NextResponse.json({ error: 'PDF file not found' }, { status: 404 });
-    }
-
-    // Load the PDF data
-    const pdfData = new Uint8Array(fs.readFileSync(filePath));
     const pageNum = sheet.sheet.pageNumber || 1;
     const renderScale = 1.5; // Match render API scale
 
@@ -374,11 +388,10 @@ export async function POST(request: NextRequest) {
       extractionMethod = 'pymupdf';
       console.log(`Vector extraction using PyMuPDF: ${snapPoints.length} snap points, ${lines.length} lines`);
     } else {
-      // Fallback to pdf.js extraction
-      console.log(`Python extraction failed (${pythonResult.error}), falling back to pdf.js`);
+      // Fallback to unpdf extraction (serverless compatible)
+      console.log(`Python extraction failed (${pythonResult.error}), falling back to unpdf`);
 
-      const loadingTask = pdfjsLib.getDocument({ data: pdfData });
-      const pdfDocument = await loadingTask.promise;
+      const pdfDocument = await getDocumentProxy(pdfData);
 
       if (pageNum > pdfDocument.numPages) {
         return NextResponse.json({ error: 'Invalid page number' }, { status: 400 });

@@ -6,7 +6,8 @@ import { createScraper, createGmailScanner, usesBrowserScraping, type Platform }
 import { extractDocument } from '@/extraction';
 import { TradeCode } from '@/lib/trade-definitions';
 import { generateThumbnails } from '@/lib/thumbnail-generator';
-import { rm, readFile } from 'fs/promises';
+import { downloadFile } from '@/lib/storage';
+import { rm } from 'fs/promises';
 
 // Daily sync - runs for all users every day at 6 AM
 export const dailySync = inngest.createFunction(
@@ -463,10 +464,10 @@ export const extractTextJob = inngest.createFunction(
     try {
       // Call Python service for text extraction
       const result = await step.run('extract-text', async () => {
-        // Read PDF file
-        const pdfBuffer = await readFile(doc.storagePath!);
+        // Download PDF file (handles both local files and Blob URLs)
+        const pdfBuffer = await downloadFile(doc.storagePath!);
         const pythonApiUrl = process.env.PYTHON_VECTOR_API_URL || 'http://localhost:8001';
-        const pdfBase64 = Buffer.from(pdfBuffer).toString('base64');
+        const pdfBase64 = pdfBuffer.toString('base64');
 
         const response = await fetch(`${pythonApiUrl}/text`, {
           method: 'POST',

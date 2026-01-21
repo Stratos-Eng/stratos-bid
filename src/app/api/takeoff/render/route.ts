@@ -80,9 +80,6 @@ async function renderWithCanvas(
   error?: string;
 }> {
   try {
-    // Dynamic imports for optional dependencies
-    const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
-
     // Try to import canvas - this will fail on Vercel
     let createCanvas: typeof import('canvas').createCanvas;
     try {
@@ -92,10 +89,12 @@ async function renderWithCanvas(
       return { success: false, error: 'Canvas not available in this environment' };
     }
 
+    // Dynamic import for pdfjs (use unpdf for serverless compatibility)
+    const { getDocumentProxy } = await import('unpdf');
+
     // Load the PDF document
     const data = new Uint8Array(fs.readFileSync(filePath));
-    const loadingTask = pdfjsLib.getDocument({ data });
-    const pdfDocument = await loadingTask.promise;
+    const pdfDocument = await getDocumentProxy(data);
 
     // Check page number
     if (pageNum < 1 || pageNum > pdfDocument.numPages) {
