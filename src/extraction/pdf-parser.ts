@@ -1,6 +1,12 @@
 import fs from 'fs';
 import path from 'path';
-import { PDFParse } from 'pdf-parse';
+
+// Dynamic import to avoid loading pdf-parse at build time
+// pdf-parse v2 uses pdfjs-dist which requires DOMMatrix (browser API)
+async function getPdfParse() {
+  const { PDFParse } = await import('pdf-parse');
+  return PDFParse;
+}
 
 export interface ParsedPage {
   pageNumber: number;
@@ -19,6 +25,7 @@ export interface PdfMetadata {
  * Get metadata from a PDF file
  */
 export async function getPdfMetadata(filePath: string): Promise<PdfMetadata> {
+  const PDFParse = await getPdfParse();
   const dataBuffer = fs.readFileSync(filePath);
   const parser = new PDFParse({ data: dataBuffer });
 
@@ -39,6 +46,7 @@ export async function getPdfMetadata(filePath: string): Promise<PdfMetadata> {
  * Extract text from all pages of a PDF
  */
 export async function extractPdfText(filePath: string): Promise<string> {
+  const PDFParse = await getPdfParse();
   const dataBuffer = fs.readFileSync(filePath);
   const parser = new PDFParse({ data: dataBuffer });
 
@@ -54,6 +62,7 @@ export async function extractPdfText(filePath: string): Promise<string> {
  * Returns array of parsed pages with their text content
  */
 export async function extractPdfPageByPage(filePath: string): Promise<ParsedPage[]> {
+  const PDFParse = await getPdfParse();
   const dataBuffer = fs.readFileSync(filePath);
   const parser = new PDFParse({ data: dataBuffer });
 
