@@ -110,6 +110,7 @@ async function uploadThumbnailToBlob(
   const blob = await put(pathname, imageBuffer, {
     access: 'public',
     contentType: 'image/webp',
+    addRandomSuffix: false, // Use exact pathname
   });
   return blob.url;
 }

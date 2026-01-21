@@ -25,9 +25,9 @@ export function ThumbnailStrip({
   const [errorThumbnails, setErrorThumbnails] = useState<Set<number>>(new Set());
   const [thumbnailUrls, setThumbnailUrls] = useState<(string | null)[]>(initialUrls || []);
 
-  // Fetch thumbnail URLs if not provided
+  // Fetch thumbnail URLs and poll if still generating
   useEffect(() => {
-    if (initialUrls && initialUrls.length > 0) return;
+    let pollInterval: NodeJS.Timeout | null = null;
 
     async function fetchThumbnailUrls() {
       try {
@@ -35,13 +35,36 @@ export function ThumbnailStrip({
         if (response.ok) {
           const data = await response.json();
           setThumbnailUrls(data.urls || []);
+
+          // If not all thumbnails are ready, poll every 5 seconds
+          const hasNulls = (data.urls || []).some((url: string | null) => url === null);
+          if (hasNulls && !pollInterval) {
+            pollInterval = setInterval(fetchThumbnailUrls, 5000);
+          } else if (!hasNulls && pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+          }
         }
       } catch (error) {
         console.error('Failed to fetch thumbnail URLs:', error);
       }
     }
 
-    fetchThumbnailUrls();
+    // Use initial URLs if provided, otherwise fetch
+    if (initialUrls && initialUrls.length > 0) {
+      setThumbnailUrls(initialUrls);
+      // Still check if we need to poll
+      const hasNulls = initialUrls.some(url => url === null);
+      if (hasNulls) {
+        pollInterval = setInterval(fetchThumbnailUrls, 5000);
+      }
+    } else {
+      fetchThumbnailUrls();
+    }
+
+    return () => {
+      if (pollInterval) clearInterval(pollInterval);
+    };
   }, [documentId, initialUrls]);
 
   // Scroll current page thumbnail into view
@@ -135,10 +158,11 @@ export function ThumbnailStrip({
                 rounded overflow-hidden bg-gray-800
               `}
             >
-              {isLoaded && !hasError ? (
+              {isLoaded && !hasError && thumbnailUrls[pageNum - 1] ? (
+                // Direct Blob URL - no auth needed
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={thumbnailUrls[pageNum - 1] || `/api/documents/${documentId}/thumbnail/${pageNum}`}
+                  src={thumbnailUrls[pageNum - 1]!}
                   alt={`Page ${pageNum}`}
                   className="w-full h-full object-contain bg-white"
                   loading="lazy"
@@ -148,7 +172,14 @@ export function ThumbnailStrip({
                 <div className="w-full h-full flex items-center justify-center text-gray-500 text-xs">
                   Error
                 </div>
+              ) : thumbnailUrls[pageNum - 1] === null ? (
+                // Thumbnail not yet generated - show placeholder (don't hit API)
+                <div className="w-full h-full flex flex-col items-center justify-center bg-gray-700 text-gray-400">
+                  <div className="w-4 h-4 border-2 border-gray-500 border-t-gray-300 rounded-full animate-spin mb-1" />
+                  <span className="text-[10px]">Generating</span>
+                </div>
               ) : (
+                // Loading state
                 <div className="w-full h-full flex items-center justify-center">
                   <div className="w-4 h-4 border-2 border-gray-600 border-t-gray-400 rounded-full animate-spin" />
                 </div>
