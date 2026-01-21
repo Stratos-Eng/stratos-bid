@@ -7,12 +7,14 @@ import path from 'path';
 import fs from 'fs';
 import { getDocumentProxy } from 'unpdf';
 import { downloadFile, isBlobUrl } from '@/lib/storage';
+import { getThumbnailBlobPath } from '@/lib/thumbnail-generator';
 
 interface PageInfo {
   width: number;
   height: number;
   rotation: number;
   label?: string;  // Original page label from PDF (e.g., "A1.1", "S-101")
+  thumbnailUrl?: string;  // Direct Blob URL for thumbnail
 }
 
 // GET /api/documents/[id]/info - Get document metadata
@@ -113,11 +115,19 @@ export async function GET(
       }
     }
 
+    // Generate thumbnail URLs - use API pattern as fallback
+    // Client will load directly from these URLs
+    const thumbnailUrls = Array.from({ length: pageCount }, (_, i) =>
+      `/api/documents/${id}/thumbnail/${i + 1}`
+    );
+
     return NextResponse.json({
       id: doc.document.id,
       filename: doc.document.filename,
       pageCount,
       pages, // Array of page dimensions
+      thumbnailUrls, // Array of thumbnail URLs (API endpoints that redirect to Blob)
+      thumbnailsReady: doc.document.thumbnailsGenerated || false,
       bidId: doc.bid.id,
       bidTitle: doc.bid.title,
       docType: doc.document.docType,

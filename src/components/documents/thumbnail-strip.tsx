@@ -8,6 +8,7 @@ interface ThumbnailStripProps {
   currentPage: number;
   onPageSelect: (page: number) => void;
   orientation?: 'vertical' | 'horizontal';
+  thumbnailUrls?: (string | null)[]; // Pre-fetched Blob URLs from batch endpoint
 }
 
 export function ThumbnailStrip({
@@ -16,11 +17,32 @@ export function ThumbnailStrip({
   currentPage,
   onPageSelect,
   orientation = 'vertical',
+  thumbnailUrls: initialUrls,
 }: ThumbnailStripProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const thumbnailRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [loadedThumbnails, setLoadedThumbnails] = useState<Set<number>>(new Set());
   const [errorThumbnails, setErrorThumbnails] = useState<Set<number>>(new Set());
+  const [thumbnailUrls, setThumbnailUrls] = useState<(string | null)[]>(initialUrls || []);
+
+  // Fetch thumbnail URLs if not provided
+  useEffect(() => {
+    if (initialUrls && initialUrls.length > 0) return;
+
+    async function fetchThumbnailUrls() {
+      try {
+        const response = await fetch(`/api/documents/${documentId}/thumbnails`);
+        if (response.ok) {
+          const data = await response.json();
+          setThumbnailUrls(data.urls || []);
+        }
+      } catch (error) {
+        console.error('Failed to fetch thumbnail URLs:', error);
+      }
+    }
+
+    fetchThumbnailUrls();
+  }, [documentId, initialUrls]);
 
   // Scroll current page thumbnail into view
   useEffect(() => {
@@ -116,7 +138,7 @@ export function ThumbnailStrip({
               {isLoaded && !hasError ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={`/api/documents/${documentId}/thumbnail/${pageNum}`}
+                  src={thumbnailUrls[pageNum - 1] || `/api/documents/${documentId}/thumbnail/${pageNum}`}
                   alt={`Page ${pageNum}`}
                   className="w-full h-full object-contain bg-white"
                   loading="lazy"

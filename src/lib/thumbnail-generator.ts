@@ -2,17 +2,18 @@
  * Thumbnail Generator for PDF Documents
  *
  * Generates small preview images for all pages of a PDF document.
- * Thumbnails are stored on disk and served via API.
+ * Thumbnails are stored in Vercel Blob and served via direct CDN URLs.
  */
 
 import sharp from 'sharp';
-import { readFile, mkdir, writeFile, access, unlink } from 'fs/promises';
-import { join, dirname, isAbsolute } from 'path';
+import { readFile, writeFile, unlink } from 'fs/promises';
+import { join, isAbsolute } from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { PDFDocument } from 'pdf-lib';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
+import { put, head } from '@vercel/blob';
 import { downloadFile, isBlobUrl } from '@/lib/storage';
 
 const execFileAsync = promisify(execFile);
@@ -21,19 +22,16 @@ const execFileAsync = promisify(execFile);
 const THUMBNAIL_WIDTH = 150;  // Width in pixels
 const THUMBNAIL_DPI = 72;     // Low DPI for fast generation
 
-// Use /tmp for serverless environments (Vercel has read-only filesystem except /tmp)
-const THUMBNAILS_DIR = process.env.VERCEL ? '/tmp/thumbnails' : 'thumbnails';
-
 export interface ThumbnailConfig {
   documentId: string;
-  storagePath: string;  // Path to PDF file
+  storagePath: string;  // Path to PDF file (local or Blob URL)
 }
 
 export interface ThumbnailResult {
   documentId: string;
   pageCount: number;
   thumbnailsGenerated: number;
-  outputDir: string;
+  thumbnailUrls: string[];  // Blob URLs for all thumbnails
 }
 
 /**
@@ -44,45 +42,51 @@ function validateDocumentId(id: string): boolean {
 }
 
 /**
- * Get the output directory for a document's thumbnails
+ * Get the Blob pathname for a thumbnail
  */
-export function getThumbnailDir(documentId: string): string {
-  // On Vercel, THUMBNAILS_DIR is already an absolute path (/tmp/thumbnails)
-  if (process.env.VERCEL) {
-    return join(THUMBNAILS_DIR, documentId);
-  }
-  return join(process.cwd(), THUMBNAILS_DIR, documentId);
+export function getThumbnailBlobPath(documentId: string, pageNumber: number): string {
+  return `thumbnails/${documentId}/${pageNumber}.webp`;
 }
 
 /**
- * Get the path to a specific page's thumbnail
+ * Check if a thumbnail exists in Blob storage
  */
-export function getThumbnailPath(documentId: string, pageNumber: number): string {
-  return join(getThumbnailDir(documentId), `${pageNumber}.webp`);
-}
-
-/**
- * Check if a thumbnail exists
- */
-export async function thumbnailExists(documentId: string, pageNumber: number): Promise<boolean> {
+export async function thumbnailExistsInBlob(documentId: string, pageNumber: number): Promise<string | null> {
   try {
-    await access(getThumbnailPath(documentId, pageNumber));
-    return true;
+    const pathname = getThumbnailBlobPath(documentId, pageNumber);
+    // Try to get the blob info - if it exists, return the URL
+    const blobInfo = await head(`https://${process.env.BLOB_STORE_ID}.public.blob.vercel-storage.com/${pathname}`);
+    return blobInfo.url;
   } catch {
-    return false;
+    return null;
   }
 }
 
 /**
- * Check if all thumbnails exist for a document
+ * Upload a thumbnail to Blob storage
  */
-export async function allThumbnailsExist(documentId: string, pageCount: number): Promise<boolean> {
+async function uploadThumbnailToBlob(
+  documentId: string,
+  pageNumber: number,
+  imageBuffer: Buffer
+): Promise<string> {
+  const pathname = getThumbnailBlobPath(documentId, pageNumber);
+  const blob = await put(pathname, imageBuffer, {
+    access: 'public',
+    contentType: 'image/webp',
+  });
+  return blob.url;
+}
+
+/**
+ * Get all thumbnail URLs for a document (checks what exists in Blob)
+ */
+export async function getThumbnailUrls(documentId: string, pageCount: number): Promise<(string | null)[]> {
+  const urls: (string | null)[] = [];
   for (let i = 1; i <= pageCount; i++) {
-    if (!(await thumbnailExists(documentId, i))) {
-      return false;
-    }
+    urls.push(await thumbnailExistsInBlob(documentId, i));
   }
-  return true;
+  return urls;
 }
 
 /**
@@ -206,7 +210,7 @@ async function generatePlaceholderThumbnail(
 }
 
 /**
- * Generate thumbnails for all pages of a PDF document
+ * Generate thumbnails for all pages of a PDF document and upload to Blob
  */
 export async function generateThumbnails(config: ThumbnailConfig): Promise<ThumbnailResult> {
   const { documentId, storagePath } = config;
@@ -229,18 +233,15 @@ export async function generateThumbnails(config: ThumbnailConfig): Promise<Thumb
     const pdfDoc = await PDFDocument.load(pdfBuffer);
     const pageCount = pdfDoc.getPageCount();
 
-    // Create output directory
-    const outputDir = getThumbnailDir(documentId);
-    await mkdir(outputDir, { recursive: true });
-
     let thumbnailsGenerated = 0;
+    const thumbnailUrls: string[] = [];
 
     // Generate thumbnail for each page
     for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
-      const thumbnailPath = getThumbnailPath(documentId, pageNum);
-
-      // Skip if already exists
-      if (await thumbnailExists(documentId, pageNum)) {
+      // Check if already exists in Blob
+      const existingUrl = await thumbnailExistsInBlob(documentId, pageNum);
+      if (existingUrl) {
+        thumbnailUrls.push(existingUrl);
         thumbnailsGenerated++;
         continue;
       }
@@ -259,16 +260,17 @@ export async function generateThumbnails(config: ThumbnailConfig): Promise<Thumb
           imageBuffer = await generatePlaceholderThumbnail(pageNum);
         }
 
-        // Save thumbnail
-        await mkdir(dirname(thumbnailPath), { recursive: true });
-        await writeFile(thumbnailPath, imageBuffer);
+        // Upload to Blob
+        const url = await uploadThumbnailToBlob(documentId, pageNum, imageBuffer);
+        thumbnailUrls.push(url);
         thumbnailsGenerated++;
 
       } catch (error) {
         console.error(`Failed to generate thumbnail for page ${pageNum}:`, error);
-        // Generate placeholder on error
+        // Generate and upload placeholder on error
         const placeholder = await generatePlaceholderThumbnail(pageNum);
-        await writeFile(thumbnailPath, placeholder);
+        const url = await uploadThumbnailToBlob(documentId, pageNum, placeholder);
+        thumbnailUrls.push(url);
         thumbnailsGenerated++;
       }
     }
@@ -277,7 +279,7 @@ export async function generateThumbnails(config: ThumbnailConfig): Promise<Thumb
       documentId,
       pageCount,
       thumbnailsGenerated,
-      outputDir,
+      thumbnailUrls,
     };
   } finally {
     // Clean up temp file
@@ -286,24 +288,25 @@ export async function generateThumbnails(config: ThumbnailConfig): Promise<Thumb
 }
 
 /**
- * Generate a single page thumbnail (for on-demand generation)
+ * Generate a single page thumbnail and upload to Blob
+ * Returns the Blob URL
  */
 export async function generateSingleThumbnail(
   documentId: string,
   storagePath: string,
   pageNumber: number
-): Promise<Buffer> {
+): Promise<{ url: string; buffer: Buffer }> {
   if (!validateDocumentId(documentId)) {
     throw new Error('Invalid documentId format');
   }
 
-  const thumbnailPath = getThumbnailPath(documentId, pageNumber);
-
-  // Check if already exists
-  try {
-    return await readFile(thumbnailPath);
-  } catch {
-    // Need to generate
+  // Check if already exists in Blob
+  const existingUrl = await thumbnailExistsInBlob(documentId, pageNumber);
+  if (existingUrl) {
+    // Fetch the existing thumbnail
+    const response = await fetch(existingUrl);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return { url: existingUrl, buffer };
   }
 
   // Download PDF if it's a Blob URL, or read from local path
@@ -327,11 +330,10 @@ export async function generateSingleThumbnail(
       imageBuffer = await generatePlaceholderThumbnail(pageNumber);
     }
 
-    // Save for future requests
-    await mkdir(dirname(thumbnailPath), { recursive: true });
-    await writeFile(thumbnailPath, imageBuffer);
+    // Upload to Blob
+    const url = await uploadThumbnailToBlob(documentId, pageNumber, imageBuffer);
 
-    return imageBuffer;
+    return { url, buffer: imageBuffer };
   } finally {
     // Clean up temp file
     await unlink(tempPath).catch(() => {});
@@ -339,20 +341,22 @@ export async function generateSingleThumbnail(
 }
 
 /**
- * Get thumbnail buffer (from cache or generate on-demand)
+ * Get thumbnail (from Blob or generate on-demand)
+ * Returns both the URL and the buffer
  */
 export async function getThumbnail(
   documentId: string,
   storagePath: string,
   pageNumber: number
-): Promise<Buffer> {
-  const thumbnailPath = getThumbnailPath(documentId, pageNumber);
-
-  try {
-    // Try to read from cache
-    return await readFile(thumbnailPath);
-  } catch {
-    // Generate on-demand
-    return generateSingleThumbnail(documentId, storagePath, pageNumber);
+): Promise<{ url: string; buffer: Buffer }> {
+  // Check if exists in Blob
+  const existingUrl = await thumbnailExistsInBlob(documentId, pageNumber);
+  if (existingUrl) {
+    const response = await fetch(existingUrl);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return { url: existingUrl, buffer };
   }
+
+  // Generate on-demand and upload to Blob
+  return generateSingleThumbnail(documentId, storagePath, pageNumber);
 }

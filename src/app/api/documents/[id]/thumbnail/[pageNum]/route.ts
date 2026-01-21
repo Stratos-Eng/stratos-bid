@@ -56,18 +56,20 @@ export async function GET(
       );
     }
 
-    // Get thumbnail (from cache or generate on-demand)
-    const thumbnailBuffer = await getThumbnail(
+    // Get thumbnail (from Blob or generate on-demand)
+    const { url, buffer } = await getThumbnail(
       id,
       doc.document.storagePath,
       pageNum
     );
 
-    // Return the WebP image
-    return new NextResponse(new Uint8Array(thumbnailBuffer), {
+    // Redirect to Blob URL for better caching
+    // Or return the image directly if needed
+    return new NextResponse(new Uint8Array(buffer), {
       headers: {
         'Content-Type': 'image/webp',
         'Cache-Control': 'public, max-age=31536000, immutable', // Cache for 1 year
+        'X-Thumbnail-Url': url, // Include URL in header for reference
       },
     });
   } catch (error) {
