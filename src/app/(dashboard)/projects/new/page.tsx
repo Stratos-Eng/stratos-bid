@@ -3,6 +3,7 @@
 import { useState, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { useDropzone } from "react-dropzone"
+import { upload } from "@vercel/blob/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
@@ -68,70 +69,53 @@ export default function NewProjectPage() {
 
       const { projectId, bidId } = await createRes.json()
 
-      // 2. Upload each file
+      // 2. Upload each file using direct Blob upload
       for (let i = 0; i < files.length; i++) {
         const file = files[i]
         setUploadState({
           status: "uploading",
-          progress: Math.round(((i + 0.5) / files.length) * 50),
+          progress: Math.round((i / files.length) * 50),
           currentFile: file.name,
           projectId,
         })
 
-        // Chunked upload
-        const chunkSize = 5 * 1024 * 1024 // 5MB
-        const totalChunks = Math.ceil(file.size / chunkSize)
+        // Generate storage path
+        const timestamp = Date.now()
+        const sanitizedFilename = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
+        const pathname = `projects/${bidId}/${timestamp}-${sanitizedFilename}`
 
-        // Init upload - only pass bidId, not projectId (which is the same value but would fail takeoffProjects validation)
-        const initRes = await fetch("/api/upload/init", {
+        // Upload directly to Vercel Blob
+        const blob = await upload(pathname, file, {
+          access: "public",
+          handleUploadUrl: "/api/upload/token",
+          onUploadProgress: (event) => {
+            const fileProgress = event.loaded / event.total
+            const overallProgress = ((i + fileProgress) / files.length) * 50
+            setUploadState((prev) => ({
+              ...prev,
+              progress: Math.round(overallProgress),
+            }))
+          },
+        })
+
+        // Process the uploaded file
+        setUploadState((prev) => ({ ...prev, status: "processing" }))
+
+        const completeRes = await fetch("/api/upload/blob-complete", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            blobUrl: blob.url,
+            pathname: blob.pathname,
             filename: file.name,
-            fileSize: file.size,
-            mimeType: "application/pdf",
             bidId,
-            chunkSize,
           }),
         })
 
-        if (!initRes.ok) throw new Error("Failed to initialize upload")
-        const { uploadId } = await initRes.json()
-
-        // Upload chunks
-        for (let chunk = 0; chunk < totalChunks; chunk++) {
-          const start = chunk * chunkSize
-          const end = Math.min(start + chunkSize, file.size)
-          const blob = file.slice(start, end)
-
-          const chunkRes = await fetch(`/api/upload/chunk?uploadId=${uploadId}`, {
-            method: "PUT",
-            headers: {
-              "Content-Type": "application/octet-stream",
-              "Content-Range": `bytes ${start}-${end - 1}/${file.size}`,
-            },
-            body: blob,
-          })
-
-          if (!chunkRes.ok) throw new Error("Chunk upload failed")
-
-          const fileProgress = (chunk + 1) / totalChunks
-          const overallProgress = ((i + fileProgress) / files.length) * 50
-          setUploadState((prev) => ({
-            ...prev,
-            progress: Math.round(overallProgress),
-          }))
+        if (!completeRes.ok) {
+          const err = await completeRes.json()
+          throw new Error(err.error || "Failed to process file")
         }
-
-        // Complete upload
-        setUploadState((prev) => ({ ...prev, status: "processing" }))
-        const completeRes = await fetch("/api/upload/complete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ uploadId }),
-        })
-
-        if (!completeRes.ok) throw new Error("Failed to process file")
       }
 
       // 3. Trigger extraction
