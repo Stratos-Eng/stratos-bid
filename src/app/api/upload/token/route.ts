@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
       },
       onUploadCompleted: async ({ blob, tokenPayload }) => {
         // This is called by Vercel after upload completes
-        // We don't process here - the client will call /api/upload/blob-complete
+        // We don't process here - the client will call /api/upload/complete-blob
         console.log('[upload/token] Upload completed:', {
           url: blob.url,
           pathname: blob.pathname,

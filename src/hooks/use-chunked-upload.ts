@@ -105,8 +105,8 @@ export function useChunkedUpload(options: UploadOptions) {
 
         updateUpload(file.name, { status: 'processing', progress: 100 });
 
-        // Call blob-complete to process the uploaded file
-        const completeRes = await fetch('/api/upload/blob-complete', {
+        // Call complete-blob to process the uploaded file
+        const completeRes = await fetch('/api/upload/complete-blob', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

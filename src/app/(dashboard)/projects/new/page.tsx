@@ -101,7 +101,7 @@ export default function NewProjectPage() {
         // Process the uploaded file
         setUploadState((prev) => ({ ...prev, status: "processing" }))
 
-        const completeRes = await fetch("/api/upload/blob-complete", {
+        const completeRes = await fetch("/api/upload/complete-blob", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
