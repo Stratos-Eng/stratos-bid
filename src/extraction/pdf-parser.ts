@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { extractText, getDocumentProxy } from 'unpdf';
+import { downloadFile, isBlobUrl } from '@/lib/storage';
 
 export interface ParsedPage {
   pageNumber: number;
@@ -17,9 +18,19 @@ export interface PdfMetadata {
 
 /**
  * Load PDF and get document proxy
+ * Supports both local file paths and Vercel Blob URLs
  */
-async function loadPdf(filePath: string) {
-  const dataBuffer = fs.readFileSync(filePath);
+async function loadPdf(filePathOrUrl: string) {
+  let dataBuffer: Buffer;
+
+  if (isBlobUrl(filePathOrUrl)) {
+    // Download from Vercel Blob
+    dataBuffer = await downloadFile(filePathOrUrl);
+  } else {
+    // Read from local filesystem
+    dataBuffer = fs.readFileSync(filePathOrUrl);
+  }
+
   return getDocumentProxy(new Uint8Array(dataBuffer));
 }
 
@@ -117,7 +128,7 @@ export async function findRelevantPages(
 }
 
 /**
- * Get file size in bytes
+ * Get file size in bytes (local files only)
  */
 export function getFileSize(filePath: string): number {
   const stats = fs.statSync(filePath);
@@ -126,18 +137,30 @@ export function getFileSize(filePath: string): number {
 
 /**
  * Check if file exists and is a PDF
+ * For Blob URLs, only validates the URL format and extension
  */
-export function validatePdfFile(filePath: string): { valid: boolean; error?: string } {
-  if (!fs.existsSync(filePath)) {
+export function validatePdfFile(filePathOrUrl: string): { valid: boolean; error?: string } {
+  // Handle Blob URLs
+  if (isBlobUrl(filePathOrUrl)) {
+    // For Blob URLs, just check the extension in the URL
+    const urlPath = new URL(filePathOrUrl).pathname;
+    if (!urlPath.toLowerCase().endsWith('.pdf')) {
+      return { valid: false, error: 'File is not a PDF' };
+    }
+    return { valid: true };
+  }
+
+  // Local file validation
+  if (!fs.existsSync(filePathOrUrl)) {
     return { valid: false, error: 'File not found' };
   }
 
-  const ext = path.extname(filePath).toLowerCase();
+  const ext = path.extname(filePathOrUrl).toLowerCase();
   if (ext !== '.pdf') {
     return { valid: false, error: 'File is not a PDF' };
   }
 
-  const size = getFileSize(filePath);
+  const size = getFileSize(filePathOrUrl);
   if (size === 0) {
     return { valid: false, error: 'File is empty' };
   }

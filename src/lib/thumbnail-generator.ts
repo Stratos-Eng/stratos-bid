@@ -13,6 +13,7 @@ import { promisify } from 'util';
 import { PDFDocument } from 'pdf-lib';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
+import { downloadFile, isBlobUrl } from '@/lib/storage';
 
 const execFileAsync = promisify(execFile);
 
@@ -142,13 +143,22 @@ async function generatePlaceholderThumbnail(
 }
 
 /**
- * Resolve storage path - handles both absolute and relative paths
+ * Resolve storage path - handles absolute paths, relative paths, and Blob URLs
+ * For Blob URLs, downloads to a temp file and returns the temp path
  */
-function resolveStoragePath(storagePath: string): string {
-  if (isAbsolute(storagePath)) {
-    return storagePath;
+async function resolveStoragePath(storagePath: string): Promise<{ path: string; isTemp: boolean }> {
+  if (isBlobUrl(storagePath)) {
+    // Download to temp file for pdftoppm
+    const tempPath = join(tmpdir(), `pdf-${randomUUID()}.pdf`);
+    const buffer = await downloadFile(storagePath);
+    await writeFile(tempPath, buffer);
+    return { path: tempPath, isTemp: true };
   }
-  return join(process.cwd(), storagePath);
+
+  if (isAbsolute(storagePath)) {
+    return { path: storagePath, isTemp: false };
+  }
+  return { path: join(process.cwd(), storagePath), isTemp: false };
 }
 
 /**
@@ -161,63 +171,71 @@ export async function generateThumbnails(config: ThumbnailConfig): Promise<Thumb
     throw new Error('Invalid documentId format');
   }
 
-  const fullPath = resolveStoragePath(storagePath);
+  const resolved = await resolveStoragePath(storagePath);
+  const fullPath = resolved.path;
 
-  // Get page count from PDF
-  const pdfBytes = await readFile(fullPath);
-  const pdfDoc = await PDFDocument.load(pdfBytes);
-  const pageCount = pdfDoc.getPageCount();
+  try {
+    // Get page count from PDF
+    const pdfBytes = await readFile(fullPath);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const pageCount = pdfDoc.getPageCount();
 
-  // Create output directory
-  const outputDir = getThumbnailDir(documentId);
-  await mkdir(outputDir, { recursive: true });
+    // Create output directory
+    const outputDir = getThumbnailDir(documentId);
+    await mkdir(outputDir, { recursive: true });
 
-  let thumbnailsGenerated = 0;
+    let thumbnailsGenerated = 0;
 
-  // Generate thumbnail for each page
-  for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
-    const thumbnailPath = getThumbnailPath(documentId, pageNum);
+    // Generate thumbnail for each page
+    for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+      const thumbnailPath = getThumbnailPath(documentId, pageNum);
 
-    // Skip if already exists
-    if (await thumbnailExists(documentId, pageNum)) {
-      thumbnailsGenerated++;
-      continue;
-    }
-
-    try {
-      // Try to render with pdftoppm
-      let imageBuffer = await renderPageThumbnail(fullPath, pageNum);
-
-      if (imageBuffer && imageBuffer.length > 0) {
-        // Convert to WebP for better compression
-        imageBuffer = await sharp(imageBuffer)
-          .webp({ quality: 75 })
-          .toBuffer();
-      } else {
-        // Fall back to placeholder
-        imageBuffer = await generatePlaceholderThumbnail(pageNum);
+      // Skip if already exists
+      if (await thumbnailExists(documentId, pageNum)) {
+        thumbnailsGenerated++;
+        continue;
       }
 
-      // Save thumbnail
-      await mkdir(dirname(thumbnailPath), { recursive: true });
-      await writeFile(thumbnailPath, imageBuffer);
-      thumbnailsGenerated++;
+      try {
+        // Try to render with pdftoppm
+        let imageBuffer = await renderPageThumbnail(fullPath, pageNum);
 
-    } catch (error) {
-      console.error(`Failed to generate thumbnail for page ${pageNum}:`, error);
-      // Generate placeholder on error
-      const placeholder = await generatePlaceholderThumbnail(pageNum);
-      await writeFile(thumbnailPath, placeholder);
-      thumbnailsGenerated++;
+        if (imageBuffer && imageBuffer.length > 0) {
+          // Convert to WebP for better compression
+          imageBuffer = await sharp(imageBuffer)
+            .webp({ quality: 75 })
+            .toBuffer();
+        } else {
+          // Fall back to placeholder
+          imageBuffer = await generatePlaceholderThumbnail(pageNum);
+        }
+
+        // Save thumbnail
+        await mkdir(dirname(thumbnailPath), { recursive: true });
+        await writeFile(thumbnailPath, imageBuffer);
+        thumbnailsGenerated++;
+
+      } catch (error) {
+        console.error(`Failed to generate thumbnail for page ${pageNum}:`, error);
+        // Generate placeholder on error
+        const placeholder = await generatePlaceholderThumbnail(pageNum);
+        await writeFile(thumbnailPath, placeholder);
+        thumbnailsGenerated++;
+      }
+    }
+
+    return {
+      documentId,
+      pageCount,
+      thumbnailsGenerated,
+      outputDir,
+    };
+  } finally {
+    // Clean up temp file if we downloaded from Blob
+    if (resolved.isTemp) {
+      await unlink(fullPath).catch(() => {});
     }
   }
-
-  return {
-    documentId,
-    pageCount,
-    thumbnailsGenerated,
-    outputDir,
-  };
 }
 
 /**
@@ -232,7 +250,6 @@ export async function generateSingleThumbnail(
     throw new Error('Invalid documentId format');
   }
 
-  const fullPath = resolveStoragePath(storagePath);
   const thumbnailPath = getThumbnailPath(documentId, pageNumber);
 
   // Check if already exists
@@ -242,22 +259,32 @@ export async function generateSingleThumbnail(
     // Need to generate
   }
 
-  // Try to render with pdftoppm
-  let imageBuffer = await renderPageThumbnail(fullPath, pageNumber);
+  const resolved = await resolveStoragePath(storagePath);
+  const fullPath = resolved.path;
 
-  if (imageBuffer && imageBuffer.length > 0) {
-    imageBuffer = await sharp(imageBuffer)
-      .webp({ quality: 75 })
-      .toBuffer();
-  } else {
-    imageBuffer = await generatePlaceholderThumbnail(pageNumber);
+  try {
+    // Try to render with pdftoppm
+    let imageBuffer = await renderPageThumbnail(fullPath, pageNumber);
+
+    if (imageBuffer && imageBuffer.length > 0) {
+      imageBuffer = await sharp(imageBuffer)
+        .webp({ quality: 75 })
+        .toBuffer();
+    } else {
+      imageBuffer = await generatePlaceholderThumbnail(pageNumber);
+    }
+
+    // Save for future requests
+    await mkdir(dirname(thumbnailPath), { recursive: true });
+    await writeFile(thumbnailPath, imageBuffer);
+
+    return imageBuffer;
+  } finally {
+    // Clean up temp file if we downloaded from Blob
+    if (resolved.isTemp) {
+      await unlink(fullPath).catch(() => {});
+    }
   }
-
-  // Save for future requests
-  await mkdir(dirname(thumbnailPath), { recursive: true });
-  await writeFile(thumbnailPath, imageBuffer);
-
-  return imageBuffer;
 }
 
 /**

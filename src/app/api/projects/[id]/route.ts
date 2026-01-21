@@ -70,7 +70,10 @@ export async function GET(
       })),
     })
   } catch (error) {
-    console.error("Get project error:", error)
-    return NextResponse.json({ error: "Failed to get project" }, { status: 500 })
+    console.error("Get project error:", error instanceof Error ? error.stack : error)
+    return NextResponse.json({
+      error: "Failed to get project",
+      details: error instanceof Error ? error.message : String(error)
+    }, { status: 500 })
   }
 }
