@@ -3,7 +3,7 @@ import { auth } from "@/lib/auth"
 import { db } from "@/db"
 import { bids, documents } from "@/db/schema"
 import { eq, and } from "drizzle-orm"
-import { inngest } from "@/inngest"
+import { inngest } from "@/inngest/client"
 
 // POST /api/projects/[id]/extract - Trigger AI extraction
 export async function POST(

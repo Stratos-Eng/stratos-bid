@@ -6,8 +6,7 @@ import { eq, and } from 'drizzle-orm';
 import { writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-// Use pdf-parse for Node.js server-side PDF processing (avoids worker issues)
-import { PDFParse } from 'pdf-parse';
+import { PDFDocument } from 'pdf-lib';
 
 // POST /api/takeoff/upload - Upload PDF and create sheets
 export async function POST(request: NextRequest) {
@@ -60,29 +59,22 @@ export async function POST(request: NextRequest) {
     const filePath = path.join(uploadsDir, filename);
     await writeFile(filePath, buffer);
 
-    // Parse PDF to get page count and dimensions using pdf-parse
-    const data = new Uint8Array(buffer);
-    const parser = new PDFParse({ data });
+    // Parse PDF to get page count and dimensions using pdf-lib
+    const pdfDoc = await PDFDocument.load(buffer);
+    const pageCount = pdfDoc.getPageCount();
 
-    // getInfo() loads the document and returns metadata including page dimensions
-    const info = await parser.getInfo({ parsePageInfo: true, first: 1, last: 1 });
-
-    const pageCount = info.total || 0;
-
-    // Get first page dimensions from page info
+    // Get first page dimensions
     let defaultWidth = 3300; // 11" at 300dpi
     let defaultHeight = 2550; // 8.5" at 300dpi
 
-    if (info.pages && info.pages.length > 0) {
-      const firstPage = info.pages[0];
+    if (pageCount > 0) {
+      const firstPage = pdfDoc.getPage(0);
+      const { width, height } = firstPage.getSize();
       // Convert from PDF points (72 DPI) to 300 DPI for better quality
       const scaleFactor = 300 / 72;
-      defaultWidth = Math.round(firstPage.width * scaleFactor);
-      defaultHeight = Math.round(firstPage.height * scaleFactor);
+      defaultWidth = Math.round(width * scaleFactor);
+      defaultHeight = Math.round(height * scaleFactor);
     }
-
-    // Clean up parser resources
-    await parser.destroy();
 
     // Generate sheet name prefix from file path
     const baseFileName = file.name.replace('.pdf', '').replace(/[_-]/g, ' ');

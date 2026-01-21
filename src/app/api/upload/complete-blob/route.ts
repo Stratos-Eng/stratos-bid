@@ -4,7 +4,7 @@ import { db } from '@/db';
 import { takeoffSheets, takeoffProjects, documents, bids } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { PDFDocument } from 'pdf-lib';
-import { inngest } from '@/inngest';
+import { inngest } from '@/inngest/client';
 import { downloadFile } from '@/lib/storage';
 
 // Force Node.js runtime for PDF parsing
