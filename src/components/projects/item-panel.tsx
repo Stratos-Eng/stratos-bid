@@ -53,7 +53,7 @@ export function ItemPanel({
     <div className="w-80 border-l border-border bg-background flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-border">
-        <h3 className="font-medium">Item Details</h3>
+        <h3 className="font-medium text-foreground">Item Details</h3>
         <button
           onClick={onClose}
           className="text-muted-foreground hover:text-foreground"
@@ -68,7 +68,7 @@ export function ItemPanel({
         {item.symbolCode && (
           <div>
             <label className="text-xs text-muted-foreground">Symbol</label>
-            <div className="font-mono text-lg">{item.symbolCode}</div>
+            <div className="font-mono text-lg text-foreground">{item.symbolCode}</div>
           </div>
         )}
 
@@ -83,7 +83,7 @@ export function ItemPanel({
               className="mt-1"
             />
           ) : (
-            <p className="mt-1">{item.description}</p>
+            <p className="mt-1 text-foreground">{item.description}</p>
           )}
         </div>
 
@@ -99,7 +99,7 @@ export function ItemPanel({
                 placeholder="e.g., 4"
               />
             ) : (
-              <p className="mt-1">{item.quantity || "-"}</p>
+              <p className="mt-1 text-foreground">{item.quantity || "-"}</p>
             )}
           </div>
           <div>
@@ -108,7 +108,7 @@ export function ItemPanel({
               <select
                 value={unit}
                 onChange={(e) => setUnit(e.target.value)}
-                className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                className="mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground"
               >
                 <option value="EA">EA</option>
                 <option value="SF">SF</option>
@@ -116,7 +116,7 @@ export function ItemPanel({
                 <option value="SET">SET</option>
               </select>
             ) : (
-              <p className="mt-1">{item.unit || "EA"}</p>
+              <p className="mt-1 text-foreground">{item.unit || "EA"}</p>
             )}
           </div>
         </div>
@@ -124,7 +124,7 @@ export function ItemPanel({
         {/* Page Reference */}
         <div>
           <label className="text-xs text-muted-foreground">Page</label>
-          <p className="mt-1">{item.pageNumber || "-"}</p>
+          <p className="mt-1 text-foreground">{item.pageNumber || "-"}</p>
         </div>
 
         {/* Confidence */}
