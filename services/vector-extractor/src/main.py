@@ -3,15 +3,24 @@ Vector Extraction Service
 
 Extracts vector geometry from PDF pages for snapping in the takeoff tool.
 """
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
+from contextlib import contextmanager
 import uuid
 import base64
 import tempfile
 import os
+import gc
+import psutil
+import time
 import fitz  # PyMuPDF
+
+# Memory limits
+MAX_PDF_SIZE_MB = 200  # Max PDF size in MB
+MAX_PDF_SIZE_BYTES = MAX_PDF_SIZE_MB * 1024 * 1024
+MEMORY_THRESHOLD_MB = 400  # Trigger cleanup when memory usage exceeds this
 
 app = FastAPI(
     title="Vector Extractor",
@@ -27,8 +36,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory job status (replace with Redis in production)
+# In-memory job status with TTL
 jobs: dict[str, dict] = {}
+JOB_TTL_SECONDS = 3600  # Clean up jobs older than 1 hour
+
+
+def get_memory_usage_mb() -> float:
+    """Get current process memory usage in MB."""
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024 / 1024
+
+
+def cleanup_memory():
+    """Force garbage collection and cleanup."""
+    gc.collect()
+
+
+def cleanup_old_jobs():
+    """Remove jobs older than TTL."""
+    now = time.time()
+    expired = [k for k, v in jobs.items() if now - v.get("created_at", 0) > JOB_TTL_SECONDS]
+    for k in expired:
+        del jobs[k]
+
+
+@contextmanager
+def open_pdf_safely(pdf_bytes: bytes):
+    """Context manager to safely open and close PDF documents."""
+    doc = None
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        yield doc
+    finally:
+        if doc:
+            doc.close()
+        # Force cleanup after processing
+        cleanup_memory()
 
 
 # === Synchronous extraction (matches Next.js API contract) ===
@@ -71,7 +114,12 @@ async def extract_sync(request: SyncExtractionRequest):
     """
     from .extractor import extract_page_vectors
 
+    tmp_path = None
     try:
+        # Check memory before processing
+        if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+            cleanup_memory()
+
         # Decode base64 PDF data
         try:
             pdf_bytes = base64.b64decode(request.pdfData)
@@ -81,36 +129,44 @@ async def extract_sync(request: SyncExtractionRequest):
                 error=f"Invalid base64 PDF data: {str(e)}"
             )
 
-        # Write to temp file (PyMuPDF needs a file path)
+        # Check PDF size
+        if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
+            return SyncExtractionResponse(
+                success=False,
+                error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
+            )
+
+        # Write to temp file (extractor needs a file path)
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp.write(pdf_bytes)
             tmp_path = tmp.name
 
-        try:
-            # Extract vectors
-            result = extract_page_vectors(
-                pdf_path=tmp_path,
-                page_number=request.pageNum - 1,  # Convert to 0-indexed
-                dpi=request.scale * 72,  # Convert scale to DPI
-            )
+        # Extract vectors
+        result = extract_page_vectors(
+            pdf_path=tmp_path,
+            page_number=request.pageNum - 1,  # Convert to 0-indexed
+            dpi=request.scale * 72,  # Convert scale to DPI
+        )
 
-            return SyncExtractionResponse(
-                success=True,
-                lines=result["lines"],
-                snapPoints=result["snap_points"],
-                rawPathCount=result["stats"]["raw_count"],
-                cleanedPathCount=result["stats"]["cleaned_count"],
-                quality=result["quality"],
-            )
-        finally:
-            # Clean up temp file
-            os.unlink(tmp_path)
+        return SyncExtractionResponse(
+            success=True,
+            lines=result["lines"],
+            snapPoints=result["snap_points"],
+            rawPathCount=result["stats"]["raw_count"],
+            cleanedPathCount=result["stats"]["cleaned_count"],
+            quality=result["quality"],
+        )
 
     except Exception as e:
         return SyncExtractionResponse(
             success=False,
             error=str(e)
         )
+    finally:
+        # Always clean up temp file
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        cleanup_memory()
 
 
 # === Async extraction (for future use) ===
@@ -132,6 +188,39 @@ class ExtractionStatus(BaseModel):
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "vector-extractor"}
+
+
+@app.get("/memory")
+async def memory_stats():
+    """Get memory usage statistics for debugging."""
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+
+    # Clean up old jobs
+    cleanup_old_jobs()
+
+    return {
+        "rss_mb": mem_info.rss / 1024 / 1024,
+        "vms_mb": mem_info.vms / 1024 / 1024,
+        "active_jobs": len(jobs),
+        "threshold_mb": MEMORY_THRESHOLD_MB,
+        "max_pdf_size_mb": MAX_PDF_SIZE_MB,
+    }
+
+
+@app.post("/gc")
+async def force_gc():
+    """Force garbage collection - useful for debugging memory issues."""
+    before_mb = get_memory_usage_mb()
+    cleanup_memory()
+    cleanup_old_jobs()
+    after_mb = get_memory_usage_mb()
+
+    return {
+        "before_mb": round(before_mb, 2),
+        "after_mb": round(after_mb, 2),
+        "freed_mb": round(before_mb - after_mb, 2),
+    }
 
 
 # === Page Rendering Endpoint ===
@@ -162,6 +251,11 @@ async def render_page(request: RenderRequest):
     Returns a base64-encoded PNG image.
     """
     try:
+        # Check memory before processing
+        mem_mb = get_memory_usage_mb()
+        if mem_mb > MEMORY_THRESHOLD_MB:
+            cleanup_memory()
+
         # Decode base64 PDF data
         try:
             pdf_bytes = base64.b64decode(request.pdfData)
@@ -171,15 +265,15 @@ async def render_page(request: RenderRequest):
                 error=f"Invalid base64 PDF data: {str(e)}"
             )
 
-        # Write to temp file (PyMuPDF needs a file path)
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(pdf_bytes)
-            tmp_path = tmp.name
+        # Check PDF size
+        if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
+            return RenderResponse(
+                success=False,
+                error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
+            )
 
-        try:
-            # Open PDF
-            doc = fitz.open(tmp_path)
-
+        # Use context manager for safe cleanup
+        with open_pdf_safely(pdf_bytes) as doc:
             # Validate page number (1-indexed from API, 0-indexed internally)
             page_index = request.pageNum - 1
             if page_index < 0 or page_index >= len(doc):
@@ -210,14 +304,14 @@ async def render_page(request: RenderRequest):
                 height=pix.height,
             )
 
-            doc.close()
+            # Explicitly clear pixmap
+            del pix
+            del png_bytes
+
             return result
 
-        finally:
-            # Clean up temp file
-            os.unlink(tmp_path)
-
     except Exception as e:
+        cleanup_memory()
         return RenderResponse(
             success=False,
             error=str(e)
@@ -256,6 +350,10 @@ async def extract_text(request: TextExtractionRequest):
     little text (<50 chars) are flagged as needing OCR.
     """
     try:
+        # Check memory before processing
+        if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+            cleanup_memory()
+
         # Decode base64 PDF data
         try:
             pdf_bytes = base64.b64decode(request.pdfData)
@@ -265,39 +363,37 @@ async def extract_text(request: TextExtractionRequest):
                 error=f"Invalid base64 PDF data: {str(e)}"
             )
 
-        # Open PDF from bytes (PyMuPDF can open from stream)
-        try:
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        except Exception as e:
+        # Check PDF size
+        if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
             return TextExtractionResponse(
                 success=False,
-                error=f"Failed to open PDF: {str(e)}"
+                error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
             )
 
-        pages = []
-        for i in range(len(doc)):
-            page = doc[i]
-            text = page.get_text()
+        # Use context manager for safe cleanup
+        with open_pdf_safely(pdf_bytes) as doc:
+            pages = []
+            for i in range(len(doc)):
+                page = doc[i]
+                text = page.get_text()
 
-            # Flag pages with very little text as needing OCR
-            # These are likely scanned documents
-            needs_ocr = len(text.strip()) < 50
+                # Flag pages with very little text as needing OCR
+                needs_ocr = len(text.strip()) < 50
 
-            pages.append(PageTextResult(
-                page=i + 1,  # 1-indexed
-                text=text,
-                needsOcr=needs_ocr,
-            ))
+                pages.append(PageTextResult(
+                    page=i + 1,  # 1-indexed
+                    text=text,
+                    needsOcr=needs_ocr,
+                ))
 
-        doc.close()
-
-        return TextExtractionResponse(
-            success=True,
-            pages=pages,
-            totalPages=len(pages),
-        )
+            return TextExtractionResponse(
+                success=True,
+                pages=pages,
+                totalPages=len(pages),
+            )
 
     except Exception as e:
+        cleanup_memory()
         return TextExtractionResponse(
             success=False,
             error=str(e)
@@ -333,69 +429,79 @@ async def crop_region(request: CropRequest):
     Input coordinates are normalized (0-1), output is a base64 PNG.
     """
     try:
+        # Check memory before processing
+        if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+            cleanup_memory()
+
         # Decode base64 PDF data
         try:
             pdf_bytes = base64.b64decode(request.pdfData)
         except Exception as e:
             return CropResponse(success=False, error=f"Invalid base64 PDF data: {str(e)}")
 
-        # Open PDF from bytes
-        try:
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        except Exception as e:
-            return CropResponse(success=False, error=f"Failed to open PDF: {str(e)}")
-
-        # Validate page number
-        page_index = request.pageNum - 1
-        if page_index < 0 or page_index >= len(doc):
+        # Check PDF size
+        if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
             return CropResponse(
                 success=False,
-                error=f"Invalid page number. Document has {len(doc)} pages."
+                error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
             )
 
-        page = doc[page_index]
+        # Use context manager for safe cleanup
+        with open_pdf_safely(pdf_bytes) as doc:
+            # Validate page number
+            page_index = request.pageNum - 1
+            if page_index < 0 or page_index >= len(doc):
+                return CropResponse(
+                    success=False,
+                    error=f"Invalid page number. Document has {len(doc)} pages."
+                )
 
-        # Get page dimensions
-        page_rect = page.rect
-        page_width = page_rect.width
-        page_height = page_rect.height
+            page = doc[page_index]
 
-        # Convert normalized coordinates to page coordinates
-        center_x = request.x * page_width
-        center_y = request.y * page_height
+            # Get page dimensions
+            page_rect = page.rect
+            page_width = page_rect.width
+            page_height = page_rect.height
 
-        # Calculate crop rectangle (in PDF points)
-        # Scale from 150 DPI pixels to 72 DPI PDF points
-        dpi_scale = 72 / 150
-        half_width = (request.width / 2) * dpi_scale
-        half_height = (request.height / 2) * dpi_scale
+            # Convert normalized coordinates to page coordinates
+            center_x = request.x * page_width
+            center_y = request.y * page_height
 
-        # Create clip rectangle
-        clip_rect = fitz.Rect(
-            max(0, center_x - half_width),
-            max(0, center_y - half_height),
-            min(page_width, center_x + half_width),
-            min(page_height, center_y + half_height)
-        )
+            # Calculate crop rectangle (in PDF points)
+            dpi_scale = 72 / 150
+            half_width = (request.width / 2) * dpi_scale
+            half_height = (request.height / 2) * dpi_scale
 
-        # Render the cropped region at 150 DPI
-        mat = fitz.Matrix(150 / 72, 150 / 72)
-        pix = page.get_pixmap(matrix=mat, clip=clip_rect, alpha=False)
+            # Create clip rectangle
+            clip_rect = fitz.Rect(
+                max(0, center_x - half_width),
+                max(0, center_y - half_height),
+                min(page_width, center_x + half_width),
+                min(page_height, center_y + half_height)
+            )
 
-        # Convert to PNG bytes
-        png_bytes = pix.tobytes("png")
-        image_b64 = base64.b64encode(png_bytes).decode("utf-8")
+            # Render the cropped region at 150 DPI
+            mat = fitz.Matrix(150 / 72, 150 / 72)
+            pix = page.get_pixmap(matrix=mat, clip=clip_rect, alpha=False)
 
-        doc.close()
+            # Convert to PNG bytes
+            png_bytes = pix.tobytes("png")
+            image_b64 = base64.b64encode(png_bytes).decode("utf-8")
 
-        return CropResponse(
-            success=True,
-            image=image_b64,
-            width=pix.width,
-            height=pix.height,
-        )
+            result = CropResponse(
+                success=True,
+                image=image_b64,
+                width=pix.width,
+                height=pix.height,
+            )
+
+            del pix
+            del png_bytes
+
+            return result
 
     except Exception as e:
+        cleanup_memory()
         return CropResponse(success=False, error=str(e))
 
 
