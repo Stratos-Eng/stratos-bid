@@ -30,12 +30,12 @@ COPY src/ src/
 # Uncomment if you want models baked into the image (increases image size by ~500MB)
 # RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('clip-ViT-B-32')"
 
-# Expose port
-EXPOSE 8001
+# Expose port (Render uses PORT env var, default 10000)
+EXPOSE 10000
 
-# Health check
+# Health check using PORT env var
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8001/health || exit 1
+    CMD curl -f http://localhost:${PORT:-10000}/health || exit 1
 
-# Run the application
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8001"]
+# Run the application - use shell form to expand PORT env var
+CMD uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-10000}
