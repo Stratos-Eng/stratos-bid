@@ -93,8 +93,9 @@ export async function POST(request: NextRequest) {
     const totalChunks = Math.ceil(fileSize / chunkSize);
 
     // Create temp directory for chunks
+    // Use /tmp which exists on all Unix systems (macOS, Linux, Vercel)
     const uploadId = randomUUID();
-    const tempDir = join(process.cwd(), 'uploads', 'temp', uploadId);
+    const tempDir = join('/tmp', 'stratos-uploads', uploadId);
     await mkdir(tempDir, { recursive: true });
 
     // Set expiration (24 hours from now)
