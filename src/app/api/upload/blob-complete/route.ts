@@ -7,6 +7,10 @@ import { PDFParse } from 'pdf-parse';
 import { inngest } from '@/inngest';
 import { downloadFile } from '@/lib/storage';
 
+// Force Node.js runtime for PDF parsing
+export const runtime = 'nodejs';
+export const maxDuration = 60;
+
 interface BlobCompleteRequest {
   blobUrl: string;
   pathname: string;

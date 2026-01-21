@@ -5,6 +5,9 @@ import { db } from '@/db';
 import { takeoffProjects, bids } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 
+// Force Node.js runtime
+export const runtime = 'nodejs';
+
 // POST /api/upload/token - Handle Vercel Blob client upload
 export async function POST(request: NextRequest) {
   const body = (await request.json()) as HandleUploadBody;
