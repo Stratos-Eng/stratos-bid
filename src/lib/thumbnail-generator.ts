@@ -80,9 +80,49 @@ export async function allThumbnailsExist(documentId: string, pageCount: number):
 }
 
 /**
- * Render a single page to a thumbnail buffer using pdftoppm
+ * Render a single page using the Python service
  */
-async function renderPageThumbnail(
+async function renderPageViaPythonService(
+  pdfBuffer: Buffer,
+  pageNumber: number
+): Promise<Buffer | null> {
+  const pythonApiUrl = process.env.PYTHON_VECTOR_API_URL || 'http://localhost:8001';
+  const pdfBase64 = pdfBuffer.toString('base64');
+
+  try {
+    const response = await fetch(`${pythonApiUrl}/render`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pdfData: pdfBase64,
+        pageNum: pageNumber,
+        scale: 0.25, // Small scale for thumbnails (roughly 150px width)
+        returnBase64: true,
+      }),
+    });
+
+    if (!response.ok) {
+      console.warn(`Python render service returned ${response.status}`);
+      return null;
+    }
+
+    const result = await response.json();
+    if (!result.success || !result.image) {
+      console.warn('Python render service returned unsuccessful result');
+      return null;
+    }
+
+    return Buffer.from(result.image, 'base64');
+  } catch (error) {
+    console.warn(`Python render service failed for page ${pageNumber}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Render a single page to a thumbnail buffer using pdftoppm (local only)
+ */
+async function renderPageWithPdftoppm(
   pdfPath: string,
   pageNumber: number
 ): Promise<Buffer | null> {
@@ -111,11 +151,28 @@ async function renderPageThumbnail(
 
     return buffer;
   } catch (error) {
-    console.warn(`pdftoppm failed for page ${pageNumber}:`, error);
-    // Clean up temp file on error
+    // pdftoppm not available (serverless) or failed
     await unlink(tempFile).catch(() => {});
     return null;
   }
+}
+
+/**
+ * Render a single page to a thumbnail buffer
+ * Tries pdftoppm first (local), then Python service (serverless)
+ */
+async function renderPageThumbnail(
+  pdfPath: string,
+  pdfBuffer: Buffer,
+  pageNumber: number
+): Promise<Buffer | null> {
+  // Try pdftoppm first (fast, local)
+  let result = await renderPageWithPdftoppm(pdfPath, pageNumber);
+  if (result) return result;
+
+  // Fall back to Python service (works in serverless)
+  result = await renderPageViaPythonService(pdfBuffer, pageNumber);
+  return result;
 }
 
 /**
@@ -143,25 +200,6 @@ async function generatePlaceholderThumbnail(
 }
 
 /**
- * Resolve storage path - handles absolute paths, relative paths, and Blob URLs
- * For Blob URLs, downloads to a temp file and returns the temp path
- */
-async function resolveStoragePath(storagePath: string): Promise<{ path: string; isTemp: boolean }> {
-  if (isBlobUrl(storagePath)) {
-    // Download to temp file for pdftoppm
-    const tempPath = join(tmpdir(), `pdf-${randomUUID()}.pdf`);
-    const buffer = await downloadFile(storagePath);
-    await writeFile(tempPath, buffer);
-    return { path: tempPath, isTemp: true };
-  }
-
-  if (isAbsolute(storagePath)) {
-    return { path: storagePath, isTemp: false };
-  }
-  return { path: join(process.cwd(), storagePath), isTemp: false };
-}
-
-/**
  * Generate thumbnails for all pages of a PDF document
  */
 export async function generateThumbnails(config: ThumbnailConfig): Promise<ThumbnailResult> {
@@ -171,13 +209,18 @@ export async function generateThumbnails(config: ThumbnailConfig): Promise<Thumb
     throw new Error('Invalid documentId format');
   }
 
-  const resolved = await resolveStoragePath(storagePath);
-  const fullPath = resolved.path;
+  // Download PDF if it's a Blob URL, or read from local path
+  const pdfBuffer = isBlobUrl(storagePath)
+    ? await downloadFile(storagePath)
+    : await readFile(isAbsolute(storagePath) ? storagePath : join(process.cwd(), storagePath));
+
+  // Write to temp file for pdftoppm (local rendering)
+  const tempPath = join(tmpdir(), `pdf-${randomUUID()}.pdf`);
+  await writeFile(tempPath, pdfBuffer);
 
   try {
     // Get page count from PDF
-    const pdfBytes = await readFile(fullPath);
-    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const pdfDoc = await PDFDocument.load(pdfBuffer);
     const pageCount = pdfDoc.getPageCount();
 
     // Create output directory
@@ -197,8 +240,8 @@ export async function generateThumbnails(config: ThumbnailConfig): Promise<Thumb
       }
 
       try {
-        // Try to render with pdftoppm
-        let imageBuffer = await renderPageThumbnail(fullPath, pageNum);
+        // Try to render (pdftoppm first, then Python service)
+        let imageBuffer = await renderPageThumbnail(tempPath, pdfBuffer, pageNum);
 
         if (imageBuffer && imageBuffer.length > 0) {
           // Convert to WebP for better compression
@@ -231,10 +274,8 @@ export async function generateThumbnails(config: ThumbnailConfig): Promise<Thumb
       outputDir,
     };
   } finally {
-    // Clean up temp file if we downloaded from Blob
-    if (resolved.isTemp) {
-      await unlink(fullPath).catch(() => {});
-    }
+    // Clean up temp file
+    await unlink(tempPath).catch(() => {});
   }
 }
 
@@ -259,12 +300,18 @@ export async function generateSingleThumbnail(
     // Need to generate
   }
 
-  const resolved = await resolveStoragePath(storagePath);
-  const fullPath = resolved.path;
+  // Download PDF if it's a Blob URL, or read from local path
+  const pdfBuffer = isBlobUrl(storagePath)
+    ? await downloadFile(storagePath)
+    : await readFile(isAbsolute(storagePath) ? storagePath : join(process.cwd(), storagePath));
+
+  // Write to temp file for pdftoppm (local rendering)
+  const tempPath = join(tmpdir(), `pdf-${randomUUID()}.pdf`);
+  await writeFile(tempPath, pdfBuffer);
 
   try {
-    // Try to render with pdftoppm
-    let imageBuffer = await renderPageThumbnail(fullPath, pageNumber);
+    // Try to render (pdftoppm first, then Python service)
+    let imageBuffer = await renderPageThumbnail(tempPath, pdfBuffer, pageNumber);
 
     if (imageBuffer && imageBuffer.length > 0) {
       imageBuffer = await sharp(imageBuffer)
@@ -280,10 +327,8 @@ export async function generateSingleThumbnail(
 
     return imageBuffer;
   } finally {
-    // Clean up temp file if we downloaded from Blob
-    if (resolved.isTemp) {
-      await unlink(fullPath).catch(() => {});
-    }
+    // Clean up temp file
+    await unlink(tempPath).catch(() => {});
   }
 }
 
