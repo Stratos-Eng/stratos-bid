@@ -5,8 +5,7 @@ import { documents, bids } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import path from 'path';
 import fs from 'fs';
-// Use legacy build for Node.js environment
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { getDocumentProxy } from 'unpdf';
 import { downloadFile, isBlobUrl } from '@/lib/storage';
 
 interface PageInfo {
@@ -69,8 +68,8 @@ export async function GET(
           data = new Uint8Array(fs.readFileSync(resolvedPath));
         }
 
-        const loadingTask = pdfjsLib.getDocument({ data });
-        const pdfDocument = await loadingTask.promise;
+        // Use unpdf which works in serverless environments
+        const pdfDocument = await getDocumentProxy(data);
         pageCount = pdfDocument.numPages;
 
         // Try to get page labels (e.g., "A1.1", "S-101")

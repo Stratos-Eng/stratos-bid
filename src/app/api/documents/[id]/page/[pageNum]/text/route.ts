@@ -5,7 +5,8 @@ import { documents, bids } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import path from 'path';
 import fs from 'fs';
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { getDocumentProxy } from 'unpdf';
+import * as pdfjs from 'unpdf/pdfjs';
 import { downloadFile, isBlobUrl } from '@/lib/storage';
 
 interface TextPosition {
@@ -74,9 +75,8 @@ export async function GET(
       data = new Uint8Array(fs.readFileSync(resolvedPath));
     }
 
-    // Load PDF and extract text positions
-    const loadingTask = pdfjsLib.getDocument({ data });
-    const pdfDocument = await loadingTask.promise;
+    // Load PDF and extract text positions (using unpdf for serverless compatibility)
+    const pdfDocument = await getDocumentProxy(data);
 
     if (pageNum > pdfDocument.numPages) {
       return NextResponse.json({ error: 'Page not found' }, { status: 404 });
@@ -115,7 +115,7 @@ export async function GET(
 
       // Use pdf.js Util to transform coordinates through the viewport
       // This handles rotation and any other page transforms
-      const tx = pdfjsLib.Util.transform(viewport.transform, transform);
+      const tx = pdfjs.Util.transform(viewport.transform, transform);
       // tx is [scaleX, skewX, skewY, scaleY, x, y] in viewport coordinates
       const x = tx[4];
       const y = tx[5];
