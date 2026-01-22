@@ -269,7 +269,8 @@ async def force_gc():
 
 class RenderRequest(BaseModel):
     """Request format expected by Next.js /api/takeoff/render endpoint."""
-    pdfData: str  # Base64 encoded PDF
+    pdfData: Optional[str] = None  # Base64 encoded PDF (legacy)
+    pdfUrl: Optional[str] = None  # URL to fetch PDF from (preferred)
     pageNum: int  # 1-indexed page number
     scale: float = 1.5
     returnBase64: bool = True
@@ -289,9 +290,13 @@ async def render_page(request: RenderRequest):
     """
     Render a PDF page to a PNG image using PyMuPDF.
 
-    This is the endpoint called by /api/takeoff/render.
+    Accepts either pdfUrl (preferred, streams from Blob) or pdfData (legacy base64).
     Returns a base64-encoded PNG image.
     """
+    # Validate input - need either pdfUrl or pdfData
+    if not request.pdfUrl and not request.pdfData:
+        return RenderResponse(success=False, error="Either pdfUrl or pdfData is required")
+
     # Check if memory is critical - reject early
     is_critical, mem_mb = check_memory_critical()
     if is_critical:
@@ -311,13 +316,16 @@ async def render_page(request: RenderRequest):
             if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
                 cleanup_memory()
 
-            # Decode base64 PDF data
+            # Get PDF bytes - prefer URL (lower memory) over base64
             try:
-                pdf_bytes = base64.b64decode(request.pdfData)
+                if request.pdfUrl:
+                    pdf_bytes = await fetch_pdf_from_url(request.pdfUrl)
+                else:
+                    pdf_bytes = base64.b64decode(request.pdfData)
             except Exception as e:
                 return RenderResponse(
                     success=False,
-                    error=f"Invalid base64 PDF data: {str(e)}"
+                    error=f"Failed to load PDF: {str(e)}"
                 )
 
             # Check PDF size

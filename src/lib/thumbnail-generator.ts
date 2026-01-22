@@ -3,24 +3,18 @@
  *
  * Generates small preview images for all pages of a PDF document.
  * Thumbnails are stored in Vercel Blob and served via direct CDN URLs.
+ * Uses Python service for rendering - passes URLs to avoid memory overhead.
  */
 
 import sharp from 'sharp';
-import { readFile, writeFile, unlink } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { join, isAbsolute } from 'path';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { PDFDocument } from 'pdf-lib';
-import { tmpdir } from 'os';
-import { randomUUID } from 'crypto';
 import { put, list } from '@vercel/blob';
-import { downloadFile, isBlobUrl } from '@/lib/storage';
-
-const execFileAsync = promisify(execFile);
+import { isBlobUrl } from '@/lib/storage';
 
 // Thumbnail settings
 const THUMBNAIL_WIDTH = 150;  // Width in pixels
-const THUMBNAIL_DPI = 72;     // Low DPI for fast generation
 
 export interface ThumbnailConfig {
   documentId: string;
@@ -128,20 +122,25 @@ export async function getThumbnailUrls(documentId: string, pageCount: number): P
 
 /**
  * Render a single page using the Python service
+ * Prefers URL-based fetching to reduce memory usage
  */
 async function renderPageViaPythonService(
-  pdfBuffer: Buffer,
+  pdfUrlOrBuffer: string | Buffer,
   pageNumber: number
 ): Promise<Buffer | null> {
   const pythonApiUrl = process.env.PYTHON_VECTOR_API_URL || 'http://localhost:8001';
-  const pdfBase64 = pdfBuffer.toString('base64');
+
+  // Prefer URL to avoid base64 encoding overhead
+  const isUrl = typeof pdfUrlOrBuffer === 'string';
 
   try {
     const response = await fetch(`${pythonApiUrl}/render`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        pdfData: pdfBase64,
+        ...(isUrl
+          ? { pdfUrl: pdfUrlOrBuffer }
+          : { pdfData: pdfUrlOrBuffer.toString('base64') }),
         pageNum: pageNumber,
         scale: 0.25, // Small scale for thumbnails (roughly 150px width)
         returnBase64: true,
@@ -166,61 +165,6 @@ async function renderPageViaPythonService(
   }
 }
 
-/**
- * Render a single page to a thumbnail buffer using pdftoppm (local only)
- */
-async function renderPageWithPdftoppm(
-  pdfPath: string,
-  pageNumber: number
-): Promise<Buffer | null> {
-  // pdftoppm doesn't support stdout, must write to temp file
-  const tempPrefix = join(tmpdir(), `thumb-${randomUUID()}`);
-  const tempFile = `${tempPrefix}.png`;
-
-  try {
-    // Use pdftoppm to render the page to temp file
-    await execFileAsync('pdftoppm', [
-      '-f', String(pageNumber),
-      '-l', String(pageNumber),
-      '-png',
-      '-r', String(THUMBNAIL_DPI),
-      '-singlefile',
-      '-scale-to', String(THUMBNAIL_WIDTH),
-      pdfPath,
-      tempPrefix
-    ], { maxBuffer: 10 * 1024 * 1024 });
-
-    // Read the generated file
-    const buffer = await readFile(tempFile);
-
-    // Clean up temp file
-    await unlink(tempFile).catch(() => {});
-
-    return buffer;
-  } catch (error) {
-    // pdftoppm not available (serverless) or failed
-    await unlink(tempFile).catch(() => {});
-    return null;
-  }
-}
-
-/**
- * Render a single page to a thumbnail buffer
- * Tries pdftoppm first (local), then Python service (serverless)
- */
-async function renderPageThumbnail(
-  pdfPath: string,
-  pdfBuffer: Buffer,
-  pageNumber: number
-): Promise<Buffer | null> {
-  // Try pdftoppm first (fast, local)
-  let result = await renderPageWithPdftoppm(pdfPath, pageNumber);
-  if (result) return result;
-
-  // Fall back to Python service (works in serverless)
-  result = await renderPageViaPythonService(pdfBuffer, pageNumber);
-  return result;
-}
 
 /**
  * Generate a placeholder thumbnail when pdftoppm fails
@@ -248,6 +192,7 @@ async function generatePlaceholderThumbnail(
 
 /**
  * Generate thumbnails for all pages of a PDF document and upload to Blob
+ * Uses URL-based rendering when possible to minimize memory usage
  */
 export async function generateThumbnails(config: ThumbnailConfig): Promise<ThumbnailResult> {
   const { documentId, storagePath } = config;
@@ -256,72 +201,81 @@ export async function generateThumbnails(config: ThumbnailConfig): Promise<Thumb
     throw new Error('Invalid documentId format');
   }
 
-  // Download PDF if it's a Blob URL, or read from local path
-  const pdfBuffer = isBlobUrl(storagePath)
-    ? await downloadFile(storagePath)
-    : await readFile(isAbsolute(storagePath) ? storagePath : join(process.cwd(), storagePath));
+  // For Blob URLs, we'll pass URL directly to Python (no download needed)
+  // For local files, we still need to load the buffer
+  const usesUrl = isBlobUrl(storagePath);
 
-  // Write to temp file for pdftoppm (local rendering)
-  const tempPath = join(tmpdir(), `pdf-${randomUUID()}.pdf`);
-  await writeFile(tempPath, pdfBuffer);
+  // We need to get page count - use pdf-lib which can work with URLs or buffers
+  let pageCount: number;
+  let pdfBuffer: Buffer | null = null;
 
-  try {
-    // Get page count from PDF
+  if (usesUrl) {
+    // Fetch just enough to get page count, then let Python handle rendering
+    const response = await fetch(storagePath);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch PDF: ${response.status}`);
+    }
+    pdfBuffer = Buffer.from(await response.arrayBuffer());
     const pdfDoc = await PDFDocument.load(pdfBuffer);
-    const pageCount = pdfDoc.getPageCount();
+    pageCount = pdfDoc.getPageCount();
+    // Clear buffer - Python will fetch from URL
+    pdfBuffer = null;
+  } else {
+    pdfBuffer = await readFile(isAbsolute(storagePath) ? storagePath : join(process.cwd(), storagePath));
+    const pdfDoc = await PDFDocument.load(pdfBuffer);
+    pageCount = pdfDoc.getPageCount();
+  }
 
-    let thumbnailsGenerated = 0;
-    const thumbnailUrls: string[] = [];
+  let thumbnailsGenerated = 0;
+  const thumbnailUrls: string[] = [];
 
-    // Generate thumbnail for each page
-    for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
-      // Check if already exists in Blob
-      const existingUrl = await thumbnailExistsInBlob(documentId, pageNum);
-      if (existingUrl) {
-        thumbnailUrls.push(existingUrl);
-        thumbnailsGenerated++;
-        continue;
-      }
-
-      try {
-        // Try to render (pdftoppm first, then Python service)
-        let imageBuffer = await renderPageThumbnail(tempPath, pdfBuffer, pageNum);
-
-        if (imageBuffer && imageBuffer.length > 0) {
-          // Convert to WebP for better compression
-          imageBuffer = await sharp(imageBuffer)
-            .webp({ quality: 75 })
-            .toBuffer();
-        } else {
-          // Fall back to placeholder
-          imageBuffer = await generatePlaceholderThumbnail(pageNum);
-        }
-
-        // Upload to Blob
-        const url = await uploadThumbnailToBlob(documentId, pageNum, imageBuffer);
-        thumbnailUrls.push(url);
-        thumbnailsGenerated++;
-
-      } catch (error) {
-        console.error(`Failed to generate thumbnail for page ${pageNum}:`, error);
-        // Generate and upload placeholder on error
-        const placeholder = await generatePlaceholderThumbnail(pageNum);
-        const url = await uploadThumbnailToBlob(documentId, pageNum, placeholder);
-        thumbnailUrls.push(url);
-        thumbnailsGenerated++;
-      }
+  // Generate thumbnail for each page
+  for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+    // Check if already exists in Blob
+    const existingUrl = await thumbnailExistsInBlob(documentId, pageNum);
+    if (existingUrl) {
+      thumbnailUrls.push(existingUrl);
+      thumbnailsGenerated++;
+      continue;
     }
 
-    return {
-      documentId,
-      pageCount,
-      thumbnailsGenerated,
-      thumbnailUrls,
-    };
-  } finally {
-    // Clean up temp file
-    await unlink(tempPath).catch(() => {});
+    try {
+      // Use Python service - pass URL when available, otherwise buffer
+      let imageBuffer = usesUrl
+        ? await renderPageViaPythonService(storagePath, pageNum)
+        : await renderPageViaPythonService(pdfBuffer!, pageNum);
+
+      if (imageBuffer && imageBuffer.length > 0) {
+        // Convert to WebP for better compression
+        imageBuffer = await sharp(imageBuffer)
+          .webp({ quality: 75 })
+          .toBuffer();
+      } else {
+        // Fall back to placeholder
+        imageBuffer = await generatePlaceholderThumbnail(pageNum);
+      }
+
+      // Upload to Blob
+      const url = await uploadThumbnailToBlob(documentId, pageNum, imageBuffer);
+      thumbnailUrls.push(url);
+      thumbnailsGenerated++;
+
+    } catch (error) {
+      console.error(`Failed to generate thumbnail for page ${pageNum}:`, error);
+      // Generate and upload placeholder on error
+      const placeholder = await generatePlaceholderThumbnail(pageNum);
+      const url = await uploadThumbnailToBlob(documentId, pageNum, placeholder);
+      thumbnailUrls.push(url);
+      thumbnailsGenerated++;
+    }
   }
+
+  return {
+    documentId,
+    pageCount,
+    thumbnailsGenerated,
+    thumbnailUrls,
+  };
 }
 
 /**
@@ -346,35 +300,33 @@ export async function generateSingleThumbnail(
     return { url: existingUrl, buffer };
   }
 
-  // Download PDF if it's a Blob URL, or read from local path
-  const pdfBuffer = isBlobUrl(storagePath)
-    ? await downloadFile(storagePath)
-    : await readFile(isAbsolute(storagePath) ? storagePath : join(process.cwd(), storagePath));
+  // Use URL-based rendering when possible (avoids downloading entire PDF)
+  const usesUrl = isBlobUrl(storagePath);
 
-  // Write to temp file for pdftoppm (local rendering)
-  const tempPath = join(tmpdir(), `pdf-${randomUUID()}.pdf`);
-  await writeFile(tempPath, pdfBuffer);
-
-  try {
-    // Try to render (pdftoppm first, then Python service)
-    let imageBuffer = await renderPageThumbnail(tempPath, pdfBuffer, pageNumber);
-
-    if (imageBuffer && imageBuffer.length > 0) {
-      imageBuffer = await sharp(imageBuffer)
-        .webp({ quality: 75 })
-        .toBuffer();
+  let imageBuffer: Buffer;
+  if (usesUrl) {
+    // Pass URL to Python - it will fetch what it needs
+    const rendered = await renderPageViaPythonService(storagePath, pageNumber);
+    if (rendered && rendered.length > 0) {
+      imageBuffer = await sharp(rendered).webp({ quality: 75 }).toBuffer();
     } else {
       imageBuffer = await generatePlaceholderThumbnail(pageNumber);
     }
-
-    // Upload to Blob
-    const url = await uploadThumbnailToBlob(documentId, pageNumber, imageBuffer);
-
-    return { url, buffer: imageBuffer };
-  } finally {
-    // Clean up temp file
-    await unlink(tempPath).catch(() => {});
+  } else {
+    // Local file - load buffer and pass to Python
+    const pdfBuffer = await readFile(isAbsolute(storagePath) ? storagePath : join(process.cwd(), storagePath));
+    const rendered = await renderPageViaPythonService(pdfBuffer, pageNumber);
+    if (rendered && rendered.length > 0) {
+      imageBuffer = await sharp(rendered).webp({ quality: 75 }).toBuffer();
+    } else {
+      imageBuffer = await generatePlaceholderThumbnail(pageNumber);
+    }
   }
+
+  // Upload to Blob
+  const url = await uploadThumbnailToBlob(documentId, pageNumber, imageBuffer);
+
+  return { url, buffer: imageBuffer };
 }
 
 /**
