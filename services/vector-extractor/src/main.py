@@ -1569,10 +1569,14 @@ async def crop_region(request: CropRequest):
 # === OCR Endpoint ===
 
 def get_ocr_reader():
+    """Get OCR reader, or None if easyocr is not installed."""
     global _ocr_reader
     if _ocr_reader is None:
-        import easyocr
-        _ocr_reader = easyocr.Reader(['en'], gpu=False)
+        try:
+            import easyocr
+            _ocr_reader = easyocr.Reader(['en'], gpu=False)
+        except ImportError:
+            return None  # ML dependencies not installed
     return _ocr_reader
 
 
@@ -1626,6 +1630,11 @@ async def ocr_image(request: OcrRequest):
 
             # Get OCR reader
             reader = get_ocr_reader()
+            if reader is None:
+                return OcrResponse(
+                    success=False,
+                    error="OCR not available - ML dependencies not installed"
+                )
 
             # Perform OCR
             results = reader.readtext(image_array)
@@ -1669,11 +1678,15 @@ async def ocr_image(request: OcrRequest):
 # === CLIP Embedding Endpoint ===
 
 def get_clip_model():
+    """Get CLIP model, or None if sentence-transformers is not installed."""
     global _clip_model
     if _clip_model is None:
-        from sentence_transformers import SentenceTransformer
-        # Use a small, fast CLIP model
-        _clip_model = SentenceTransformer('clip-ViT-B-32')
+        try:
+            from sentence_transformers import SentenceTransformer
+            # Use a small, fast CLIP model
+            _clip_model = SentenceTransformer('clip-ViT-B-32')
+        except ImportError:
+            return None  # ML dependencies not installed
     return _clip_model
 
 
@@ -1726,6 +1739,11 @@ async def generate_embedding(request: EmbedRequest):
 
             # Get CLIP model
             model = get_clip_model()
+            if model is None:
+                return EmbedResponse(
+                    success=False,
+                    error="Embeddings not available - ML dependencies not installed"
+                )
 
             # Generate embedding
             embedding = model.encode(image)

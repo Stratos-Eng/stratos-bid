@@ -10,10 +10,11 @@ dependencies = [
     "pydantic>=2.10.0",
     "httpx>=0.28.0",
     "python-multipart>=0.0.20",
-    "easyocr>=1.7.0",
-    "sentence-transformers>=2.2.0",
     "pillow>=10.0.0",
     "psutil>=5.9.0",
+    # ML dependencies removed to speed up builds (30 min → 3 min)
+    # easyocr and sentence-transformers pulled in PyTorch (~2GB)
+    # Visual search (/ocr, /embed) returns 503 when these are not installed
 ]
 
 [project.optional-dependencies]
