@@ -111,28 +111,37 @@ export async function POST(request: NextRequest) {
 
     // Get PDF metadata (page count, dimensions)
     // Use Python API if available (memory efficient), otherwise fallback to pdf-lib
-    let pageCount: number;
+    let pageCount = 0;
     let defaultWidth = 3300; // 11" at 300dpi
     let defaultHeight = 2550; // 8.5" at 300dpi
+    let usedPythonApi = false;
 
     if (pythonApi.isConfigured()) {
       // Memory efficient: Python fetches PDF and extracts metadata
-      console.log('[blob-complete] Getting PDF metadata via Python API:', blobUrl);
-      const metadata = await pythonApi.metadata({ pdfUrl: blobUrl });
+      // Falls back to pdf-lib if Python service is unavailable
+      try {
+        console.log('[blob-complete] Getting PDF metadata via Python API:', blobUrl);
+        const metadata = await pythonApi.metadata({ pdfUrl: blobUrl });
 
-      if (!metadata.success) {
-        throw new Error(`Failed to parse PDF: ${metadata.error}`);
+        if (metadata.success) {
+          pageCount = metadata.pageCount;
+
+          // Convert from PDF points (72 DPI) to 300 DPI for better quality
+          if (metadata.width > 0 && metadata.height > 0) {
+            const scaleFactor = 300 / 72;
+            defaultWidth = Math.round(metadata.width * scaleFactor);
+            defaultHeight = Math.round(metadata.height * scaleFactor);
+          }
+          usedPythonApi = true;
+        } else {
+          console.warn('[blob-complete] Python API returned error, falling back to pdf-lib:', metadata.error);
+        }
+      } catch (pythonError) {
+        console.warn('[blob-complete] Python API failed, falling back to pdf-lib:', pythonError);
       }
+    }
 
-      pageCount = metadata.pageCount;
-
-      // Convert from PDF points (72 DPI) to 300 DPI for better quality
-      if (metadata.width > 0 && metadata.height > 0) {
-        const scaleFactor = 300 / 72;
-        defaultWidth = Math.round(metadata.width * scaleFactor);
-        defaultHeight = Math.round(metadata.height * scaleFactor);
-      }
-    } else {
+    if (!usedPythonApi) {
       // Fallback: Download PDF and parse with pdf-lib (uses more memory)
       // Wrap in timeout to prevent hanging on large/complex PDFs
       console.log('[blob-complete] Python API not configured, falling back to pdf-lib');
