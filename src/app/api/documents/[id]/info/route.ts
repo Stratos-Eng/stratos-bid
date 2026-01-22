@@ -54,23 +54,31 @@ export async function GET(
     if (storagePath) {
       try {
         // Use Python API for Blob URLs (memory efficient)
+        // Falls back to unpdf if Python API fails or is unavailable
+        let usedPythonApi = false;
         if (isBlobUrl(storagePath) && pythonApi.isConfigured()) {
-          const pagesInfoResult = await pythonApi.pagesInfo({ pdfUrl: storagePath });
+          try {
+            const pagesInfoResult = await pythonApi.pagesInfo({ pdfUrl: storagePath });
 
-          if (pagesInfoResult.success) {
-            pageCount = pagesInfoResult.pageCount;
-            for (const pageInfo of pagesInfoResult.pages) {
-              pages.push({
-                width: pageInfo.width,
-                height: pageInfo.height,
-                rotation: pageInfo.rotation,
-                // Note: Python doesn't extract page labels yet
-              });
+            if (pagesInfoResult.success) {
+              pageCount = pagesInfoResult.pageCount;
+              for (const pageInfo of pagesInfoResult.pages) {
+                pages.push({
+                  width: pageInfo.width,
+                  height: pageInfo.height,
+                  rotation: pageInfo.rotation,
+                  // Note: Python doesn't extract page labels yet
+                });
+              }
+              usedPythonApi = true;
             }
-          } else {
-            throw new Error(pagesInfoResult.error || 'Failed to get pages info');
+          } catch (pythonError) {
+            console.warn('Python API failed, falling back to unpdf:', pythonError);
+            // Will fall through to unpdf fallback below
           }
-        } else {
+        }
+
+        if (!usedPythonApi) {
           // Fallback: Download and parse with unpdf (local files or no Python API)
           let data: Uint8Array;
 

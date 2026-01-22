@@ -333,7 +333,8 @@ export const pythonApi = {
     pdfUrl: string;
   }): Promise<MetadataResponse> {
     return requestWithRetry<MetadataResponse>('/metadata', params, {
-      timeoutMs: 30000,
+      timeoutMs: 15000, // 15s timeout - fail fast if Python is down
+      maxRetries: 1,
     });
   },
 
@@ -346,7 +347,8 @@ export const pythonApi = {
     pdfUrl: string;
   }): Promise<PagesInfoResponse> {
     return requestWithRetry<PagesInfoResponse>('/pages-info', params, {
-      timeoutMs: 60000, // Longer timeout for large PDFs with many pages
+      timeoutMs: 15000, // 15s timeout - fallback to unpdf if slow
+      maxRetries: 1, // Only retry once to fail fast
     });
   },
 
