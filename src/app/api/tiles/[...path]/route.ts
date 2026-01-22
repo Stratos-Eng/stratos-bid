@@ -12,6 +12,7 @@ import { db } from '@/db';
 import { takeoffSheets, takeoffProjects, documents } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { tileExistsInBlob, generateSingleTile, MAX_ZOOM } from '@/lib/tile-generator';
+import { fileExists, getPagePdfPath } from '@/lib/storage';
 
 // Validate UUID format
 function validateUUID(id: string): boolean {
@@ -107,13 +108,16 @@ export async function GET(
     let effectivePageNum = sheet.sheet.pageNumber;
 
     if (pagesReady && documentId) {
-      // Use single-page PDF URL instead of full document
-      // Single-page PDFs are stored at: pages/{documentId}/{pageNumber}.pdf
-      // Extract base URL from original storage path
+      // Check if single-page PDF exists before using it
       const baseUrl = new URL(storagePath);
-      baseUrl.pathname = `/pages/${documentId}/${sheet.sheet.pageNumber}.pdf`;
-      effectiveStoragePath = baseUrl.toString();
-      effectivePageNum = 1; // Single-page PDF, always page 1
+      baseUrl.pathname = `/${getPagePdfPath(documentId, sheet.sheet.pageNumber)}`;
+      const pagePdfUrl = baseUrl.toString();
+
+      if (await fileExists(pagePdfUrl)) {
+        effectiveStoragePath = pagePdfUrl;
+        effectivePageNum = 1; // Single-page PDF, always page 1
+      }
+      // If page PDF doesn't exist, fall back to original PDF
     }
 
     // Generate tile on-demand

@@ -19,12 +19,13 @@ export interface UploadResult {
 export async function uploadFile(
   buffer: Buffer,
   pathname: string,
-  options?: { contentType?: string }
+  options?: { contentType?: string; allowOverwrite?: boolean }
 ): Promise<UploadResult> {
   const blob = await put(pathname, buffer, {
     access: 'public',
     contentType: options?.contentType || 'application/octet-stream',
     addRandomSuffix: false,
+    allowOverwrite: options?.allowOverwrite ?? true, // Default to allowing overwrite for idempotent retries
   });
   return {
     url: blob.url,

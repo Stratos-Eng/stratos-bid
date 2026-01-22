@@ -4,6 +4,7 @@ import { db } from '@/db';
 import { documents, bids } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { getThumbnail } from '@/lib/thumbnail-generator';
+import { fileExists, getPagePdfPath } from '@/lib/storage';
 
 // GET /api/documents/[id]/thumbnail/[pageNum] - Get a thumbnail for a specific page
 export async function GET(
@@ -57,17 +58,24 @@ export async function GET(
     }
 
     // Determine effective storage path based on page-level architecture
-    // If pagesReady is true, use the pre-split single-page PDF
+    // If pagesReady is true, try to use the pre-split single-page PDF
     const pagesReady = doc.document.pagesReady ?? false;
     let effectiveStoragePath = doc.document.storagePath;
     let effectivePageNum = pageNum;
+    let usePagePdf = false;
 
     if (pagesReady) {
-      // Use single-page PDF URL for memory efficiency
+      // Check if the single-page PDF actually exists before trying to use it
       const baseUrl = new URL(doc.document.storagePath);
-      baseUrl.pathname = `/pages/${id}/${pageNum}.pdf`;
-      effectiveStoragePath = baseUrl.toString();
-      effectivePageNum = 1; // Single-page PDF, always page 1
+      baseUrl.pathname = `/${getPagePdfPath(id, pageNum)}`;
+      const pagePdfUrl = baseUrl.toString();
+
+      if (await fileExists(pagePdfUrl)) {
+        effectiveStoragePath = pagePdfUrl;
+        effectivePageNum = 1; // Single-page PDF, always page 1
+        usePagePdf = true;
+      }
+      // If page PDF doesn't exist, fall back to original PDF
     }
 
     // Get thumbnail (from Blob or generate on-demand)
@@ -75,7 +83,7 @@ export async function GET(
       id,
       effectiveStoragePath,
       effectivePageNum,
-      pagesReady ? pageNum : undefined // Pass original page num for storage path
+      usePagePdf ? pageNum : undefined // Pass original page num for storage path only when using page PDF
     );
 
     // Redirect to Blob URL for better caching
