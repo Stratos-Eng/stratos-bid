@@ -690,6 +690,113 @@ async def force_gc():
     }
 
 
+# === Page Splitting Endpoint ===
+
+class SplitPageRequest(BaseModel):
+    """Request for extracting a single page from a PDF."""
+    pdfUrl: str  # URL to fetch PDF from (Vercel Blob)
+    pageNumber: int  # 1-indexed page number
+
+
+class SplitPageResponse(BaseModel):
+    """Response with single-page PDF as base64."""
+    success: bool
+    pageNumber: int = 0
+    data: Optional[str] = None  # Base64 encoded single-page PDF
+    size: int = 0  # Size in bytes
+    error: Optional[str] = None
+
+
+@app.post("/split-page", response_model=SplitPageResponse)
+async def split_page(request: SplitPageRequest):
+    """
+    Extract a single page from a PDF as a standalone single-page PDF.
+
+    Memory-efficient: Uses PyMuPDF's memory-mapped PDF access.
+    The source PDF is memory-mapped (not loaded into RAM), and only
+    the single page's data is extracted and returned.
+
+    This enables page-level architecture where each page of a large PDF
+    is stored separately, allowing memory-bounded rendering operations.
+    """
+    # Validate URL
+    if not request.pdfUrl.startswith('https://'):
+        return SplitPageResponse(success=False, error="pdfUrl must be an HTTPS URL")
+
+    # Check if memory is critical - reject early
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
+        cleanup_memory()
+        unload_heavy_models()
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
+            return SplitPageResponse(
+                success=False,
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry."
+            )
+
+    # Use metadata semaphore - page splitting is a fast metadata operation
+    async with _metadata_semaphore:
+        try:
+            if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                cleanup_memory()
+
+            # Fetch PDF to cache (reuses cached version if available)
+            try:
+                pdf_path = await fetch_pdf_cached(request.pdfUrl)
+            except Exception as e:
+                return SplitPageResponse(
+                    success=False,
+                    error=f"Failed to fetch PDF: {str(e)}"
+                )
+
+            # Check file size
+            file_size = os.path.getsize(pdf_path)
+            if file_size > MAX_PDF_SIZE_BYTES:
+                return SplitPageResponse(
+                    success=False,
+                    error=f"PDF too large ({file_size / 1024 / 1024:.1f}MB)"
+                )
+
+            # Open PDF from file (memory-mapped)
+            with open_pdf_from_file(pdf_path) as doc:
+                page_index = request.pageNumber - 1
+
+                if page_index < 0 or page_index >= len(doc):
+                    return SplitPageResponse(
+                        success=False,
+                        error=f"Invalid page number. Document has {len(doc)} pages."
+                    )
+
+                # Create a new single-page PDF
+                single_doc = fitz.open()
+                single_doc.insert_pdf(doc, from_page=page_index, to_page=page_index)
+
+                # Get the PDF bytes (compressed)
+                page_bytes = single_doc.tobytes(garbage=4, deflate=True)
+                single_doc.close()
+
+                # Encode as base64
+                page_b64 = base64.b64encode(page_bytes).decode("utf-8")
+
+                result = SplitPageResponse(
+                    success=True,
+                    pageNumber=request.pageNumber,
+                    data=page_b64,
+                    size=len(page_bytes),
+                )
+
+                # Cleanup
+                del page_bytes
+
+                return result
+
+        except Exception as e:
+            cleanup_memory()
+            return SplitPageResponse(success=False, error=str(e))
+        # Note: Don't delete cached PDF - it may be reused for other pages
+
+
 # === Page Rendering Endpoint ===
 
 class RenderRequest(BaseModel):
@@ -839,7 +946,7 @@ async def render_batch(request: BatchRenderRequest):
     Render multiple pages from a single PDF in one request.
 
     Downloads PDF once (using cache), renders all requested pages.
-    Max 20 pages per batch to limit memory/time.
+    Max 3 pages per batch to limit memory on 512MB hosts.
 
     This is much more efficient than calling /render multiple times
     because:
@@ -847,13 +954,13 @@ async def render_batch(request: BatchRenderRequest):
     2. Single semaphore acquisition for the batch
     3. PDF document opened once for all pages
     """
-    # Validate batch size
-    if len(request.pages) > 20:
+    # Validate batch size - reduced from 20 to 3 for memory efficiency
+    if len(request.pages) > 3:
         return BatchRenderResponse(
             success=False,
             results=[],
             failed=request.pages,
-            error="Max 20 pages per batch"
+            error="Max 3 pages per batch for memory efficiency"
         )
 
     if len(request.pages) == 0:
@@ -951,11 +1058,25 @@ async def render_batch(request: BatchRenderRequest):
                             height=pix.height,
                         ))
 
-                        # Clean up pixmap immediately
+                        # Aggressive cleanup after each page to prevent memory buildup
                         del pix
+                        del image_bytes
+                        if request.format == "webp":
+                            del img
+                            del buffer
+                        gc.collect()
+
+                        # Check memory between pages - abort if getting critical
+                        if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                            gc.collect()
+                            if get_memory_usage_mb() > MEMORY_CRITICAL_MB:
+                                # Return what we have so far
+                                failed.extend([p for p in request.pages if p not in [r.page for r in results] and p not in failed])
+                                break
 
                     except Exception as e:
                         failed.append(page_num)
+                        gc.collect()  # Cleanup on error too
                         continue
 
             return BatchRenderResponse(

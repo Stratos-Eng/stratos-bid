@@ -97,12 +97,30 @@ export async function GET(
     return NextResponse.json({ error: 'Document has no storage path' }, { status: 404 });
   }
 
+  // Check if single-page PDFs are available (page-level architecture)
+  // If pagesReady is true, use the pre-split single-page PDF for memory efficiency
+  const pagesReady = sheet.document?.pagesReady ?? false;
+  const documentId = sheet.document?.id;
+
   try {
+    let effectiveStoragePath = storagePath;
+    let effectivePageNum = sheet.sheet.pageNumber;
+
+    if (pagesReady && documentId) {
+      // Use single-page PDF URL instead of full document
+      // Single-page PDFs are stored at: pages/{documentId}/{pageNumber}.pdf
+      // Extract base URL from original storage path
+      const baseUrl = new URL(storagePath);
+      baseUrl.pathname = `/pages/${documentId}/${sheet.sheet.pageNumber}.pdf`;
+      effectiveStoragePath = baseUrl.toString();
+      effectivePageNum = 1; // Single-page PDF, always page 1
+    }
+
     // Generate tile on-demand
     const tileUrl = await generateSingleTile(
       sheetId,
-      storagePath,
-      sheet.sheet.pageNumber,
+      effectiveStoragePath,
+      effectivePageNum,
       z,
       x,
       y

@@ -96,6 +96,54 @@ export function isBlobUrl(url: string): boolean {
 export const MAX_FILE_SIZE = 500 * 1024 * 1024;
 
 /**
+ * Get the pathname for a single-page PDF
+ * Pages are stored at: pages/{documentId}/{pageNumber}.pdf
+ */
+export function getPagePdfPath(documentId: string, pageNumber: number): string {
+  return `pages/${documentId}/${pageNumber}.pdf`;
+}
+
+/**
+ * Upload a single page PDF to Blob storage
+ */
+export async function uploadPagePdf(
+  documentId: string,
+  pageNumber: number,
+  buffer: Buffer
+): Promise<UploadResult> {
+  const pathname = getPagePdfPath(documentId, pageNumber);
+  return uploadFile(buffer, pathname, { contentType: 'application/pdf' });
+}
+
+/**
+ * Check if a single-page PDF exists in storage
+ * Returns the URL if it exists, null otherwise
+ */
+export async function getPagePdfUrl(
+  documentId: string,
+  pageNumber: number,
+  baseUrl?: string
+): Promise<string | null> {
+  // If we have a base URL from a previous upload, construct the page URL
+  // Vercel Blob URLs follow the pattern: https://{store}.blob.vercel-storage.com/{pathname}
+  if (baseUrl) {
+    try {
+      const url = new URL(baseUrl);
+      const pathname = getPagePdfPath(documentId, pageNumber);
+      url.pathname = `/${pathname}`;
+
+      // Check if it exists
+      const exists = await fileExists(url.toString());
+      return exists ? url.toString() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Validate a Blob URL - checks existence and size
  * @param url - Blob URL to validate
  * @param maxSizeBytes - Maximum allowed size in bytes (default 500MB)

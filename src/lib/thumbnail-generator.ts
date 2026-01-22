@@ -311,11 +311,17 @@ export async function generateThumbnails(config: ThumbnailConfig): Promise<Thumb
 
 /**
  * Generate a single thumbnail
+ *
+ * @param documentId - Document UUID
+ * @param storagePath - URL to the PDF (can be single-page PDF for page-level architecture)
+ * @param pageNumber - Page number to render from the PDF (1 for single-page PDFs)
+ * @param storagePageNumber - Optional: page number to use for Blob storage path (for single-page PDFs)
  */
 export async function generateSingleThumbnail(
   documentId: string,
   storagePath: string,
-  pageNumber: number
+  pageNumber: number,
+  storagePageNumber?: number
 ): Promise<{ url: string; buffer: Buffer }> {
   if (!validateDocumentId(documentId)) {
     throw new Error('Invalid documentId format');
@@ -325,42 +331,56 @@ export async function generateSingleThumbnail(
     throw new Error('storagePath must be a Blob URL');
   }
 
+  // Use storagePageNumber for Blob paths (defaults to pageNumber)
+  // This allows single-page PDFs to be rendered (pageNumber=1) but stored at original page number
+  const effectiveStoragePageNum = storagePageNumber ?? pageNumber;
+
   // Check if already exists
-  const existingUrl = await thumbnailExistsInBlob(documentId, pageNumber);
+  const existingUrl = await thumbnailExistsInBlob(documentId, effectiveStoragePageNum);
   if (existingUrl) {
     const response = await fetchWithTimeout(existingUrl, { timeoutMs: 30000 });
     const buffer = Buffer.from(await response.arrayBuffer());
     return { url: existingUrl, buffer };
   }
 
-  // Render via Python
+  // Render via Python (pageNumber is the PDF page to render)
   const rendered = await renderPageViaPythonService(storagePath, pageNumber);
   let imageBuffer: Buffer;
 
   if (rendered && rendered.length > 0) {
     imageBuffer = await sharp(rendered).webp({ quality: 75 }).toBuffer();
   } else {
-    imageBuffer = await generatePlaceholderThumbnail(pageNumber);
+    imageBuffer = await generatePlaceholderThumbnail(effectiveStoragePageNum);
   }
 
-  const url = await uploadThumbnailToBlob(documentId, pageNumber, imageBuffer);
+  // Upload using the storage page number
+  const url = await uploadThumbnailToBlob(documentId, effectiveStoragePageNum, imageBuffer);
   return { url, buffer: imageBuffer };
 }
 
 /**
  * Get thumbnail (from Blob or generate on-demand)
+ *
+ * @param documentId - Document UUID
+ * @param storagePath - URL to the PDF (can be single-page PDF for page-level architecture)
+ * @param pageNumber - Page number to render from the PDF (1 for single-page PDFs)
+ * @param storagePageNumber - Optional: page number to use for Blob storage path lookup
  */
 export async function getThumbnail(
   documentId: string,
   storagePath: string,
-  pageNumber: number
+  pageNumber: number,
+  storagePageNumber?: number
 ): Promise<{ url: string; buffer: Buffer }> {
-  const existingUrl = await thumbnailExistsInBlob(documentId, pageNumber);
+  // Use storagePageNumber for Blob lookups (defaults to pageNumber)
+  const effectiveStoragePageNum = storagePageNumber ?? pageNumber;
+
+  const existingUrl = await thumbnailExistsInBlob(documentId, effectiveStoragePageNum);
   if (existingUrl) {
     const response = await fetchWithTimeout(existingUrl, { timeoutMs: 30000 });
     const buffer = Buffer.from(await response.arrayBuffer());
     return { url: existingUrl, buffer };
   }
 
-  return generateSingleThumbnail(documentId, storagePath, pageNumber);
+  return generateSingleThumbnail(documentId, storagePath, pageNumber, storagePageNumber);
 }

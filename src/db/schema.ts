@@ -68,6 +68,8 @@ export const documents = pgTable('documents', {
   signageLegend: jsonb('signage_legend'),
   // Thumbnail generation status
   thumbnailsGenerated: boolean('thumbnails_generated').default(false),
+  // Page-level architecture: individual pages split and stored separately
+  pagesReady: boolean('pages_ready').default(false), // true when all pages are split and stored
   updatedAt: timestamp('updated_at'),
 }, (table) => ({
   bidIdx: index('documents_bid_idx').on(table.bidId),

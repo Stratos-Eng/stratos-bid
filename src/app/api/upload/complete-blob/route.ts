@@ -191,7 +191,7 @@ export async function POST(request: NextRequest) {
 
       documentId = doc.id;
 
-      // Trigger extraction and thumbnail generation via Inngest
+      // Trigger extraction and page-level processing via Inngest
       try {
         await inngest.send({
           name: 'extraction/signage',
@@ -202,10 +202,14 @@ export async function POST(request: NextRequest) {
           },
         });
 
+        // Use page-level processing: splits PDF into individual pages and generates thumbnails
+        // This is memory-efficient (~15-20MB per page vs 100MB+ for batch)
         await inngest.send({
-          name: 'document/generate-thumbnails',
+          name: 'document/process-pages',
           data: {
             documentId: doc.id,
+            pdfUrl: blobUrl,
+            pageCount,
           },
         });
 
@@ -216,7 +220,7 @@ export async function POST(request: NextRequest) {
           },
         });
 
-        console.log(`[blob-complete] Queued Inngest jobs for document ${doc.id}`);
+        console.log(`[blob-complete] Queued Inngest jobs for document ${doc.id} (${pageCount} pages)`);
       } catch (inngestError) {
         console.error('[blob-complete] Failed to queue Inngest jobs:', inngestError);
       }

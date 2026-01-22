@@ -221,6 +221,14 @@ export interface MetadataResponse {
   error?: string;
 }
 
+export interface SplitPageResponse {
+  success: boolean;
+  pageNumber: number;
+  data?: string;  // Base64 encoded single-page PDF
+  size: number;
+  error?: string;
+}
+
 export interface PageInfoItem {
   pageNum: number;
   width: number;
@@ -335,6 +343,21 @@ export const pythonApi = {
     return requestWithRetry<MetadataResponse>('/metadata', params, {
       timeoutMs: 15000, // 15s timeout - fail fast if Python is down
       maxRetries: 1,
+    });
+  },
+
+  /**
+   * Extract a single page from a PDF as a standalone single-page PDF
+   * Memory efficient - Python memory-maps the source PDF
+   * Returns base64 encoded single-page PDF data
+   */
+  async splitPage(params: {
+    pdfUrl: string;
+    pageNumber: number;
+  }): Promise<SplitPageResponse> {
+    return requestWithRetry<SplitPageResponse>('/split-page', params, {
+      timeoutMs: 30000, // 30s for large PDFs
+      maxRetries: 2,
     });
   },
 

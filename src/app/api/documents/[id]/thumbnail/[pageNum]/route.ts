@@ -56,11 +56,26 @@ export async function GET(
       );
     }
 
+    // Determine effective storage path based on page-level architecture
+    // If pagesReady is true, use the pre-split single-page PDF
+    const pagesReady = doc.document.pagesReady ?? false;
+    let effectiveStoragePath = doc.document.storagePath;
+    let effectivePageNum = pageNum;
+
+    if (pagesReady) {
+      // Use single-page PDF URL for memory efficiency
+      const baseUrl = new URL(doc.document.storagePath);
+      baseUrl.pathname = `/pages/${id}/${pageNum}.pdf`;
+      effectiveStoragePath = baseUrl.toString();
+      effectivePageNum = 1; // Single-page PDF, always page 1
+    }
+
     // Get thumbnail (from Blob or generate on-demand)
     const { url, buffer } = await getThumbnail(
       id,
-      doc.document.storagePath,
-      pageNum
+      effectiveStoragePath,
+      effectivePageNum,
+      pagesReady ? pageNum : undefined // Pass original page num for storage path
     );
 
     // Redirect to Blob URL for better caching

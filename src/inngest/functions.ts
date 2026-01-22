@@ -7,9 +7,10 @@ import { extractDocument } from '@/extraction';
 import { TradeCode } from '@/lib/trade-definitions';
 import { generateThumbnails } from '@/lib/thumbnail-generator';
 import { generateInitialTiles, UPLOAD_ZOOM_LEVELS } from '@/lib/tile-generator';
-import { downloadFile } from '@/lib/storage';
+import { downloadFile, uploadFile, getPagePdfPath } from '@/lib/storage';
 import { rm } from 'fs/promises';
 import { pythonApi, PythonApiNotConfiguredError } from '@/lib/python-api';
+import sharp from 'sharp';
 
 // Daily sync - runs for all users every day at 6 AM
 export const dailySync = inngest.createFunction(
@@ -656,6 +657,122 @@ export const generateSheetTilesJob = inngest.createFunction(
   }
 );
 
+// === Page-Level Architecture ===
+// Split PDFs into individual pages for memory-efficient rendering
+
+/**
+ * Orchestrator: Queue individual page processing jobs for a document
+ * This is the entry point for page-level processing after upload
+ */
+export const processDocumentPages = inngest.createFunction(
+  {
+    id: 'process-document-pages',
+    name: 'Process Document Pages',
+    retries: 1,
+  },
+  { event: 'document/process-pages' },
+  async ({ event, step }) => {
+    const { documentId, pdfUrl, pageCount } = event.data;
+
+    // Queue a job for each page (split + thumbnail)
+    // Using step.sendEvent to queue all pages at once
+    const events = Array.from({ length: pageCount }, (_, i) => ({
+      name: 'page/process' as const,
+      data: {
+        documentId,
+        pdfUrl,
+        pageNumber: i + 1,
+        totalPages: pageCount,
+      },
+    }));
+
+    // Send all events in one batch
+    await step.sendEvent('queue-pages', events);
+
+    return { documentId, pagesQueued: pageCount };
+  }
+);
+
+/**
+ * Process a single page: extract from PDF and generate thumbnail
+ * Memory-efficient: works with ~15-20MB per page regardless of original PDF size
+ */
+export const processPage = inngest.createFunction(
+  {
+    id: 'process-page',
+    name: 'Process Single Page',
+    retries: 3,
+    concurrency: {
+      limit: 3, // 3 concurrent pages, ~45MB Python memory total
+    },
+  },
+  { event: 'page/process' },
+  async ({ event, step }) => {
+    const { documentId, pdfUrl, pageNumber, totalPages } = event.data;
+
+    // Step 1: Extract single page from PDF via Python service
+    const pageData = await step.run('extract-page', async () => {
+      const result = await pythonApi.splitPage({ pdfUrl, pageNumber });
+      if (!result.success) {
+        throw new Error(`Failed to extract page ${pageNumber}: ${result.error}`);
+      }
+      return result;
+    });
+
+    // Step 2: Upload single-page PDF to Blob storage
+    const pageUrl = await step.run('upload-page', async () => {
+      const buffer = Buffer.from(pageData.data!, 'base64');
+      const pathname = getPagePdfPath(documentId, pageNumber);
+      const { url } = await uploadFile(buffer, pathname, {
+        contentType: 'application/pdf',
+      });
+      return url;
+    });
+
+    // Step 3: Generate thumbnail from the single-page PDF
+    await step.run('generate-thumbnail', async () => {
+      // Render single page at low resolution for thumbnail
+      const result = await pythonApi.render({
+        pdfUrl: pageUrl,
+        pageNum: 1, // Always page 1 since it's a single-page PDF
+        scale: 0.2,
+        returnBase64: true,
+      });
+
+      if (!result.success || !result.image) {
+        throw new Error(`Failed to render page ${pageNumber}: ${result.error}`);
+      }
+
+      // Resize and convert to WebP
+      const thumbnail = await sharp(Buffer.from(result.image, 'base64'))
+        .resize(150)
+        .webp({ quality: 75 })
+        .toBuffer();
+
+      // Upload thumbnail
+      await uploadFile(thumbnail, `thumbnails/${documentId}/${pageNumber}.webp`, {
+        contentType: 'image/webp',
+      });
+    });
+
+    // Step 4: Update document progress (on last page)
+    if (pageNumber === totalPages) {
+      await step.run('mark-pages-ready', async () => {
+        await db
+          .update(documents)
+          .set({
+            pagesReady: true,
+            thumbnailsGenerated: true,
+            updatedAt: new Date(),
+          })
+          .where(eq(documents.id, documentId));
+      });
+    }
+
+    return { documentId, pageNumber, pageUrl };
+  }
+);
+
 // Export all functions for Inngest serve
 export const functions = [
   dailySync,
@@ -669,4 +786,6 @@ export const functions = [
   autoExtractOnDownload,
   extractTextJob,
   cleanupUploadSessions,
+  processDocumentPages,
+  processPage,
 ];
