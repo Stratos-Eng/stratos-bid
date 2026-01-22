@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import useSWR from "swr"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { useToast } from "@/components/ui/toast"
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -13,6 +14,7 @@ export default function ProjectsPage() {
   const { data, error, isLoading, mutate } = useSWR("/api/projects", fetcher)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [deleting, setDeleting] = useState(false)
+  const { addToast } = useToast()
 
   const toggleSelect = (id: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -55,12 +57,22 @@ export default function ProjectsPage() {
       if (res.ok) {
         setSelectedIds(new Set())
         mutate()
+        addToast({
+          type: 'success',
+          message: `Successfully deleted ${selectedIds.size} project${selectedIds.size > 1 ? 's' : ''}`
+        })
       } else {
         const data = await res.json()
-        alert(data.error || "Failed to delete projects")
+        addToast({
+          type: 'error',
+          message: data.error || "Failed to delete projects"
+        })
       }
     } catch (err) {
-      alert("Failed to delete projects")
+      addToast({
+        type: 'error',
+        message: "Failed to delete projects"
+      })
     } finally {
       setDeleting(false)
     }

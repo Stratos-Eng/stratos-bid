@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { TRADE_DEFINITIONS, type TradeCode } from '@/lib/trade-definitions';
+import { useToast } from '@/components/ui/toast';
 
 interface LineItem {
   id: string;
@@ -41,6 +42,7 @@ const statusColors: Record<string, string> = {
 export function LineItemsTable({ items, bidId }: LineItemsTableProps) {
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [isUpdating, setIsUpdating] = useState(false);
+  const { addToast } = useToast();
 
   const toggleItem = (id: string) => {
     const newSelected = new Set(selectedItems);
@@ -75,13 +77,23 @@ export function LineItemsTable({ items, bidId }: LineItemsTableProps) {
       });
 
       if (response.ok) {
+        addToast({
+          type: 'success',
+          message: `Successfully ${action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'reset'} ${selectedItems.size} item${selectedItems.size > 1 ? 's' : ''}`
+        });
         // Refresh the page to show updated data
         window.location.reload();
       } else {
-        console.error('Bulk action failed');
+        addToast({
+          type: 'error',
+          message: 'Failed to perform bulk action'
+        });
       }
     } catch (error) {
-      console.error('Bulk action error:', error);
+      addToast({
+        type: 'error',
+        message: 'Failed to perform bulk action'
+      });
     } finally {
       setIsUpdating(false);
     }
