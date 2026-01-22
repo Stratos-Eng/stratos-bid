@@ -3,7 +3,7 @@ import { auth } from '@/lib/auth';
 import { db } from '@/db';
 import { documents, bids } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { getThumbnail } from '@/lib/thumbnail-generator';
+import { getThumbnail, thumbnailExistsInBlob } from '@/lib/thumbnail-generator';
 import { fileExists, getPagePdfPath } from '@/lib/storage';
 
 // GET /api/documents/[id]/thumbnail/[pageNum] - Get a thumbnail for a specific page
@@ -12,11 +12,6 @@ export async function GET(
   { params }: { params: Promise<{ id: string; pageNum: string }> }
 ) {
   try {
-    const session = await auth();
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
     const { id, pageNum: pageNumStr } = await params;
     const pageNum = parseInt(pageNumStr, 10);
 
@@ -25,6 +20,24 @@ export async function GET(
         { error: 'Invalid page number' },
         { status: 400 }
       );
+    }
+
+    // Fast path: Check if thumbnail already exists in Blob (no auth needed)
+    // This avoids Clerk rate limits when loading many thumbnails at once
+    const existingThumbnailUrl = await thumbnailExistsInBlob(id, pageNum);
+    if (existingThumbnailUrl) {
+      // Redirect to Blob CDN - public URL, no auth needed
+      return NextResponse.redirect(existingThumbnailUrl, {
+        headers: {
+          'Cache-Control': 'public, max-age=31536000, immutable',
+        },
+      });
+    }
+
+    // Thumbnail doesn't exist - need to generate it, so authenticate
+    const session = await auth();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     // Get document and verify ownership through bid
