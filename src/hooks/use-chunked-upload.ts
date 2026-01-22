@@ -4,7 +4,8 @@ import { useState, useCallback, useRef } from 'react';
 import { upload } from '@vercel/blob/client';
 
 // Configuration for uploads
-const LARGE_FILE_THRESHOLD = 50 * 1024 * 1024; // 50MB - use server-side multipart above this
+// Note: All uploads use client-side direct upload to Vercel Blob
+// This bypasses serverless function body limits (4.5MB)
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000;
 
@@ -108,43 +109,6 @@ export function useChunkedUpload(options: UploadOptions) {
     [updateUpload]
   );
 
-  // Chunked upload for large files using server-side multipart
-  const uploadLargeFile = useCallback(
-    async (
-      file: File,
-      pathname: string,
-      filename: string,
-      abortSignal: AbortSignal
-    ): Promise<{ url: string; pathname: string }> => {
-      console.log(`[upload] Using chunked upload for large file: ${filename} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
-
-      // For large files, upload through server-side multipart endpoint
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('pathname', pathname);
-
-      const response = await fetch('/api/upload/multipart', {
-        method: 'POST',
-        body: formData,
-        signal: abortSignal,
-      });
-
-      if (!response.ok) {
-        // If multipart endpoint doesn't exist, fall back to regular upload with retry
-        if (response.status === 404) {
-          console.log('[upload] Multipart endpoint not available, falling back to regular upload');
-          return uploadWithRetry(pathname, file, filename);
-        }
-        const err = await response.json().catch(() => ({ error: 'Upload failed' }));
-        throw new Error(err.error || 'Failed to upload large file');
-      }
-
-      const result = await response.json();
-      return { url: result.url, pathname: result.pathname };
-    },
-    [uploadWithRetry]
-  );
-
   const uploadFile = useCallback(
     async (fileInfo: FileToUpload): Promise<{ filename: string; sheets?: string[]; documentId?: string }> => {
       const { file, folderName, relativePath, projectId: fileProjectId, bidId: fileBidId } = fileInfo;
@@ -179,16 +143,9 @@ export function useChunkedUpload(options: UploadOptions) {
 
         updateUpload(file.name, { status: 'uploading', progress: 0 });
 
-        // Choose upload method based on file size
-        let blob: { url: string; pathname: string };
-
-        if (file.size > LARGE_FILE_THRESHOLD) {
-          // Use chunked/multipart upload for large files
-          blob = await uploadLargeFile(file, pathname, file.name, abortController.signal);
-        } else {
-          // Use regular upload with retry for smaller files
-          blob = await uploadWithRetry(pathname, file, file.name);
-        }
+        // Use client-side direct upload to Vercel Blob
+        // This bypasses serverless function body limits and handles any file size
+        const blob = await uploadWithRetry(pathname, file, file.name);
 
         console.log('[upload] Blob upload complete:', blob.url);
 
@@ -239,7 +196,7 @@ export function useChunkedUpload(options: UploadOptions) {
         throw error;
       }
     },
-    [projectId, bidId, updateUpload, onFileComplete, uploadWithRetry, uploadLargeFile]
+    [projectId, bidId, updateUpload, onFileComplete, uploadWithRetry]
   );
 
   const uploadFiles = useCallback(
