@@ -703,7 +703,7 @@ export const processPage = inngest.createFunction(
     name: 'Process Single Page',
     retries: 3,
     concurrency: {
-      limit: 3, // 3 concurrent pages, ~45MB Python memory total
+      limit: 1, // Serialize page splitting to avoid concurrent PDF downloads in Python
     },
   },
   { event: 'page/process' },
