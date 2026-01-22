@@ -377,7 +377,7 @@ async def render_page(request: RenderRequest):
 
 class TileRequest(BaseModel):
     """Request for rendering a single tile from a PDF page."""
-    pdfData: str  # Base64 encoded PDF
+    pdfUrl: str  # URL to fetch PDF from (Vercel Blob)
     pageNum: int  # 1-indexed page number
     z: int  # Zoom level (0-4)
     x: int  # Tile X coordinate
@@ -392,6 +392,59 @@ class TileResponse(BaseModel):
     error: Optional[str] = None
 
 
+# Cache for fetched PDFs (simple LRU with max size)
+_pdf_cache: dict[str, bytes] = {}
+_pdf_cache_order: list[str] = []
+PDF_CACHE_MAX_SIZE = 3  # Keep last 3 PDFs in memory
+
+
+def get_cached_pdf(url: str) -> bytes | None:
+    """Get PDF from cache if available."""
+    return _pdf_cache.get(url)
+
+
+def cache_pdf(url: str, data: bytes):
+    """Cache PDF data with LRU eviction."""
+    global _pdf_cache, _pdf_cache_order
+
+    # Don't cache very large PDFs (>20MB)
+    if len(data) > 20 * 1024 * 1024:
+        return
+
+    # Remove from order if already exists
+    if url in _pdf_cache_order:
+        _pdf_cache_order.remove(url)
+
+    # Evict oldest if at capacity
+    while len(_pdf_cache_order) >= PDF_CACHE_MAX_SIZE:
+        oldest = _pdf_cache_order.pop(0)
+        del _pdf_cache[oldest]
+
+    _pdf_cache[url] = data
+    _pdf_cache_order.append(url)
+
+
+async def fetch_pdf_from_url(url: str) -> bytes:
+    """Fetch PDF from URL with caching."""
+    import httpx
+
+    # Check cache first
+    cached = get_cached_pdf(url)
+    if cached:
+        return cached
+
+    # Fetch from URL
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        data = response.content
+
+    # Cache for future requests
+    cache_pdf(url, data)
+
+    return data
+
+
 @app.post("/tile", response_model=TileResponse)
 async def render_tile(request: TileRequest):
     """
@@ -403,11 +456,16 @@ async def render_tile(request: TileRequest):
     - z=2: 4x4 grid (16 tiles)
     - etc.
 
-    This endpoint renders only the requested tile region, keeping memory low.
+    Fetches PDF from URL (Vercel Blob) instead of receiving base64 data.
+    This keeps memory usage low regardless of PDF size.
     """
     # Validate zoom level
     if request.z < 0 or request.z > 4:
         return TileResponse(success=False, error="Zoom level must be 0-4")
+
+    # Validate URL
+    if not request.pdfUrl.startswith('https://'):
+        return TileResponse(success=False, error="Invalid PDF URL - must be HTTPS")
 
     # Check if memory is critical - reject early
     is_critical, mem_mb = check_memory_critical()
@@ -427,11 +485,11 @@ async def render_tile(request: TileRequest):
             if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
                 cleanup_memory()
 
-            # Decode PDF
+            # Fetch PDF from URL
             try:
-                pdf_bytes = base64.b64decode(request.pdfData)
+                pdf_bytes = await fetch_pdf_from_url(request.pdfUrl)
             except Exception as e:
-                return TileResponse(success=False, error=f"Invalid base64 PDF data: {str(e)}")
+                return TileResponse(success=False, error=f"Failed to fetch PDF: {str(e)}")
 
             if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
                 return TileResponse(

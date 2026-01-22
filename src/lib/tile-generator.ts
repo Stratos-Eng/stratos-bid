@@ -119,23 +119,23 @@ export function getTileCoords(z: number): TileCoord[] {
 
 /**
  * Render a single tile via Python service
+ * Now passes URL instead of base64 data to reduce memory usage
  */
 async function renderTileViaPython(
-  pdfBuffer: Buffer,
+  pdfUrl: string,
   pageNum: number,
   z: number,
   x: number,
   y: number
 ): Promise<Buffer | null> {
   const pythonApiUrl = process.env.PYTHON_VECTOR_API_URL || 'http://localhost:8001';
-  const pdfBase64 = pdfBuffer.toString('base64');
 
   try {
     const response = await fetch(`${pythonApiUrl}/tile`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        pdfData: pdfBase64,
+        pdfUrl,
         pageNum,
         z,
         x,
@@ -214,11 +214,14 @@ export async function generateSingleTile(
     return existingUrl;
   }
 
-  // Download PDF
-  const pdfBuffer = await loadPdfBuffer(storagePath);
+  // storagePath should be a Blob URL - pass directly to Python service
+  // Python will fetch it, avoiding base64 encoding overhead
+  if (!isBlobUrl(storagePath)) {
+    console.warn('generateSingleTile: storagePath is not a Blob URL, tiles may not work');
+  }
 
-  // Render tile
-  const tileBuffer = await renderTileViaPython(pdfBuffer, pageNum, z, x, y);
+  // Render tile (Python fetches PDF from URL)
+  const tileBuffer = await renderTileViaPython(storagePath, pageNum, z, x, y);
   if (!tileBuffer) {
     return null;
   }
@@ -230,7 +233,7 @@ export async function generateSingleTile(
 
 /**
  * Generate tiles for specified zoom levels
- * Downloads PDF once and generates all tiles
+ * Python service fetches PDF from URL - no need to download here
  */
 export async function generateTilesForZoomLevels(
   sheetId: string,
@@ -242,8 +245,10 @@ export async function generateTilesForZoomLevels(
     throw new Error('Invalid sheetId format');
   }
 
-  // Download PDF once
-  const pdfBuffer = await loadPdfBuffer(storagePath);
+  // storagePath should be a Blob URL - Python will fetch it directly
+  if (!isBlobUrl(storagePath)) {
+    console.warn('generateTilesForZoomLevels: storagePath is not a Blob URL');
+  }
 
   let generated = 0;
   let failed = 0;
@@ -261,9 +266,9 @@ export async function generateTilesForZoomLevels(
         continue;
       }
 
-      // Render and upload
+      // Render and upload (Python fetches PDF from URL)
       try {
-        const tileBuffer = await renderTileViaPython(pdfBuffer, pageNum, z, x, y);
+        const tileBuffer = await renderTileViaPython(storagePath, pageNum, z, x, y);
         if (tileBuffer) {
           const url = await uploadTileToBlob(sheetId, z, x, y, tileBuffer);
           urls.set(`${z}/${x}/${y}`, url);
