@@ -8,7 +8,7 @@ import fs from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { randomUUID } from 'crypto';
-import { downloadFile, isBlobUrl } from '@/lib/storage';
+import { downloadFile, isBlobUrl, fileExists, getPagePdfPath } from '@/lib/storage';
 import { pythonApi, PythonApiNotConfiguredError } from '@/lib/python-api';
 
 const execFileAsync = promisify(execFile);
@@ -85,13 +85,31 @@ export async function GET(
       );
     }
 
+    // Determine effective PDF URL based on page-level architecture
+    // If pagesReady is true, use the pre-split single-page PDF for memory efficiency
+    const pagesReady = doc.document.pagesReady ?? false;
+    let effectivePdfUrl = storagePath;
+    let effectivePageNum = pageNum;
+
+    if (pagesReady && isBlobUrl(storagePath)) {
+      // Check if single-page PDF exists
+      const baseUrl = new URL(storagePath);
+      baseUrl.pathname = `/${getPagePdfPath(id, pageNum)}`;
+      const pagePdfUrl = baseUrl.toString();
+
+      if (await fileExists(pagePdfUrl)) {
+        effectivePdfUrl = pagePdfUrl;
+        effectivePageNum = 1; // Single-page PDF, always page 1
+      }
+    }
+
     // For Blob URLs with Python API configured, use URL-based rendering (memory efficient)
     // Python fetches the PDF directly, avoiding Node.js memory usage
     if (isBlobUrl(storagePath) && pythonApi.isConfigured()) {
       try {
         const result = await pythonApi.render({
-          pdfUrl: storagePath,  // Pass URL directly - Python fetches it
-          pageNum: pageNum,
+          pdfUrl: effectivePdfUrl,  // Single-page PDF if available, otherwise full doc
+          pageNum: effectivePageNum,
           scale: scale,
           returnBase64: true,
         });
