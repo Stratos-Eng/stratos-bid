@@ -660,8 +660,10 @@ export const generateSheetTilesJob = inngest.createFunction(
 // === Page-Level Architecture ===
 // Split PDFs into individual pages for memory-efficient rendering
 
+const PAGE_BATCH_SIZE = 10; // Process 10 pages per batch
+
 /**
- * Orchestrator: Queue individual page processing jobs for a document
+ * Orchestrator: Queue batch processing jobs for a document
  * This is the entry point for page-level processing after upload
  */
 export const processDocumentPages = inngest.createFunction(
@@ -674,43 +676,144 @@ export const processDocumentPages = inngest.createFunction(
   async ({ event, step }) => {
     const { documentId, pdfUrl, pageCount } = event.data;
 
-    // Queue a job for each page (split + thumbnail)
-    // Using step.sendEvent to queue all pages at once
-    const events = Array.from({ length: pageCount }, (_, i) => ({
-      name: 'page/process' as const,
-      data: {
-        documentId,
-        pdfUrl,
-        pageNumber: i + 1,
-        totalPages: pageCount,
-      },
-    }));
+    // Queue batch jobs instead of individual page jobs
+    // This reduces Inngest invocations from N to ceil(N/10)
+    const batchCount = Math.ceil(pageCount / PAGE_BATCH_SIZE);
+    const events = Array.from({ length: batchCount }, (_, i) => {
+      const startPage = i * PAGE_BATCH_SIZE + 1;
+      const endPage = Math.min((i + 1) * PAGE_BATCH_SIZE, pageCount);
+      const pages = Array.from(
+        { length: endPage - startPage + 1 },
+        (_, j) => startPage + j
+      );
 
-    // Send all events in one batch
-    await step.sendEvent('queue-pages', events);
+      return {
+        name: 'page/process-batch' as const,
+        data: {
+          documentId,
+          pdfUrl,
+          pages,
+          totalPages: pageCount,
+          batchIndex: i,
+          totalBatches: batchCount,
+        },
+      };
+    });
 
-    return { documentId, pagesQueued: pageCount };
+    // Send all batch events
+    await step.sendEvent('queue-batches', events);
+
+    return { documentId, batchesQueued: batchCount, pageCount };
   }
 );
 
 /**
- * Process a single page: extract from PDF and generate thumbnail
- * Memory-efficient: works with ~15-20MB per page regardless of original PDF size
+ * Process a batch of pages: extract from PDF and generate thumbnails
+ * More efficient than single-page processing - downloads PDF once per batch
  */
+export const processPageBatch = inngest.createFunction(
+  {
+    id: 'process-page-batch',
+    name: 'Process Page Batch',
+    retries: 3,
+    concurrency: {
+      limit: 1, // Serialize batch processing to avoid concurrent PDF downloads
+    },
+  },
+  { event: 'page/process-batch' },
+  async ({ event, step }) => {
+    const { documentId, pdfUrl, pages, totalPages, batchIndex, totalBatches } = event.data;
+
+    // Step 1: Extract all pages in batch via Python service
+    const splitResult = await step.run('extract-pages', async () => {
+      const result = await pythonApi.splitPages({ pdfUrl, pages });
+      if (!result.success) {
+        throw new Error(`Failed to extract pages ${pages.join(',')}: ${result.error}`);
+      }
+      return result;
+    });
+
+    // Step 2: Upload each page PDF and generate thumbnail
+    const pageUrls: Record<number, string> = {};
+
+    for (const pageResult of splitResult.results) {
+      const pageNumber = pageResult.pageNumber;
+
+      // Upload single-page PDF
+      const pageUrl = await step.run(`upload-page-${pageNumber}`, async () => {
+        const buffer = Buffer.from(pageResult.data, 'base64');
+        const pathname = getPagePdfPath(documentId, pageNumber);
+        const { url } = await uploadFile(buffer, pathname, {
+          contentType: 'application/pdf',
+        });
+        return url;
+      });
+
+      pageUrls[pageNumber] = pageUrl;
+
+      // Generate thumbnail from the single-page PDF
+      await step.run(`thumbnail-${pageNumber}`, async () => {
+        const result = await pythonApi.render({
+          pdfUrl: pageUrl,
+          pageNum: 1,
+          scale: 0.2,
+          returnBase64: true,
+        });
+
+        if (!result.success || !result.image) {
+          console.warn(`Failed to render page ${pageNumber}, using placeholder`);
+          return; // Skip thumbnail, will show placeholder
+        }
+
+        const thumbnail = await sharp(Buffer.from(result.image, 'base64'))
+          .resize(150)
+          .webp({ quality: 75 })
+          .toBuffer();
+
+        await uploadFile(thumbnail, `thumbnails/${documentId}/${pageNumber}.webp`, {
+          contentType: 'image/webp',
+        });
+      });
+    }
+
+    // Step 3: Mark pages ready if this is the last batch
+    const isLastBatch = batchIndex === totalBatches - 1;
+    if (isLastBatch) {
+      await step.run('mark-pages-ready', async () => {
+        await db
+          .update(documents)
+          .set({
+            pagesReady: true,
+            thumbnailsGenerated: true,
+            updatedAt: new Date(),
+          })
+          .where(eq(documents.id, documentId));
+      });
+    }
+
+    return {
+      documentId,
+      batchIndex,
+      pagesProcessed: splitResult.results.length,
+      pagesFailed: splitResult.failed,
+    };
+  }
+);
+
+// Keep single-page processor for backwards compatibility and retries
 export const processPage = inngest.createFunction(
   {
     id: 'process-page',
     name: 'Process Single Page',
     retries: 3,
     concurrency: {
-      limit: 1, // Serialize page splitting to avoid concurrent PDF downloads in Python
+      limit: 1,
     },
   },
   { event: 'page/process' },
   async ({ event, step }) => {
     const { documentId, pdfUrl, pageNumber, totalPages } = event.data;
 
-    // Step 1: Extract single page from PDF via Python service
     const pageData = await step.run('extract-page', async () => {
       const result = await pythonApi.splitPage({ pdfUrl, pageNumber });
       if (!result.success) {
@@ -719,7 +822,6 @@ export const processPage = inngest.createFunction(
       return result;
     });
 
-    // Step 2: Upload single-page PDF to Blob storage
     const pageUrl = await step.run('upload-page', async () => {
       const buffer = Buffer.from(pageData.data!, 'base64');
       const pathname = getPagePdfPath(documentId, pageNumber);
@@ -729,12 +831,10 @@ export const processPage = inngest.createFunction(
       return url;
     });
 
-    // Step 3: Generate thumbnail from the single-page PDF
     await step.run('generate-thumbnail', async () => {
-      // Render single page at low resolution for thumbnail
       const result = await pythonApi.render({
         pdfUrl: pageUrl,
-        pageNum: 1, // Always page 1 since it's a single-page PDF
+        pageNum: 1,
         scale: 0.2,
         returnBase64: true,
       });
@@ -743,19 +843,16 @@ export const processPage = inngest.createFunction(
         throw new Error(`Failed to render page ${pageNumber}: ${result.error}`);
       }
 
-      // Resize and convert to WebP
       const thumbnail = await sharp(Buffer.from(result.image, 'base64'))
         .resize(150)
         .webp({ quality: 75 })
         .toBuffer();
 
-      // Upload thumbnail
       await uploadFile(thumbnail, `thumbnails/${documentId}/${pageNumber}.webp`, {
         contentType: 'image/webp',
       });
     });
 
-    // Step 4: Update document progress (on last page)
     if (pageNumber === totalPages) {
       await step.run('mark-pages-ready', async () => {
         await db
@@ -787,5 +884,6 @@ export const functions = [
   extractTextJob,
   cleanupUploadSessions,
   processDocumentPages,
+  processPageBatch,
   processPage,
 ];

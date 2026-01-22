@@ -44,6 +44,10 @@ _processing_semaphore = _extraction_semaphore
 PDF_CACHE_DIR = Path("/tmp/pdf_cache")
 PDF_CACHE_DIR.mkdir(exist_ok=True)
 
+# Per-URL download locks - prevents concurrent downloads of the same PDF
+_download_locks: dict[str, asyncio.Lock] = {}
+_download_locks_lock = asyncio.Lock()  # Protects the locks dictionary
+
 app = FastAPI(
     title="Vector Extractor",
     description="PDF vector extraction for takeoff snapping",
@@ -173,26 +177,42 @@ async def fetch_pdf_cached(url: str) -> str:
     Fetch PDF to cache if not already there. Returns file path.
     Uses file-based caching to avoid re-downloading the same PDF
     for multiple page renders.
+
+    Thread-safe: uses per-URL locks to prevent duplicate downloads.
     """
     cache_path = get_cached_pdf_path(url)
 
+    # Fast path: if cached, return immediately
     if cache_path.exists():
         # Touch file to update mtime (for LRU cleanup)
         cache_path.touch()
         return str(cache_path)
 
-    # Download to temp first, then move to cache atomically
-    temp_path = await fetch_pdf_to_tempfile(url)
-    try:
-        shutil.move(temp_path, cache_path)
-    except Exception:
-        # If move fails (e.g., race condition), clean up temp
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
-        # If cache now exists (another request won), use it
+    # Get or create lock for this URL
+    async with _download_locks_lock:
+        if url not in _download_locks:
+            _download_locks[url] = asyncio.Lock()
+        url_lock = _download_locks[url]
+
+    # Only one request downloads at a time per URL
+    async with url_lock:
+        # Check again after acquiring lock (another request may have completed)
         if cache_path.exists():
+            cache_path.touch()
             return str(cache_path)
-        raise
+
+        # Download to temp first, then move to cache atomically
+        temp_path = await fetch_pdf_to_tempfile(url)
+        try:
+            shutil.move(temp_path, cache_path)
+        except Exception:
+            # If move fails (e.g., race condition), clean up temp
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            # If cache now exists (another request won), use it
+            if cache_path.exists():
+                return str(cache_path)
+            raise
 
     return str(cache_path)
 
@@ -795,6 +815,145 @@ async def split_page(request: SplitPageRequest):
             cleanup_memory()
             return SplitPageResponse(success=False, error=str(e))
         # Note: Don't delete cached PDF - it may be reused for other pages
+
+
+# === Batch Page Splitting Endpoint ===
+
+class SplitPagesRequest(BaseModel):
+    """Request for extracting multiple pages from a PDF in one request."""
+    pdfUrl: str  # URL to fetch PDF from (Vercel Blob)
+    pages: list[int]  # List of 1-indexed page numbers
+
+
+class PageSplitResult(BaseModel):
+    """Result for a single page split."""
+    pageNumber: int
+    data: str  # Base64 encoded single-page PDF
+    size: int
+
+
+class SplitPagesResponse(BaseModel):
+    """Response with multiple single-page PDFs."""
+    success: bool
+    results: list[PageSplitResult] = []
+    failed: list[int] = []  # Page numbers that failed
+    error: Optional[str] = None
+
+
+@app.post("/split-pages", response_model=SplitPagesResponse)
+async def split_pages(request: SplitPagesRequest):
+    """
+    Extract multiple pages from a PDF as standalone single-page PDFs.
+
+    Memory-efficient: Downloads PDF once, extracts pages sequentially.
+    Each page is processed and returned before moving to the next,
+    keeping memory usage bounded.
+
+    Max 10 pages per request to stay within memory limits.
+    """
+    MAX_BATCH_SIZE = 10
+
+    # Validate URL
+    if not request.pdfUrl.startswith('https://'):
+        return SplitPagesResponse(success=False, error="pdfUrl must be an HTTPS URL")
+
+    # Limit batch size
+    if len(request.pages) > MAX_BATCH_SIZE:
+        return SplitPagesResponse(
+            success=False,
+            error=f"Max {MAX_BATCH_SIZE} pages per batch"
+        )
+
+    if not request.pages:
+        return SplitPagesResponse(success=False, error="No pages requested")
+
+    # Check if memory is critical
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
+        cleanup_memory()
+        unload_heavy_models()
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
+            return SplitPagesResponse(
+                success=False,
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry."
+            )
+
+    # Use metadata semaphore - page splitting is a fast operation
+    async with _metadata_semaphore:
+        try:
+            if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                cleanup_memory()
+
+            # Fetch PDF to cache
+            try:
+                pdf_path = await fetch_pdf_cached(request.pdfUrl)
+            except Exception as e:
+                return SplitPagesResponse(
+                    success=False,
+                    error=f"Failed to fetch PDF: {str(e)}"
+                )
+
+            # Check file size
+            file_size = os.path.getsize(pdf_path)
+            if file_size > MAX_PDF_SIZE_BYTES:
+                return SplitPagesResponse(
+                    success=False,
+                    error=f"PDF too large ({file_size / 1024 / 1024:.1f}MB)"
+                )
+
+            results: list[PageSplitResult] = []
+            failed: list[int] = []
+
+            # Open PDF from file (memory-mapped)
+            with open_pdf_from_file(pdf_path) as doc:
+                total_pages = len(doc)
+
+                for page_num in request.pages:
+                    try:
+                        page_index = page_num - 1
+
+                        if page_index < 0 or page_index >= total_pages:
+                            failed.append(page_num)
+                            continue
+
+                        # Create a new single-page PDF
+                        single_doc = fitz.open()
+                        single_doc.insert_pdf(doc, from_page=page_index, to_page=page_index)
+
+                        # Get the PDF bytes (compressed)
+                        page_bytes = single_doc.tobytes(garbage=4, deflate=True)
+                        single_doc.close()
+
+                        # Encode as base64
+                        page_b64 = base64.b64encode(page_bytes).decode("utf-8")
+
+                        results.append(PageSplitResult(
+                            pageNumber=page_num,
+                            data=page_b64,
+                            size=len(page_bytes),
+                        ))
+
+                        # Cleanup per page
+                        del page_bytes
+
+                        # Check memory after each page
+                        if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                            cleanup_memory()
+
+                    except Exception as e:
+                        print(f"Failed to split page {page_num}: {e}")
+                        failed.append(page_num)
+
+            return SplitPagesResponse(
+                success=True,
+                results=results,
+                failed=failed,
+            )
+
+        except Exception as e:
+            cleanup_memory()
+            return SplitPagesResponse(success=False, error=str(e))
 
 
 # === Page Rendering Endpoint ===

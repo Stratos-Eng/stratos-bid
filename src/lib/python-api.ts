@@ -229,6 +229,19 @@ export interface SplitPageResponse {
   error?: string;
 }
 
+export interface PageSplitResult {
+  pageNumber: number;
+  data: string;  // Base64 encoded single-page PDF
+  size: number;
+}
+
+export interface SplitPagesResponse {
+  success: boolean;
+  results: PageSplitResult[];
+  failed: number[];  // Page numbers that failed
+  error?: string;
+}
+
 export interface PageInfoItem {
   pageNum: number;
   width: number;
@@ -357,6 +370,26 @@ export const pythonApi = {
   }): Promise<SplitPageResponse> {
     return requestWithRetry<SplitPageResponse>('/split-page', params, {
       timeoutMs: 30000, // 30s for large PDFs
+      maxRetries: 2,
+    });
+  },
+
+  /**
+   * Extract multiple pages from a PDF in a single request (batch)
+   *
+   * More efficient than splitPage() for bulk operations because:
+   * 1. PDF is downloaded once and cached
+   * 2. Single request for multiple pages
+   * 3. PDF document opened once for all pages
+   *
+   * Max 10 pages per batch for memory safety.
+   */
+  async splitPages(params: {
+    pdfUrl: string;
+    pages: number[];  // 1-indexed page numbers
+  }): Promise<SplitPagesResponse> {
+    return requestWithRetry<SplitPagesResponse>('/split-pages', params, {
+      timeoutMs: 60000, // 60s for batch splitting
       maxRetries: 2,
     });
   },
