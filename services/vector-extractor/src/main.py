@@ -268,16 +268,15 @@ async def force_gc():
 # === Page Rendering Endpoint ===
 
 class RenderRequest(BaseModel):
-    """Request format expected by Next.js /api/takeoff/render endpoint."""
-    pdfData: Optional[str] = None  # Base64 encoded PDF (legacy)
-    pdfUrl: Optional[str] = None  # URL to fetch PDF from (preferred)
+    """Request for rendering a PDF page."""
+    pdfUrl: str  # URL to fetch PDF from (Vercel Blob)
     pageNum: int  # 1-indexed page number
     scale: float = 1.5
     returnBase64: bool = True
 
 
 class RenderResponse(BaseModel):
-    """Response format expected by Next.js."""
+    """Response with rendered page."""
     success: bool
     image: Optional[str] = None  # Base64 encoded PNG
     width: Optional[int] = None
@@ -290,12 +289,12 @@ async def render_page(request: RenderRequest):
     """
     Render a PDF page to a PNG image using PyMuPDF.
 
-    Accepts either pdfUrl (preferred, streams from Blob) or pdfData (legacy base64).
+    Fetches PDF from URL (Vercel Blob) to minimize memory usage.
     Returns a base64-encoded PNG image.
     """
-    # Validate input - need either pdfUrl or pdfData
-    if not request.pdfUrl and not request.pdfData:
-        return RenderResponse(success=False, error="Either pdfUrl or pdfData is required")
+    # Validate URL
+    if not request.pdfUrl.startswith('https://'):
+        return RenderResponse(success=False, error="pdfUrl must be an HTTPS URL")
 
     # Check if memory is critical - reject early
     is_critical, mem_mb = check_memory_critical()
@@ -316,16 +315,13 @@ async def render_page(request: RenderRequest):
             if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
                 cleanup_memory()
 
-            # Get PDF bytes - prefer URL (lower memory) over base64
+            # Fetch PDF from URL
             try:
-                if request.pdfUrl:
-                    pdf_bytes = await fetch_pdf_from_url(request.pdfUrl)
-                else:
-                    pdf_bytes = base64.b64decode(request.pdfData)
+                pdf_bytes = await fetch_pdf_from_url(request.pdfUrl)
             except Exception as e:
                 return RenderResponse(
                     success=False,
-                    error=f"Failed to load PDF: {str(e)}"
+                    error=f"Failed to fetch PDF: {str(e)}"
                 )
 
             # Check PDF size

@@ -3,6 +3,7 @@
  *
  * Generates map-style tiles for PDF pages at multiple zoom levels.
  * Tiles are stored in Vercel Blob and served via direct CDN URLs.
+ * PDFs must be stored in Vercel Blob - passes URLs to Python for rendering.
  *
  * Tile coordinate system:
  * - z=0: 1x1 grid (1 tile covers whole page)
@@ -13,9 +14,6 @@
  */
 
 import { put, list, del } from '@vercel/blob';
-import { downloadFile, isBlobUrl } from '@/lib/storage';
-import { readFile } from 'fs/promises';
-import { isAbsolute, join } from 'path';
 
 // Tile settings
 export const TILE_SIZE = 256;
@@ -50,15 +48,6 @@ export function getTileBlobPath(sheetId: string, z: number, x: number, y: number
 }
 
 /**
- * Build the tile URL template for OpenLayers
- * Returns a template with {z}, {x}, {y} placeholders
- */
-export function buildTileUrlTemplate(baseUrl: string, sheetId: string): string {
-  // baseUrl is like: https://xxx.blob.vercel-storage.com
-  return `${baseUrl}/tiles/${sheetId}/{z}/{x}/{y}.webp`;
-}
-
-/**
  * Check if a tile exists in Blob storage
  */
 export async function tileExistsInBlob(sheetId: string, z: number, x: number, y: number): Promise<string | null> {
@@ -73,30 +62,7 @@ export async function tileExistsInBlob(sheetId: string, z: number, x: number, y:
 }
 
 /**
- * Get all tile URLs for a sheet at a specific zoom level
- */
-export async function getTileUrlsForZoom(sheetId: string, z: number): Promise<Map<string, string>> {
-  const urlMap = new Map<string, string>();
-  try {
-    const prefix = `tiles/${sheetId}/${z}/`;
-    const { blobs } = await list({ prefix, limit: 1000 });
-
-    for (const blob of blobs) {
-      // Extract x/y from pathname like "tiles/{sheetId}/{z}/{x}/{y}.webp"
-      const match = blob.pathname.match(/\/(\d+)\/(\d+)\.webp$/);
-      if (match) {
-        const key = `${match[1]},${match[2]}`;
-        urlMap.set(key, blob.url);
-      }
-    }
-  } catch (error) {
-    console.error(`Failed to list tiles for zoom ${z}:`, error);
-  }
-  return urlMap;
-}
-
-/**
- * Calculate the number of tiles at a given zoom level
+ * Get tile count at a zoom level
  */
 export function getTileCount(z: number): { cols: number; rows: number; total: number } {
   const scale = Math.pow(2, z);
@@ -118,8 +84,7 @@ export function getTileCoords(z: number): TileCoord[] {
 }
 
 /**
- * Render a single tile via Python service
- * Now passes URL instead of base64 data to reduce memory usage
+ * Render a tile via Python service (passes URL, Python fetches)
  */
 async function renderTileViaPython(
   pdfUrl: string,
@@ -151,7 +116,7 @@ async function renderTileViaPython(
 
     const result = await response.json();
     if (!result.success || !result.image) {
-      console.warn('Python tile service returned unsuccessful result:', result.error);
+      console.warn('Python tile service failed:', result.error);
       return null;
     }
 
@@ -182,19 +147,7 @@ async function uploadTileToBlob(
 }
 
 /**
- * Load PDF buffer from storage path
- */
-async function loadPdfBuffer(storagePath: string): Promise<Buffer> {
-  if (isBlobUrl(storagePath)) {
-    return downloadFile(storagePath);
-  }
-  const fullPath = isAbsolute(storagePath) ? storagePath : join(process.cwd(), storagePath);
-  return readFile(fullPath);
-}
-
-/**
  * Generate a single tile and upload to Blob
- * Returns the Blob URL or null on failure
  */
 export async function generateSingleTile(
   sheetId: string,
@@ -208,16 +161,14 @@ export async function generateSingleTile(
     throw new Error('Invalid sheetId format');
   }
 
+  if (!storagePath.startsWith('https://')) {
+    throw new Error('storagePath must be a Blob URL');
+  }
+
   // Check if already exists
   const existingUrl = await tileExistsInBlob(sheetId, z, x, y);
   if (existingUrl) {
     return existingUrl;
-  }
-
-  // storagePath should be a Blob URL - pass directly to Python service
-  // Python will fetch it, avoiding base64 encoding overhead
-  if (!isBlobUrl(storagePath)) {
-    console.warn('generateSingleTile: storagePath is not a Blob URL, tiles may not work');
   }
 
   // Render tile (Python fetches PDF from URL)
@@ -227,13 +178,11 @@ export async function generateSingleTile(
   }
 
   // Upload to Blob
-  const url = await uploadTileToBlob(sheetId, z, x, y, tileBuffer);
-  return url;
+  return uploadTileToBlob(sheetId, z, x, y, tileBuffer);
 }
 
 /**
  * Generate tiles for specified zoom levels
- * Python service fetches PDF from URL - no need to download here
  */
 export async function generateTilesForZoomLevels(
   sheetId: string,
@@ -245,9 +194,8 @@ export async function generateTilesForZoomLevels(
     throw new Error('Invalid sheetId format');
   }
 
-  // storagePath should be a Blob URL - Python will fetch it directly
-  if (!isBlobUrl(storagePath)) {
-    console.warn('generateTilesForZoomLevels: storagePath is not a Blob URL');
+  if (!storagePath.startsWith('https://')) {
+    throw new Error('storagePath must be a Blob URL');
   }
 
   let generated = 0;
@@ -258,7 +206,6 @@ export async function generateTilesForZoomLevels(
     const coords = getTileCoords(z);
 
     for (const { x, y } of coords) {
-      // Check if exists
       const existingUrl = await tileExistsInBlob(sheetId, z, x, y);
       if (existingUrl) {
         urls.set(`${z}/${x}/${y}`, existingUrl);
@@ -266,7 +213,6 @@ export async function generateTilesForZoomLevels(
         continue;
       }
 
-      // Render and upload (Python fetches PDF from URL)
       try {
         const tileBuffer = await renderTileViaPython(storagePath, pageNum, z, x, y);
         if (tileBuffer) {
@@ -288,7 +234,6 @@ export async function generateTilesForZoomLevels(
 
 /**
  * Generate initial tiles (zoom 0-1) for a sheet
- * Called on upload via Inngest - generates 5 tiles total
  */
 export async function generateInitialTiles(
   sheetId: string,
@@ -302,14 +247,11 @@ export async function generateInitialTiles(
     UPLOAD_ZOOM_LEVELS
   );
 
-  // Get the base URL from any generated tile to build template
+  // Build tile URL template from first generated tile
   let tileUrlTemplate = '';
   const firstUrl = result.urls.values().next().value;
 
   if (firstUrl) {
-    // Extract base URL and build template
-    // From: https://xxx.blob.vercel-storage.com/tiles/sheetId/0/0/0.webp
-    // To: https://xxx.blob.vercel-storage.com/tiles/sheetId/{z}/{x}/{y}.webp
     const baseMatch = firstUrl.match(/^(https:\/\/[^/]+)\/tiles\/([^/]+)\//);
     if (baseMatch) {
       tileUrlTemplate = `${baseMatch[1]}/tiles/${baseMatch[2]}/{z}/{x}/{y}.webp`;
@@ -325,7 +267,7 @@ export async function generateInitialTiles(
 }
 
 /**
- * Delete all tiles for a sheet from Blob storage
+ * Delete all tiles for a sheet
  */
 export async function deleteAllTiles(sheetId: string): Promise<number> {
   if (!validateSheetId(sheetId)) {
@@ -349,10 +291,9 @@ export async function deleteAllTiles(sheetId: string): Promise<number> {
 }
 
 /**
- * Check if initial tiles are ready for a sheet
+ * Check if initial tiles are ready
  */
 export async function tilesReady(sheetId: string): Promise<boolean> {
-  // Check if zoom level 0 tile exists (always just 1 tile at z=0)
   const z0Tile = await tileExistsInBlob(sheetId, 0, 0, 0);
   return z0Tile !== null;
 }

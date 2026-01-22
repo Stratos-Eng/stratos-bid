@@ -1,19 +1,4 @@
-import { pgTable, text, timestamp, uuid, real, jsonb, integer, boolean, index, uniqueIndex, customType } from 'drizzle-orm/pg-core';
-
-// Custom type for pgvector
-const vector = customType<{ data: number[]; driverData: string }>({
-  dataType(config) {
-    const dimensions = (config as { dimensions?: number })?.dimensions ?? 512;
-    return `vector(${dimensions})`;
-  },
-  toDriver(value: number[]): string {
-    return `[${value.join(',')}]`;
-  },
-  fromDriver(value: string): number[] {
-    // Parse "[0.1,0.2,...]" format
-    return JSON.parse(value.replace(/^\[/, '[').replace(/\]$/, ']'));
-  },
-});
+import { pgTable, text, timestamp, uuid, real, jsonb, integer, boolean, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 // Note: With Clerk, users are managed externally. user_id is the Clerk user ID (string like "user_xxx")
 
@@ -320,8 +305,8 @@ export const symbolRegions = pgTable('symbol_regions', {
   width: real('width').notNull(),
   height: real('height').notNull(),
 
-  // CLIP embedding for visual similarity (512 dimensions)
-  embedding: vector('embedding', { dimensions: 512 }),
+  // CLIP embedding stored as JSON array (for similarity search)
+  embedding: jsonb('embedding'), // number[] - 512 dimensions
 
   // OCR text if detected
   ocrText: text('ocr_text'),
