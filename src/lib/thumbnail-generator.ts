@@ -161,8 +161,19 @@ async function generatePlaceholderThumbnail(
     .toBuffer();
 }
 
+// Batch size for thumbnail generation
+// PDF is cached after first batch, so subsequent batches are fast
+const THUMBNAIL_BATCH_SIZE = 10;
+
 /**
- * Generate thumbnails for all pages of a PDF
+ * Generate thumbnails for all pages of a PDF using batch rendering
+ *
+ * Uses batch rendering to avoid re-downloading the PDF for each page.
+ * The Python service caches the PDF after the first batch, making
+ * subsequent batches much faster.
+ *
+ * Before: 100 pages = 100 requests × 148MB PDF download = ~14.8GB transferred
+ * After:  100 pages = 10 batches × 1 cached download = ~148MB transferred
  */
 export async function generateThumbnails(config: ThumbnailConfig): Promise<ThumbnailResult> {
   const { documentId, storagePath } = config;
@@ -187,41 +198,115 @@ export async function generateThumbnails(config: ThumbnailConfig): Promise<Thumb
   }
   const pageCount = metadata.pageCount;
 
+  // Initialize thumbnail URLs array
+  const thumbnailUrls: (string | null)[] = new Array(pageCount).fill(null);
   let thumbnailsGenerated = 0;
-  const thumbnailUrls: string[] = [];
 
+  // Find pages that need thumbnails (don't already exist)
+  const pagesToGenerate: number[] = [];
   for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
-    // Check if already exists
     const existingUrl = await thumbnailExistsInBlob(documentId, pageNum);
     if (existingUrl) {
-      thumbnailUrls.push(existingUrl);
+      thumbnailUrls[pageNum - 1] = existingUrl;
       thumbnailsGenerated++;
-      continue;
-    }
-
-    try {
-      // Render via Python (it fetches PDF from URL)
-      let imageBuffer = await renderPageViaPythonService(storagePath, pageNum);
-
-      if (imageBuffer && imageBuffer.length > 0) {
-        imageBuffer = await sharp(imageBuffer).webp({ quality: 75 }).toBuffer();
-      } else {
-        imageBuffer = await generatePlaceholderThumbnail(pageNum);
-      }
-
-      const url = await uploadThumbnailToBlob(documentId, pageNum, imageBuffer);
-      thumbnailUrls.push(url);
-      thumbnailsGenerated++;
-    } catch (error) {
-      console.error(`Failed to generate thumbnail for page ${pageNum}:`, error);
-      const placeholder = await generatePlaceholderThumbnail(pageNum);
-      const url = await uploadThumbnailToBlob(documentId, pageNum, placeholder);
-      thumbnailUrls.push(url);
-      thumbnailsGenerated++;
+    } else {
+      pagesToGenerate.push(pageNum);
     }
   }
 
-  return { documentId, pageCount, thumbnailsGenerated, thumbnailUrls };
+  console.log(`[thumbnails] ${pagesToGenerate.length} of ${pageCount} pages need thumbnails`);
+
+  // Process in batches using renderBatch endpoint
+  // This downloads the PDF once and renders multiple pages
+  for (let i = 0; i < pagesToGenerate.length; i += THUMBNAIL_BATCH_SIZE) {
+    const batch = pagesToGenerate.slice(i, i + THUMBNAIL_BATCH_SIZE);
+    console.log(`[thumbnails] Processing batch ${Math.floor(i / THUMBNAIL_BATCH_SIZE) + 1}: pages ${batch.join(', ')}`);
+
+    try {
+      const result = await pythonApi.renderBatch({
+        pdfUrl: storagePath,
+        pages: batch,
+        scale: 0.25, // Thumbnail scale
+        format: 'webp',
+      });
+
+      if (result.success) {
+        // Upload each rendered thumbnail
+        for (const pageResult of result.results) {
+          try {
+            // Convert base64 to buffer and resize for consistent thumbnail size
+            const imageBuffer = await sharp(Buffer.from(pageResult.image, 'base64'))
+              .resize(THUMBNAIL_WIDTH)
+              .webp({ quality: 75 })
+              .toBuffer();
+
+            const url = await uploadThumbnailToBlob(documentId, pageResult.page, imageBuffer);
+            thumbnailUrls[pageResult.page - 1] = url;
+            thumbnailsGenerated++;
+          } catch (uploadError) {
+            console.error(`Failed to upload thumbnail for page ${pageResult.page}:`, uploadError);
+            // Generate placeholder for this page
+            const placeholder = await generatePlaceholderThumbnail(pageResult.page);
+            const url = await uploadThumbnailToBlob(documentId, pageResult.page, placeholder);
+            thumbnailUrls[pageResult.page - 1] = url;
+            thumbnailsGenerated++;
+          }
+        }
+
+        // Handle failed pages from batch
+        for (const failedPage of result.failed) {
+          console.warn(`[thumbnails] Page ${failedPage} failed in batch, using placeholder`);
+          const placeholder = await generatePlaceholderThumbnail(failedPage);
+          const url = await uploadThumbnailToBlob(documentId, failedPage, placeholder);
+          thumbnailUrls[failedPage - 1] = url;
+          thumbnailsGenerated++;
+        }
+      } else {
+        // Entire batch failed - fall back to placeholders
+        console.error(`[thumbnails] Batch render failed: ${result.error}`);
+        for (const pageNum of batch) {
+          const placeholder = await generatePlaceholderThumbnail(pageNum);
+          const url = await uploadThumbnailToBlob(documentId, pageNum, placeholder);
+          thumbnailUrls[pageNum - 1] = url;
+          thumbnailsGenerated++;
+        }
+      }
+    } catch (error) {
+      // Batch request failed entirely - fall back to individual rendering
+      console.error(`[thumbnails] Batch request failed, falling back to individual renders:`, error);
+      for (const pageNum of batch) {
+        try {
+          const imageBuffer = await renderPageViaPythonService(storagePath, pageNum);
+          if (imageBuffer && imageBuffer.length > 0) {
+            const processed = await sharp(imageBuffer)
+              .resize(THUMBNAIL_WIDTH)
+              .webp({ quality: 75 })
+              .toBuffer();
+            const url = await uploadThumbnailToBlob(documentId, pageNum, processed);
+            thumbnailUrls[pageNum - 1] = url;
+          } else {
+            const placeholder = await generatePlaceholderThumbnail(pageNum);
+            const url = await uploadThumbnailToBlob(documentId, pageNum, placeholder);
+            thumbnailUrls[pageNum - 1] = url;
+          }
+          thumbnailsGenerated++;
+        } catch (err) {
+          console.error(`Failed to generate thumbnail for page ${pageNum}:`, err);
+          const placeholder = await generatePlaceholderThumbnail(pageNum);
+          const url = await uploadThumbnailToBlob(documentId, pageNum, placeholder);
+          thumbnailUrls[pageNum - 1] = url;
+          thumbnailsGenerated++;
+        }
+      }
+    }
+  }
+
+  return {
+    documentId,
+    pageCount,
+    thumbnailsGenerated,
+    thumbnailUrls: thumbnailUrls.filter((url): url is string => url !== null),
+  };
 }
 
 /**

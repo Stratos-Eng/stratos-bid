@@ -158,6 +158,20 @@ export interface TileResponse {
   error?: string;
 }
 
+export interface BatchRenderResult {
+  page: number;
+  image: string; // Base64 encoded
+  width: number;
+  height: number;
+}
+
+export interface BatchRenderResponse {
+  success: boolean;
+  results: BatchRenderResult[];
+  failed: number[]; // Page numbers that failed to render
+  error?: string;
+}
+
 export interface TextExtractionResponse {
   success: boolean;
   pages: Array<{
@@ -244,6 +258,28 @@ export const pythonApi = {
   }): Promise<RenderResponse> {
     return requestWithRetry<RenderResponse>('/render', params, {
       timeoutMs: 60000, // 60s for rendering
+    });
+  },
+
+  /**
+   * Render multiple pages from a single PDF in one request (batch)
+   *
+   * Much more efficient than calling render() multiple times because:
+   * 1. PDF is downloaded once and cached
+   * 2. Single semaphore acquisition for the batch
+   * 3. PDF document opened once for all pages
+   *
+   * Max 20 pages per batch.
+   */
+  async renderBatch(params: {
+    pdfUrl: string;
+    pages: number[];  // 1-indexed page numbers
+    scale?: number;   // Default 0.3 (thumbnail size)
+    format?: 'webp' | 'png';  // Default 'webp'
+  }): Promise<BatchRenderResponse> {
+    return requestWithRetry<BatchRenderResponse>('/render-batch', params, {
+      timeoutMs: 120000, // 2 minutes for batch rendering
+      maxRetries: 2,
     });
   },
 

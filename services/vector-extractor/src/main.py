@@ -15,6 +15,9 @@ import os
 import gc
 import psutil
 import time
+import hashlib
+import shutil
+from pathlib import Path
 import fitz  # PyMuPDF
 
 # Memory limits - tuned for Render free tier (512MB RAM)
@@ -28,10 +31,18 @@ MEMORY_CRITICAL_MB = 400  # Reject requests before hitting 512MB limit
 _ocr_reader = None
 _clip_model = None
 
-# Concurrency limit - 1 concurrent PDF for 512MB RAM hosts
-# Each PDF operation may use 100-200MB for rendering, so serialize them
+# Concurrency limits - separate semaphores for different operation types
+# This prevents metadata requests from being blocked by slow renders
 import asyncio
-_processing_semaphore = asyncio.Semaphore(1)  # Single concurrent PDF operation
+_metadata_semaphore = asyncio.Semaphore(3)    # Metadata is fast, allow concurrent
+_render_semaphore = asyncio.Semaphore(2)      # Renders need more memory
+_extraction_semaphore = asyncio.Semaphore(1)  # Heavy AI extraction stays serialized
+# Legacy alias for backwards compatibility
+_processing_semaphore = _extraction_semaphore
+
+# PDF cache directory - avoids re-downloading same PDF for multiple page renders
+PDF_CACHE_DIR = Path("/tmp/pdf_cache")
+PDF_CACHE_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(
     title="Vector Extractor",
@@ -146,7 +157,79 @@ def open_pdf_from_file(file_path: str):
     finally:
         if doc:
             doc.close()
-        cleanup_memory()
+
+
+# === PDF Caching ===
+# Cache downloaded PDFs to avoid re-downloading for each page render
+
+def get_cached_pdf_path(url: str) -> Path:
+    """Get deterministic cache path for a PDF URL."""
+    url_hash = hashlib.md5(url.encode()).hexdigest()[:16]
+    return PDF_CACHE_DIR / f"{url_hash}.pdf"
+
+
+async def fetch_pdf_cached(url: str) -> str:
+    """
+    Fetch PDF to cache if not already there. Returns file path.
+    Uses file-based caching to avoid re-downloading the same PDF
+    for multiple page renders.
+    """
+    cache_path = get_cached_pdf_path(url)
+
+    if cache_path.exists():
+        # Touch file to update mtime (for LRU cleanup)
+        cache_path.touch()
+        return str(cache_path)
+
+    # Download to temp first, then move to cache atomically
+    temp_path = await fetch_pdf_to_tempfile(url)
+    try:
+        shutil.move(temp_path, cache_path)
+    except Exception:
+        # If move fails (e.g., race condition), clean up temp
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        # If cache now exists (another request won), use it
+        if cache_path.exists():
+            return str(cache_path)
+        raise
+
+    return str(cache_path)
+
+
+def cleanup_pdf_cache(max_age_hours: int = 2, max_size_mb: int = 500):
+    """Remove old cached PDFs. Called on startup and periodically."""
+    if not PDF_CACHE_DIR.exists():
+        return
+
+    cutoff = time.time() - (max_age_hours * 3600)
+    total_size = 0
+    files_by_age = []
+
+    for f in PDF_CACHE_DIR.glob("*.pdf"):
+        try:
+            stat = f.stat()
+            files_by_age.append((stat.st_mtime, stat.st_size, f))
+            total_size += stat.st_size
+        except OSError:
+            continue
+
+    # Sort oldest first
+    files_by_age.sort()
+
+    # Remove old files and files exceeding size limit
+    max_size_bytes = max_size_mb * 1024 * 1024
+    for mtime, size, f in files_by_age:
+        if mtime < cutoff or total_size > max_size_bytes:
+            try:
+                f.unlink()
+                total_size -= size
+            except OSError:
+                continue
+
+
+# Clean up cache on startup
+cleanup_pdf_cache()
 
 
 # === Synchronous extraction (matches Next.js API contract) ===
@@ -415,8 +498,8 @@ async def get_metadata(request: MetadataRequest):
                 error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
             )
 
-    # Use semaphore to limit concurrent PDF processing
-    async with _processing_semaphore:
+    # Use metadata semaphore - metadata operations are fast
+    async with _metadata_semaphore:
         temp_path = None
         try:
             # Check memory before processing
@@ -515,8 +598,8 @@ async def get_pages_info(request: MetadataRequest):
                 error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
             )
 
-    # Use semaphore to limit concurrent PDF processing
-    async with _processing_semaphore:
+    # Use metadata semaphore - page info operations are fast
+    async with _metadata_semaphore:
         temp_path = None
         try:
             # Check memory before processing
@@ -650,8 +733,8 @@ async def render_page(request: RenderRequest):
                 error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
             )
 
-    # Use semaphore to limit concurrent PDF processing
-    async with _processing_semaphore:
+    # Use render semaphore - renders need moderate memory
+    async with _render_semaphore:
         temp_path = None
         try:
             # Check memory before processing
@@ -724,6 +807,174 @@ async def render_page(request: RenderRequest):
                 os.unlink(temp_path)
 
 
+# === Batch Rendering Endpoint ===
+
+class BatchRenderRequest(BaseModel):
+    """Request for rendering multiple pages from a single PDF."""
+    pdfUrl: str  # URL to fetch PDF from (Vercel Blob)
+    pages: list[int]  # 1-indexed page numbers to render
+    scale: float = 0.3  # Thumbnail scale (low res for thumbnails)
+    format: str = "webp"  # Output format: webp or png
+
+
+class BatchRenderResult(BaseModel):
+    """Result for a single page render."""
+    page: int  # 1-indexed page number
+    image: str  # Base64 encoded image
+    width: int
+    height: int
+
+
+class BatchRenderResponse(BaseModel):
+    """Response with rendered pages."""
+    success: bool
+    results: list[BatchRenderResult] = []
+    failed: list[int] = []  # Page numbers that failed to render
+    error: Optional[str] = None
+
+
+@app.post("/render-batch", response_model=BatchRenderResponse)
+async def render_batch(request: BatchRenderRequest):
+    """
+    Render multiple pages from a single PDF in one request.
+
+    Downloads PDF once (using cache), renders all requested pages.
+    Max 20 pages per batch to limit memory/time.
+
+    This is much more efficient than calling /render multiple times
+    because:
+    1. PDF is downloaded once and cached
+    2. Single semaphore acquisition for the batch
+    3. PDF document opened once for all pages
+    """
+    # Validate batch size
+    if len(request.pages) > 20:
+        return BatchRenderResponse(
+            success=False,
+            results=[],
+            failed=request.pages,
+            error="Max 20 pages per batch"
+        )
+
+    if len(request.pages) == 0:
+        return BatchRenderResponse(success=True, results=[], failed=[])
+
+    # Validate URL
+    if not request.pdfUrl.startswith('https://'):
+        return BatchRenderResponse(
+            success=False,
+            results=[],
+            failed=request.pages,
+            error="pdfUrl must be an HTTPS URL"
+        )
+
+    # Check if memory is critical - reject early
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
+        cleanup_memory()
+        unload_heavy_models()
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
+            return BatchRenderResponse(
+                success=False,
+                results=[],
+                failed=request.pages,
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry."
+            )
+
+    # Use render semaphore
+    async with _render_semaphore:
+        try:
+            if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                cleanup_memory()
+
+            # Fetch PDF to cache (or use cached version)
+            try:
+                pdf_path = await fetch_pdf_cached(request.pdfUrl)
+            except Exception as e:
+                return BatchRenderResponse(
+                    success=False,
+                    results=[],
+                    failed=request.pages,
+                    error=f"Failed to fetch PDF: {str(e)}"
+                )
+
+            # Check file size
+            file_size = os.path.getsize(pdf_path)
+            if file_size > MAX_PDF_SIZE_BYTES:
+                return BatchRenderResponse(
+                    success=False,
+                    results=[],
+                    failed=request.pages,
+                    error=f"PDF too large ({file_size / 1024 / 1024:.1f}MB)"
+                )
+
+            results = []
+            failed = []
+
+            # Open PDF once for all pages
+            with open_pdf_from_file(pdf_path) as doc:
+                page_count = len(doc)
+
+                for page_num in request.pages:
+                    try:
+                        page_idx = page_num - 1
+                        if page_idx < 0 or page_idx >= page_count:
+                            failed.append(page_num)
+                            continue
+
+                        page = doc[page_idx]
+
+                        # Calculate matrix for scaling
+                        mat = fitz.Matrix(request.scale, request.scale)
+
+                        # Render page to pixmap
+                        pix = page.get_pixmap(matrix=mat, alpha=False)
+
+                        # Convert to requested format
+                        if request.format == "webp":
+                            import io
+                            from PIL import Image
+                            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                            buffer = io.BytesIO()
+                            img.save(buffer, format="WEBP", quality=75)
+                            image_bytes = buffer.getvalue()
+                        else:
+                            image_bytes = pix.tobytes("png")
+
+                        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+                        results.append(BatchRenderResult(
+                            page=page_num,
+                            image=image_b64,
+                            width=pix.width,
+                            height=pix.height,
+                        ))
+
+                        # Clean up pixmap immediately
+                        del pix
+
+                    except Exception as e:
+                        failed.append(page_num)
+                        continue
+
+            return BatchRenderResponse(
+                success=True,
+                results=results,
+                failed=failed,
+            )
+
+        except Exception as e:
+            cleanup_memory()
+            return BatchRenderResponse(
+                success=False,
+                results=[],
+                failed=request.pages,
+                error=str(e)
+            )
+        # Note: Don't delete cached PDF - it may be reused for subsequent batches
+
+
 # === Tile Rendering Endpoint ===
 
 class TileRequest(BaseModel):
@@ -776,8 +1027,8 @@ async def render_tile(request: TileRequest):
                 error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry."
             )
 
-    # Use semaphore to limit concurrent processing
-    async with _processing_semaphore:
+    # Use render semaphore - tile rendering needs moderate memory
+    async with _render_semaphore:
         temp_path = None
         try:
             if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
@@ -1119,8 +1370,8 @@ async def crop_region_from_url(request: CropUrlRequest):
                 error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
             )
 
-    # Use semaphore to limit concurrent PDF processing
-    async with _processing_semaphore:
+    # Use render semaphore - cropping is a render operation
+    async with _render_semaphore:
         temp_path = None
         try:
             # Check memory before processing
@@ -1224,8 +1475,8 @@ async def crop_region(request: CropRequest):
                 error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
             )
 
-    # Use semaphore to limit concurrent PDF processing
-    async with _processing_semaphore:
+    # Use render semaphore - cropping is a render operation
+    async with _render_semaphore:
         temp_path = None
         try:
             # Check memory before processing
