@@ -1,60 +1,128 @@
-// src/app/api/tiles/[...path]/route.ts
-import { NextRequest, NextResponse } from "next/server"
-import { readFile } from "fs/promises"
-import { join } from "path"
+/**
+ * Tile API Route
+ *
+ * Serves tiles from Vercel Blob storage, generating on-demand for higher zoom levels.
+ *
+ * Path format: /api/tiles/{sheetId}/{z}/{x}/{y}.webp
+ */
 
-// Validate documentId is UUID format
-function validateDocumentId(id: string): boolean {
-  return /^[a-f0-9-]{36}$/i.test(id)
+import { NextRequest, NextResponse } from 'next/server';
+import { auth } from '@/lib/auth';
+import { db } from '@/db';
+import { takeoffSheets, takeoffProjects, documents } from '@/db/schema';
+import { eq } from 'drizzle-orm';
+import { tileExistsInBlob, generateSingleTile, MAX_ZOOM } from '@/lib/tile-generator';
+
+// Validate UUID format
+function validateUUID(id: string): boolean {
+  return /^[a-f0-9-]{36}$/i.test(id);
 }
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
-  const { path } = await params
+  const { path } = await params;
 
-  // Path format: [documentId, pageNumber, z, x, y.png]
-  if (path.length !== 5) {
-    return NextResponse.json({ error: "Invalid path" }, { status: 400 })
+  // Path format: [sheetId, z, x, y.webp]
+  if (path.length !== 4) {
+    return NextResponse.json({ error: 'Invalid path format' }, { status: 400 });
   }
 
-  const [documentId, pageNumber, z, x, yPng] = path
+  const [sheetId, zStr, xStr, yFile] = path;
 
-  // Security: validate documentId
-  if (!validateDocumentId(documentId)) {
-    return NextResponse.json({ error: "Invalid documentId" }, { status: 400 })
+  // Validate sheetId
+  if (!validateUUID(sheetId)) {
+    return NextResponse.json({ error: 'Invalid sheetId' }, { status: 400 });
   }
 
-  // Validate numeric parameters
-  const pageNum = parseInt(pageNumber, 10)
-  const zoomLevel = parseInt(z, 10)
-  const xCoord = parseInt(x, 10)
+  // Parse coordinates
+  const z = parseInt(zStr, 10);
+  const x = parseInt(xStr, 10);
+  const y = parseInt(yFile.replace('.webp', ''), 10);
 
-  if (isNaN(pageNum) || isNaN(zoomLevel) || isNaN(xCoord)) {
-    return NextResponse.json({ error: "Invalid parameters" }, { status: 400 })
+  if (isNaN(z) || isNaN(x) || isNaN(y)) {
+    return NextResponse.json({ error: 'Invalid tile coordinates' }, { status: 400 });
   }
 
-  const y = yPng.replace(".png", "")
-  const yCoord = parseInt(y, 10)
-
-  if (isNaN(yCoord)) {
-    return NextResponse.json({ error: "Invalid y coordinate" }, { status: 400 })
+  // Validate zoom level
+  if (z < 0 || z > MAX_ZOOM) {
+    return NextResponse.json({ error: `Zoom level must be 0-${MAX_ZOOM}` }, { status: 400 });
   }
 
-  const tilePath = join(process.cwd(), "tiles", documentId, pageNumber, z, x, `${y}.png`)
+  // Validate tile coordinates for zoom level
+  const maxCoord = Math.pow(2, z) - 1;
+  if (x < 0 || x > maxCoord || y < 0 || y > maxCoord) {
+    return NextResponse.json({ error: 'Tile coordinates out of range' }, { status: 400 });
+  }
+
+  // Check if tile exists in Blob
+  const existingUrl = await tileExistsInBlob(sheetId, z, x, y);
+  if (existingUrl) {
+    // Redirect to Blob URL
+    return NextResponse.redirect(existingUrl, {
+      headers: {
+        'Cache-Control': 'public, max-age=31536000, immutable',
+      },
+    });
+  }
+
+  // Tile doesn't exist - need to generate on-demand
+  // First verify auth and get sheet info
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  // Get sheet and verify ownership
+  const [sheet] = await db
+    .select({
+      sheet: takeoffSheets,
+      project: takeoffProjects,
+      document: documents,
+    })
+    .from(takeoffSheets)
+    .innerJoin(takeoffProjects, eq(takeoffSheets.projectId, takeoffProjects.id))
+    .leftJoin(documents, eq(takeoffSheets.documentId, documents.id))
+    .where(eq(takeoffSheets.id, sheetId))
+    .limit(1);
+
+  if (!sheet || sheet.project.userId !== session.user.id) {
+    return NextResponse.json({ error: 'Sheet not found' }, { status: 404 });
+  }
+
+  // Get storage path from document
+  const storagePath = sheet.document?.storagePath;
+  if (!storagePath) {
+    return NextResponse.json({ error: 'Document has no storage path' }, { status: 404 });
+  }
 
   try {
-    const tileData = await readFile(tilePath)
+    // Generate tile on-demand
+    const tileUrl = await generateSingleTile(
+      sheetId,
+      storagePath,
+      sheet.sheet.pageNumber,
+      z,
+      x,
+      y
+    );
 
-    return new NextResponse(tileData, {
+    if (!tileUrl) {
+      return NextResponse.json({ error: 'Failed to generate tile' }, { status: 500 });
+    }
+
+    // Redirect to newly created tile
+    return NextResponse.redirect(tileUrl, {
       headers: {
-        "Content-Type": "image/png",
-        "Cache-Control": "public, max-age=31536000, immutable"
-      }
-    })
-  } catch {
-    // Return 404 for missing tiles
-    return new NextResponse(null, { status: 404 })
+        'Cache-Control': 'public, max-age=31536000, immutable',
+      },
+    });
+  } catch (error) {
+    console.error('Tile generation error:', error);
+    return NextResponse.json(
+      { error: 'Failed to generate tile' },
+      { status: 500 }
+    );
   }
 }

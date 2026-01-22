@@ -1,214 +1,353 @@
-// src/lib/tile-generator.ts
-import { PDFDocument } from "pdf-lib"
-import sharp from "sharp"
-import { readFile, mkdir, writeFile } from "fs/promises"
-import { join, dirname } from "path"
-import { execFile } from "child_process"
-import { promisify } from "util"
+/**
+ * Tile Generator for PDF Pages
+ *
+ * Generates map-style tiles for PDF pages at multiple zoom levels.
+ * Tiles are stored in Vercel Blob and served via direct CDN URLs.
+ *
+ * Tile coordinate system:
+ * - z=0: 1x1 grid (1 tile covers whole page)
+ * - z=1: 2x2 grid (4 tiles)
+ * - z=2: 4x4 grid (16 tiles)
+ * - z=3: 8x8 grid (64 tiles)
+ * - z=4: 16x16 grid (256 tiles)
+ */
 
-const execFileAsync = promisify(execFile)
+import { put, list, del } from '@vercel/blob';
+import { downloadFile, isBlobUrl } from '@/lib/storage';
+import { readFile } from 'fs/promises';
+import { isAbsolute, join } from 'path';
 
-// Validate documentId is UUID format
-function validateDocumentId(id: string): boolean {
-  return /^[a-f0-9-]{36}$/i.test(id)
+// Tile settings
+export const TILE_SIZE = 256;
+export const MAX_ZOOM = 4;
+export const UPLOAD_ZOOM_LEVELS = [0, 1]; // Generated on upload (5 tiles per page)
+
+export interface TileCoord {
+  z: number;
+  x: number;
+  y: number;
 }
 
-const TILE_SIZE = 256
-const MAX_ZOOM = 5
-const BASE_DPI = 150
-
-export interface TileConfig {
-  documentId: string
-  pageNumber: number
-  storagePath: string
-  outputDir: string
-}
-
-export interface TileResult {
-  zoomLevels: number
-  totalTiles: number
-  tileUrlPattern: string
-  pageWidth: number
-  pageHeight: number
+export interface TileGenerationResult {
+  sheetId: string;
+  tilesGenerated: number;
+  maxZoom: number;
+  tileUrlTemplate: string;
 }
 
 /**
- * Generate tiles for a PDF page using pdftoppm or fallback to placeholder.
- * Tiles follow XYZ pattern: /{z}/{x}/{y}.png
+ * Validate sheetId is UUID format
  */
-export async function generateTilesForPage(config: TileConfig): Promise<TileResult> {
-  const { documentId, pageNumber, storagePath, outputDir } = config
+function validateSheetId(id: string): boolean {
+  return /^[a-f0-9-]{36}$/i.test(id);
+}
 
-  if (!validateDocumentId(documentId)) {
-    throw new Error("Invalid documentId format")
+/**
+ * Get the Blob pathname for a tile
+ */
+export function getTileBlobPath(sheetId: string, z: number, x: number, y: number): string {
+  return `tiles/${sheetId}/${z}/${x}/${y}.webp`;
+}
+
+/**
+ * Build the tile URL template for OpenLayers
+ * Returns a template with {z}, {x}, {y} placeholders
+ */
+export function buildTileUrlTemplate(baseUrl: string, sheetId: string): string {
+  // baseUrl is like: https://xxx.blob.vercel-storage.com
+  return `${baseUrl}/tiles/${sheetId}/{z}/{x}/{y}.webp`;
+}
+
+/**
+ * Check if a tile exists in Blob storage
+ */
+export async function tileExistsInBlob(sheetId: string, z: number, x: number, y: number): Promise<string | null> {
+  try {
+    const pathname = getTileBlobPath(sheetId, z, x, y);
+    const { blobs } = await list({ prefix: pathname, limit: 1 });
+    const match = blobs.find(b => b.pathname === pathname);
+    return match?.url || null;
+  } catch {
+    return null;
   }
-  if (!Number.isInteger(pageNumber) || pageNumber < 1) {
-    throw new Error("Invalid pageNumber")
+}
+
+/**
+ * Get all tile URLs for a sheet at a specific zoom level
+ */
+export async function getTileUrlsForZoom(sheetId: string, z: number): Promise<Map<string, string>> {
+  const urlMap = new Map<string, string>();
+  try {
+    const prefix = `tiles/${sheetId}/${z}/`;
+    const { blobs } = await list({ prefix, limit: 1000 });
+
+    for (const blob of blobs) {
+      // Extract x/y from pathname like "tiles/{sheetId}/{z}/{x}/{y}.webp"
+      const match = blob.pathname.match(/\/(\d+)\/(\d+)\.webp$/);
+      if (match) {
+        const key = `${match[1]},${match[2]}`;
+        urlMap.set(key, blob.url);
+      }
+    }
+  } catch (error) {
+    console.error(`Failed to list tiles for zoom ${z}:`, error);
+  }
+  return urlMap;
+}
+
+/**
+ * Calculate the number of tiles at a given zoom level
+ */
+export function getTileCount(z: number): { cols: number; rows: number; total: number } {
+  const scale = Math.pow(2, z);
+  return { cols: scale, rows: scale, total: scale * scale };
+}
+
+/**
+ * Get all tile coordinates for a zoom level
+ */
+export function getTileCoords(z: number): TileCoord[] {
+  const { cols, rows } = getTileCount(z);
+  const coords: TileCoord[] = [];
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      coords.push({ z, x, y });
+    }
+  }
+  return coords;
+}
+
+/**
+ * Render a single tile via Python service
+ */
+async function renderTileViaPython(
+  pdfBuffer: Buffer,
+  pageNum: number,
+  z: number,
+  x: number,
+  y: number
+): Promise<Buffer | null> {
+  const pythonApiUrl = process.env.PYTHON_VECTOR_API_URL || 'http://localhost:8001';
+  const pdfBase64 = pdfBuffer.toString('base64');
+
+  try {
+    const response = await fetch(`${pythonApiUrl}/tile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pdfData: pdfBase64,
+        pageNum,
+        z,
+        x,
+        y,
+        tileSize: TILE_SIZE,
+      }),
+    });
+
+    if (!response.ok) {
+      console.warn(`Python tile service returned ${response.status}`);
+      return null;
+    }
+
+    const result = await response.json();
+    if (!result.success || !result.image) {
+      console.warn('Python tile service returned unsuccessful result:', result.error);
+      return null;
+    }
+
+    return Buffer.from(result.image, 'base64');
+  } catch (error) {
+    console.warn(`Python tile service failed for tile ${z}/${x}/${y}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Upload a tile to Blob storage
+ */
+async function uploadTileToBlob(
+  sheetId: string,
+  z: number,
+  x: number,
+  y: number,
+  imageBuffer: Buffer
+): Promise<string> {
+  const pathname = getTileBlobPath(sheetId, z, x, y);
+  const blob = await put(pathname, imageBuffer, {
+    access: 'public',
+    contentType: 'image/webp',
+    addRandomSuffix: false,
+  });
+  return blob.url;
+}
+
+/**
+ * Load PDF buffer from storage path
+ */
+async function loadPdfBuffer(storagePath: string): Promise<Buffer> {
+  if (isBlobUrl(storagePath)) {
+    return downloadFile(storagePath);
+  }
+  const fullPath = isAbsolute(storagePath) ? storagePath : join(process.cwd(), storagePath);
+  return readFile(fullPath);
+}
+
+/**
+ * Generate a single tile and upload to Blob
+ * Returns the Blob URL or null on failure
+ */
+export async function generateSingleTile(
+  sheetId: string,
+  storagePath: string,
+  pageNum: number,
+  z: number,
+  x: number,
+  y: number
+): Promise<string | null> {
+  if (!validateSheetId(sheetId)) {
+    throw new Error('Invalid sheetId format');
   }
 
-  const fullPath = join(process.cwd(), storagePath)
-
-  // Get page dimensions
-  const pdfBytes = await readFile(fullPath)
-  const pdfDoc = await PDFDocument.load(pdfBytes)
-  const page = pdfDoc.getPage(pageNumber - 1)
-  const { width: pdfWidth, height: pdfHeight } = page.getSize()
-
-  // Calculate max zoom based on page size
-  const maxDimension = Math.max(pdfWidth, pdfHeight)
-  const naturalZoom = Math.ceil(Math.log2(maxDimension * (BASE_DPI / 72) / TILE_SIZE))
-  const zoomLevels = Math.min(naturalZoom, MAX_ZOOM)
-
-  // Output directory for this page's tiles
-  const pageOutputDir = join(outputDir, documentId, String(pageNumber))
-
-  // Generate full-resolution image first
-  const fullResImage = await renderPageToBuffer(fullPath, pageNumber, BASE_DPI * Math.pow(2, zoomLevels - 2))
-
-  if (!fullResImage) {
-    // Fallback: generate placeholder tiles
-    return generatePlaceholderTiles(pageOutputDir, pdfWidth, pdfHeight, zoomLevels, documentId, pageNumber)
+  // Check if already exists
+  const existingUrl = await tileExistsInBlob(sheetId, z, x, y);
+  if (existingUrl) {
+    return existingUrl;
   }
 
-  // Generate tiles for each zoom level
-  let totalTiles = 0
-  for (let z = 0; z <= zoomLevels; z++) {
-    const scale = Math.pow(2, z - zoomLevels)
-    const scaledWidth = Math.round(pdfWidth * (BASE_DPI / 72) * Math.pow(2, zoomLevels - 2) * scale)
-    const scaledHeight = Math.round(pdfHeight * (BASE_DPI / 72) * Math.pow(2, zoomLevels - 2) * scale)
+  // Download PDF
+  const pdfBuffer = await loadPdfBuffer(storagePath);
 
-    // Resize image for this zoom level
-    const resized = await sharp(fullResImage)
-      .resize(scaledWidth, scaledHeight, { fit: "fill" })
-      .toBuffer()
+  // Render tile
+  const tileBuffer = await renderTileViaPython(pdfBuffer, pageNum, z, x, y);
+  if (!tileBuffer) {
+    return null;
+  }
 
-    // Calculate tile grid
-    const tilesX = Math.ceil(scaledWidth / TILE_SIZE)
-    const tilesY = Math.ceil(scaledHeight / TILE_SIZE)
+  // Upload to Blob
+  const url = await uploadTileToBlob(sheetId, z, x, y, tileBuffer);
+  return url;
+}
 
-    for (let x = 0; x < tilesX; x++) {
-      for (let y = 0; y < tilesY; y++) {
-        const left = x * TILE_SIZE
-        const top = y * TILE_SIZE
-        const tileWidth = Math.min(TILE_SIZE, scaledWidth - left)
-        const tileHeight = Math.min(TILE_SIZE, scaledHeight - top)
+/**
+ * Generate tiles for specified zoom levels
+ * Downloads PDF once and generates all tiles
+ */
+export async function generateTilesForZoomLevels(
+  sheetId: string,
+  storagePath: string,
+  pageNum: number,
+  zoomLevels: number[]
+): Promise<{ generated: number; failed: number; urls: Map<string, string> }> {
+  if (!validateSheetId(sheetId)) {
+    throw new Error('Invalid sheetId format');
+  }
 
-        // Extract tile
-        let tile = await sharp(resized)
-          .extract({ left, top, width: tileWidth, height: tileHeight })
-          .toBuffer()
+  // Download PDF once
+  const pdfBuffer = await loadPdfBuffer(storagePath);
 
-        // Pad if needed
-        if (tileWidth < TILE_SIZE || tileHeight < TILE_SIZE) {
-          tile = await sharp(tile)
-            .extend({
-              right: TILE_SIZE - tileWidth,
-              bottom: TILE_SIZE - tileHeight,
-              background: { r: 255, g: 255, b: 255, alpha: 1 }
-            })
-            .toBuffer()
+  let generated = 0;
+  let failed = 0;
+  const urls = new Map<string, string>();
+
+  for (const z of zoomLevels) {
+    const coords = getTileCoords(z);
+
+    for (const { x, y } of coords) {
+      // Check if exists
+      const existingUrl = await tileExistsInBlob(sheetId, z, x, y);
+      if (existingUrl) {
+        urls.set(`${z}/${x}/${y}`, existingUrl);
+        generated++;
+        continue;
+      }
+
+      // Render and upload
+      try {
+        const tileBuffer = await renderTileViaPython(pdfBuffer, pageNum, z, x, y);
+        if (tileBuffer) {
+          const url = await uploadTileToBlob(sheetId, z, x, y, tileBuffer);
+          urls.set(`${z}/${x}/${y}`, url);
+          generated++;
+        } else {
+          failed++;
         }
-
-        // Save tile
-        const tilePath = join(pageOutputDir, String(z), String(x), `${y}.png`)
-        await mkdir(dirname(tilePath), { recursive: true })
-        await writeFile(tilePath, await sharp(tile).png({ quality: 80 }).toBuffer())
-        totalTiles++
+      } catch (error) {
+        console.error(`Failed to generate tile ${z}/${x}/${y}:`, error);
+        failed++;
       }
     }
   }
 
-  return {
-    zoomLevels,
-    totalTiles,
-    tileUrlPattern: `/api/tiles/${documentId}/${pageNumber}/{z}/{x}/{y}.png`,
-    pageWidth: pdfWidth,
-    pageHeight: pdfHeight
-  }
-}
-
-async function renderPageToBuffer(pdfPath: string, pageNumber: number, dpi: number): Promise<Buffer | null> {
-  // Cap DPI to prevent memory exhaustion
-  const safeDpi = Math.min(Math.round(dpi), 600)
-
-  try {
-    const { stdout } = await execFileAsync('pdftoppm', [
-      '-f', String(pageNumber),
-      '-l', String(pageNumber),
-      '-png',
-      '-r', String(safeDpi),
-      '-singlefile',
-      pdfPath,
-      '-'
-    ], { maxBuffer: 100 * 1024 * 1024, encoding: 'buffer' })
-    return stdout
-  } catch {
-    console.warn("pdftoppm not available, using placeholder tiles")
-    return null
-  }
-}
-
-async function generatePlaceholderTiles(
-  outputDir: string,
-  pdfWidth: number,
-  pdfHeight: number,
-  zoomLevels: number,
-  documentId: string,
-  pageNumber: number
-): Promise<TileResult> {
-  // Generate simple gray placeholder tiles
-  let totalTiles = 0
-
-  // Create placeholder tile once
-  const placeholderTile = await sharp({
-    create: {
-      width: TILE_SIZE,
-      height: TILE_SIZE,
-      channels: 4,
-      background: { r: 245, g: 245, b: 243, alpha: 1 }
-    }
-  }).png().toBuffer()
-
-  for (let z = 0; z <= zoomLevels; z++) {
-    const scale = Math.pow(2, z - zoomLevels)
-    const scaledWidth = Math.round(pdfWidth * (BASE_DPI / 72) * scale)
-    const scaledHeight = Math.round(pdfHeight * (BASE_DPI / 72) * scale)
-
-    const tilesX = Math.ceil(scaledWidth / TILE_SIZE)
-    const tilesY = Math.ceil(scaledHeight / TILE_SIZE)
-
-    for (let x = 0; x < tilesX; x++) {
-      for (let y = 0; y < tilesY; y++) {
-        const tilePath = join(outputDir, String(z), String(x), `${y}.png`)
-        await mkdir(dirname(tilePath), { recursive: true })
-        await writeFile(tilePath, placeholderTile)
-        totalTiles++
-      }
-    }
-  }
-
-  return {
-    zoomLevels,
-    totalTiles,
-    tileUrlPattern: `/api/tiles/${documentId}/${pageNumber}/{z}/{x}/{y}.png`,
-    pageWidth: pdfWidth,
-    pageHeight: pdfHeight
-  }
+  return { generated, failed, urls };
 }
 
 /**
- * Check if tiles exist for a page
+ * Generate initial tiles (zoom 0-1) for a sheet
+ * Called on upload via Inngest - generates 5 tiles total
  */
-export async function tilesExist(documentId: string, pageNumber: number): Promise<boolean> {
-  if (!validateDocumentId(documentId)) {
-    return false
+export async function generateInitialTiles(
+  sheetId: string,
+  storagePath: string,
+  pageNum: number
+): Promise<TileGenerationResult> {
+  const result = await generateTilesForZoomLevels(
+    sheetId,
+    storagePath,
+    pageNum,
+    UPLOAD_ZOOM_LEVELS
+  );
+
+  // Get the base URL from any generated tile to build template
+  let tileUrlTemplate = '';
+  const firstUrl = result.urls.values().next().value;
+
+  if (firstUrl) {
+    // Extract base URL and build template
+    // From: https://xxx.blob.vercel-storage.com/tiles/sheetId/0/0/0.webp
+    // To: https://xxx.blob.vercel-storage.com/tiles/sheetId/{z}/{x}/{y}.webp
+    const baseMatch = firstUrl.match(/^(https:\/\/[^/]+)\/tiles\/([^/]+)\//);
+    if (baseMatch) {
+      tileUrlTemplate = `${baseMatch[1]}/tiles/${baseMatch[2]}/{z}/{x}/{y}.webp`;
+    }
   }
 
-  const tilePath = join(process.cwd(), "tiles", documentId, String(pageNumber), "0", "0", "0.png")
-  try {
-    await readFile(tilePath)
-    return true
-  } catch {
-    return false
+  return {
+    sheetId,
+    tilesGenerated: result.generated,
+    maxZoom: Math.max(...UPLOAD_ZOOM_LEVELS),
+    tileUrlTemplate,
+  };
+}
+
+/**
+ * Delete all tiles for a sheet from Blob storage
+ */
+export async function deleteAllTiles(sheetId: string): Promise<number> {
+  if (!validateSheetId(sheetId)) {
+    throw new Error('Invalid sheetId format');
   }
+
+  const prefix = `tiles/${sheetId}/`;
+  const { blobs } = await list({ prefix, limit: 1000 });
+
+  let deleted = 0;
+  for (const blob of blobs) {
+    try {
+      await del(blob.url);
+      deleted++;
+    } catch (error) {
+      console.error(`Failed to delete tile ${blob.pathname}:`, error);
+    }
+  }
+
+  return deleted;
+}
+
+/**
+ * Check if initial tiles are ready for a sheet
+ */
+export async function tilesReady(sheetId: string): Promise<boolean> {
+  // Check if zoom level 0 tile exists (always just 1 tile at z=0)
+  const z0Tile = await tileExistsInBlob(sheetId, 0, 0, 0);
+  return z0Tile !== null;
 }

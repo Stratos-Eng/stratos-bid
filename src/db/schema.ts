@@ -232,6 +232,7 @@ export const takeoffSheets = pgTable('takeoff_sheets', {
 
   // Processing status
   tilesReady: boolean('tiles_ready').default(false),
+  maxZoomGenerated: integer('max_zoom_generated').default(-1), // -1 = none, 0-4 = zoom levels
   vectorsReady: boolean('vectors_ready').default(false),
   vectorQuality: text('vector_quality'), // 'good' | 'medium' | 'poor' | 'none'
 

@@ -554,6 +554,7 @@ export default function TakeoffWorkspacePage() {
               <PdfViewer
                 sheetId={currentSheet.id}
                 tileUrlTemplate={currentSheet.tileUrlTemplate || undefined}
+                tilesReady={currentSheet.tilesReady || false}
                 width={currentSheet.widthPx}
                 height={currentSheet.heightPx}
                 onMeasurementComplete={handleMeasurementComplete}

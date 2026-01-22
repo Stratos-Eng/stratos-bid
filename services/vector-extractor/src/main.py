@@ -373,6 +373,141 @@ async def render_page(request: RenderRequest):
             )
 
 
+# === Tile Rendering Endpoint ===
+
+class TileRequest(BaseModel):
+    """Request for rendering a single tile from a PDF page."""
+    pdfData: str  # Base64 encoded PDF
+    pageNum: int  # 1-indexed page number
+    z: int  # Zoom level (0-4)
+    x: int  # Tile X coordinate
+    y: int  # Tile Y coordinate
+    tileSize: int = 256  # Output tile size in pixels
+
+
+class TileResponse(BaseModel):
+    """Response with rendered tile."""
+    success: bool
+    image: Optional[str] = None  # Base64 encoded WebP
+    error: Optional[str] = None
+
+
+@app.post("/tile", response_model=TileResponse)
+async def render_tile(request: TileRequest):
+    """
+    Render a single tile from a PDF page.
+
+    Tiles are 256x256 WebP images. The tile coordinate system:
+    - z=0: 1x1 grid (1 tile covers whole page)
+    - z=1: 2x2 grid (4 tiles)
+    - z=2: 4x4 grid (16 tiles)
+    - etc.
+
+    This endpoint renders only the requested tile region, keeping memory low.
+    """
+    # Validate zoom level
+    if request.z < 0 or request.z > 4:
+        return TileResponse(success=False, error="Zoom level must be 0-4")
+
+    # Check if memory is critical - reject early
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
+        cleanup_memory()
+        unload_heavy_models()
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
+            return TileResponse(
+                success=False,
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry."
+            )
+
+    # Use semaphore to limit concurrent processing
+    async with _processing_semaphore:
+        try:
+            if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                cleanup_memory()
+
+            # Decode PDF
+            try:
+                pdf_bytes = base64.b64decode(request.pdfData)
+            except Exception as e:
+                return TileResponse(success=False, error=f"Invalid base64 PDF data: {str(e)}")
+
+            if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
+                return TileResponse(
+                    success=False,
+                    error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB)"
+                )
+
+            with open_pdf_safely(pdf_bytes) as doc:
+                page_index = request.pageNum - 1
+                if page_index < 0 or page_index >= len(doc):
+                    return TileResponse(
+                        success=False,
+                        error=f"Invalid page number. Document has {len(doc)} pages."
+                    )
+
+                page = doc[page_index]
+                page_rect = page.rect
+                page_width = page_rect.width
+                page_height = page_rect.height
+
+                # Calculate tile bounds
+                scale = 2 ** request.z  # Number of tiles per dimension
+                tile_width = page_width / scale
+                tile_height = page_height / scale
+
+                # Validate tile coordinates
+                if request.x < 0 or request.x >= scale or request.y < 0 or request.y >= scale:
+                    return TileResponse(
+                        success=False,
+                        error=f"Invalid tile coordinates ({request.x}, {request.y}) for zoom {request.z}"
+                    )
+
+                # Calculate clip rectangle for this tile
+                clip_x = request.x * tile_width
+                clip_y = request.y * tile_height
+                clip_rect = fitz.Rect(
+                    clip_x,
+                    clip_y,
+                    min(clip_x + tile_width, page_width),
+                    min(clip_y + tile_height, page_height)
+                )
+
+                # Calculate matrix to render tile at target size
+                # We want the clip region to fill a tileSize x tileSize output
+                scale_x = request.tileSize / tile_width
+                scale_y = request.tileSize / tile_height
+                mat = fitz.Matrix(scale_x, scale_y)
+
+                # Render the tile
+                pix = page.get_pixmap(matrix=mat, clip=clip_rect, alpha=False)
+
+                # Convert to WebP for better compression
+                import io
+                from PIL import Image
+
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                buffer = io.BytesIO()
+                img.save(buffer, format="WEBP", quality=85)
+                webp_bytes = buffer.getvalue()
+
+                image_b64 = base64.b64encode(webp_bytes).decode("utf-8")
+
+                result = TileResponse(success=True, image=image_b64)
+
+                # Cleanup
+                del pix
+                del img
+                del buffer
+
+                return result
+
+        except Exception as e:
+            cleanup_memory()
+            return TileResponse(success=False, error=str(e))
+
+
 # === Text Extraction Endpoint ===
 
 class TextExtractionRequest(BaseModel):

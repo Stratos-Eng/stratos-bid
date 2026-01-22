@@ -6,6 +6,7 @@ import TileLayer from 'ol/layer/Tile';
 import VectorLayer from 'ol/layer/Vector';
 import VectorSource from 'ol/source/Vector';
 import XYZ from 'ol/source/XYZ';
+import TileGrid from 'ol/tilegrid/TileGrid';
 import ImageLayer from 'ol/layer/Image';
 import Static from 'ol/source/ImageStatic';
 import { Draw, Select, Snap } from 'ol/interaction';
@@ -33,6 +34,7 @@ interface PdfViewerProps {
   sheetId: string;
   imageUrl?: string;
   tileUrlTemplate?: string;
+  tilesReady?: boolean;
   width: number;
   height: number;
   onMeasurementComplete?: (measurement: Omit<TakeoffMeasurement, 'id' | 'createdAt'>) => void;
@@ -171,6 +173,7 @@ export function PdfViewer({
   sheetId,
   imageUrl,
   tileUrlTemplate,
+  tilesReady,
   width,
   height,
   onMeasurementComplete,
@@ -488,30 +491,71 @@ export function PdfViewer({
     setImageLoading(true);
 
     // Background layer with error handling
-    if (tileUrlTemplate) {
-      if (tileUrlTemplate.includes('/api/takeoff/render') || tileUrlTemplate.includes('/api/documents/')) {
-        const staticSource = new Static({
-          url: tileUrlTemplate,
-          imageExtent: extent,
-        });
-        staticSource.on('imageloadend', () => setImageLoading(false));
-        staticSource.on('imageloaderror', () => {
-          setImageLoading(false);
-          setImageLoadError('Failed to load PDF page. The file may be corrupted or too large.');
-        });
-        layers.push(new ImageLayer({ source: staticSource }));
-      } else {
-        const xyzSource = new XYZ({
-          url: tileUrlTemplate,
-          maxZoom: 6,
-        });
-        xyzSource.on('tileloadend', () => setImageLoading(false));
-        xyzSource.on('tileloaderror', () => {
-          setImageLoading(false);
-          setImageLoadError('Failed to load PDF tiles. Please try refreshing the page.');
-        });
-        layers.push(new TileLayer({ source: xyzSource }));
+    if (tilesReady && tileUrlTemplate && tileUrlTemplate.includes('{z}')) {
+      // Use XYZ tiles with custom tile grid
+      // Our tiles use: z=0 (1x1), z=1 (2x2), z=2 (4x4), z=3 (8x8), z=4 (16x16)
+      const maxZoom = 4;
+      const tileSize = 256;
+
+      // Calculate resolutions for each zoom level
+      // At z=0, one tile covers the whole page
+      // Resolution = page size / (number of tiles * tile size)
+      const resolutions: number[] = [];
+      for (let z = 0; z <= maxZoom; z++) {
+        const tilesPerSide = Math.pow(2, z);
+        // Use the larger dimension to ensure full coverage
+        const maxDim = Math.max(width, height);
+        resolutions.push(maxDim / (tilesPerSide * tileSize));
       }
+
+      const tileGrid = new TileGrid({
+        extent: extent,
+        resolutions: resolutions,
+        tileSize: tileSize,
+        origin: [0, 0], // Top-left origin
+      });
+
+      // Build URL with API fallback for on-demand generation
+      // Template: https://blob.../tiles/{sheetId}/{z}/{x}/{y}.webp
+      // We use API route which redirects to blob or generates on demand
+      const apiTileUrl = `/api/tiles/${sheetId}/{z}/{x}/{y}.webp`;
+
+      const xyzSource = new XYZ({
+        url: apiTileUrl,
+        tileGrid: tileGrid,
+        projection: undefined, // No projection - use pixel coordinates
+      });
+
+      let tilesLoaded = 0;
+      xyzSource.on('tileloadend', () => {
+        tilesLoaded++;
+        if (tilesLoaded >= 1) {
+          setImageLoading(false);
+        }
+      });
+      xyzSource.on('tileloaderror', (e) => {
+        console.warn('Tile load error:', e);
+        // Don't set error state - individual tile failures are ok
+        // The on-demand generation might just be slow
+      });
+
+      layers.push(new TileLayer({ source: xyzSource }));
+
+      // Set loading to false after a short delay if no tiles loaded
+      // (handles case where all tiles are cached)
+      setTimeout(() => setImageLoading(false), 500);
+    } else if (tileUrlTemplate) {
+      // Legacy: static image rendering
+      const staticSource = new Static({
+        url: tileUrlTemplate,
+        imageExtent: extent,
+      });
+      staticSource.on('imageloadend', () => setImageLoading(false));
+      staticSource.on('imageloaderror', () => {
+        setImageLoading(false);
+        setImageLoadError('Failed to load PDF page. The file may be corrupted or too large.');
+      });
+      layers.push(new ImageLayer({ source: staticSource }));
     } else if (imageUrl) {
       const staticSource = new Static({
         url: imageUrl,
@@ -673,7 +717,7 @@ export function PdfViewer({
       map.setTarget(undefined);
       mapInstance.current = null;
     };
-  }, [sheetId, imageUrl, tileUrlTemplate, width, height, selectedMeasurementIds, getCategoryById, setZoom, setCenter, snapEnabled, altPressed, findNearestSnap]);
+  }, [sheetId, imageUrl, tileUrlTemplate, tilesReady, width, height, selectedMeasurementIds, getCategoryById, setZoom, setCenter, snapEnabled, altPressed, findNearestSnap]);
 
   // Sync measurements to vector source
   useEffect(() => {

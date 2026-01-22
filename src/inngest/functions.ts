@@ -1,11 +1,12 @@
 import { inngest } from './client';
 import { db } from '@/db';
-import { connections, syncJobs, documents, userSettings, uploadSessions, pageText } from '@/db/schema';
+import { connections, syncJobs, documents, userSettings, uploadSessions, pageText, takeoffSheets } from '@/db/schema';
 import { eq, lt, or, sql } from 'drizzle-orm';
 import { createScraper, createGmailScanner, usesBrowserScraping, type Platform } from '@/scrapers';
 import { extractDocument } from '@/extraction';
 import { TradeCode } from '@/lib/trade-definitions';
 import { generateThumbnails } from '@/lib/thumbnail-generator';
+import { generateInitialTiles, UPLOAD_ZOOM_LEVELS } from '@/lib/tile-generator';
 import { downloadFile } from '@/lib/storage';
 import { rm } from 'fs/promises';
 
@@ -604,6 +605,55 @@ export const cleanupUploadSessions = inngest.createFunction(
   }
 );
 
+// Generate tiles for a takeoff sheet
+export const generateSheetTilesJob = inngest.createFunction(
+  {
+    id: 'generate-sheet-tiles',
+    name: 'Generate Sheet Tiles',
+    retries: 2,
+  },
+  { event: 'sheet/generate-tiles' },
+  async ({ event, step }) => {
+    const { sheetId, documentId, pageNumber } = event.data;
+
+    // Get document for storage path
+    const [doc] = await step.run('get-document', async () => {
+      return await db
+        .select()
+        .from(documents)
+        .where(eq(documents.id, documentId))
+        .limit(1);
+    });
+
+    if (!doc || !doc.storagePath) {
+      throw new Error(`Document ${documentId} not found or has no storage path`);
+    }
+
+    // Generate initial tiles (zoom 0-1)
+    const result = await step.run('generate-tiles', async () => {
+      return await generateInitialTiles(sheetId, doc.storagePath!, pageNumber);
+    });
+
+    // Update sheet with tile info
+    await step.run('update-sheet', async () => {
+      await db
+        .update(takeoffSheets)
+        .set({
+          tilesReady: true,
+          maxZoomGenerated: Math.max(...UPLOAD_ZOOM_LEVELS),
+          tileUrlTemplate: result.tileUrlTemplate,
+        })
+        .where(eq(takeoffSheets.id, sheetId));
+    });
+
+    return {
+      sheetId,
+      tilesGenerated: result.tilesGenerated,
+      tileUrlTemplate: result.tileUrlTemplate,
+    };
+  }
+);
+
 // Export all functions for Inngest serve
 export const functions = [
   dailySync,
@@ -611,6 +661,7 @@ export const functions = [
   syncConnection,
   extractSignageJob,
   generateThumbnailsJob,
+  generateSheetTilesJob,
   extractDocumentJob,
   extractBidDocuments,
   autoExtractOnDownload,
