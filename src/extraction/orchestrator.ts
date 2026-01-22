@@ -139,11 +139,11 @@ export async function extractDocument(
 
         pluginResults.push(pluginResult);
 
-        // Save extracted items to database
-        if (extractionResult.items.length > 0) {
+        // Save extracted items to database (only for bid documents)
+        if (extractionResult.items.length > 0 && doc.bidId) {
           const lineItemsToInsert: NewLineItem[] = extractionResult.items.map((item) => ({
             documentId,
-            bidId: doc.bidId,
+            bidId: doc.bidId!,
             userId,
             tradeCode,
             category: item.category,

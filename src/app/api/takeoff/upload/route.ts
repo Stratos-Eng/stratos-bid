@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { db } from '@/db';
-import { takeoffProjects, takeoffSheets } from '@/db/schema';
+import { takeoffProjects, takeoffSheets, documents } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { writeFile, mkdir } from 'fs/promises';
-import { existsSync } from 'fs';
-import path from 'path';
 import { PDFDocument } from 'pdf-lib';
+import { put } from '@vercel/blob';
+import { inngest } from '@/inngest/client';
 
 // POST /api/takeoff/upload - Upload PDF and create sheets
 export async function POST(request: NextRequest) {
@@ -46,18 +45,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
 
-    // Create uploads directory
-    const uploadsDir = path.join(process.cwd(), 'uploads', 'takeoff', projectId);
-    if (!existsSync(uploadsDir)) {
-      await mkdir(uploadsDir, { recursive: true });
-    }
-
-    // Save the file
+    // Read file bytes
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
+
+    // Upload to Vercel Blob
     const filename = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
-    const filePath = path.join(uploadsDir, filename);
-    await writeFile(filePath, buffer);
+    const blobPath = `takeoff/${projectId}/${filename}`;
+
+    const blob = await put(blobPath, buffer, {
+      access: 'public',
+      contentType: 'application/pdf',
+      addRandomSuffix: false,
+    });
 
     // Parse PDF to get page count and dimensions using pdf-lib
     const pdfDoc = await PDFDocument.load(buffer);
@@ -70,11 +70,21 @@ export async function POST(request: NextRequest) {
     if (pageCount > 0) {
       const firstPage = pdfDoc.getPage(0);
       const { width, height } = firstPage.getSize();
-      // Convert from PDF points (72 DPI) to 300 DPI for better quality
-      const scaleFactor = 300 / 72;
+      // Convert from PDF points (72 DPI) to pixels at 150 DPI for viewing
+      const scaleFactor = 150 / 72;
       defaultWidth = Math.round(width * scaleFactor);
       defaultHeight = Math.round(height * scaleFactor);
     }
+
+    // Create a document record for the PDF
+    const [doc] = await db
+      .insert(documents)
+      .values({
+        filename: file.name,
+        storagePath: blob.url,
+        pageCount,
+      })
+      .returning();
 
     // Generate sheet name prefix from file path
     const baseFileName = file.name.replace('.pdf', '').replace(/[_-]/g, ' ');
@@ -102,24 +112,43 @@ export async function POST(request: NextRequest) {
         .insert(takeoffSheets)
         .values({
           projectId,
+          documentId: doc.id, // Link to document for PDF access
           pageNumber: pageNum,
           name: `${sheetPrefix}${pageSuffix}`,
           widthPx: defaultWidth,
           heightPx: defaultHeight,
           tilesReady: false,
-          // Store the PDF path so we can render pages on demand
-          tileUrlTemplate: `/api/takeoff/render?projectId=${projectId}&file=${encodeURIComponent(filename)}&page=${pageNum}`,
+          maxZoomGenerated: -1,
+          // Fallback render URL for legacy/loading state
+          tileUrlTemplate: `/api/takeoff/render?projectId=${projectId}&documentId=${doc.id}&page=${pageNum}`,
         })
         .returning();
 
       sheets.push(sheet);
+
+      // Trigger tile generation in background
+      await inngest.send({
+        name: 'sheet/generate-tiles',
+        data: {
+          sheetId: sheet.id,
+          documentId: doc.id,
+          pageNumber: pageNum,
+        },
+      });
     }
 
     return NextResponse.json({
       success: true,
       filename,
       pageCount,
-      sheets: sheets.map((s) => s.id),
+      documentId: doc.id,
+      sheets: sheets.map((s) => ({
+        id: s.id,
+        name: s.name,
+        pageNumber: s.pageNumber,
+        widthPx: s.widthPx,
+        heightPx: s.heightPx,
+      })),
     });
   } catch (error) {
     console.error('Upload error:', error);

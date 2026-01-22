@@ -57,7 +57,7 @@ export const bids = pgTable('bids', {
 
 export const documents = pgTable('documents', {
   id: uuid('id').primaryKey().defaultRandom(),
-  bidId: uuid('bid_id').notNull().references(() => bids.id, { onDelete: 'cascade' }),
+  bidId: uuid('bid_id').references(() => bids.id, { onDelete: 'cascade' }), // Optional for takeoff docs
   filename: text('filename').notNull(),
   docType: text('doc_type'), // 'plans' | 'specs' | 'addendum' | 'other'
   storagePath: text('storage_path'),
