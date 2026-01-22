@@ -14,6 +14,7 @@
  */
 
 import { put, list, del } from '@vercel/blob';
+import { pythonApi, PythonApiNotConfiguredError } from './python-api';
 
 // Tile settings
 export const TILE_SIZE = 256;
@@ -93,28 +94,22 @@ async function renderTileViaPython(
   x: number,
   y: number
 ): Promise<Buffer | null> {
-  const pythonApiUrl = process.env.PYTHON_VECTOR_API_URL || 'http://localhost:8001';
+  // Check if Python API is configured
+  if (!pythonApi.isConfigured()) {
+    console.warn('Python API not configured - cannot render tile');
+    return null;
+  }
 
   try {
-    const response = await fetch(`${pythonApiUrl}/tile`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        pdfUrl,
-        pageNum,
-        z,
-        x,
-        y,
-        tileSize: TILE_SIZE,
-      }),
+    const result = await pythonApi.tile({
+      pdfUrl,
+      pageNum,
+      z,
+      x,
+      y,
+      tileSize: TILE_SIZE,
     });
 
-    if (!response.ok) {
-      console.warn(`Python tile service returned ${response.status}`);
-      return null;
-    }
-
-    const result = await response.json();
     if (!result.success || !result.image) {
       console.warn('Python tile service failed:', result.error);
       return null;
@@ -122,6 +117,10 @@ async function renderTileViaPython(
 
     return Buffer.from(result.image, 'base64');
   } catch (error) {
+    // Don't log config errors as warnings since they're expected in some environments
+    if (error instanceof PythonApiNotConfiguredError) {
+      return null;
+    }
     console.warn(`Python tile service failed for tile ${z}/${x}/${y}:`, error);
     return null;
   }
@@ -247,16 +246,10 @@ export async function generateInitialTiles(
     UPLOAD_ZOOM_LEVELS
   );
 
-  // Build tile URL template from first generated tile
-  let tileUrlTemplate = '';
-  const firstUrl = result.urls.values().next().value;
-
-  if (firstUrl) {
-    const baseMatch = firstUrl.match(/^(https:\/\/[^/]+)\/tiles\/([^/]+)\//);
-    if (baseMatch) {
-      tileUrlTemplate = `${baseMatch[1]}/tiles/${baseMatch[2]}/{z}/{x}/{y}.webp`;
-    }
-  }
+  // Use API endpoint for tile URL template
+  // This allows on-demand generation for higher zoom levels
+  // Format: /api/tiles/{sheetId}/{z}/{x}/{y}.webp
+  const tileUrlTemplate = `/api/tiles/${sheetId}/{z}/{x}/{y}.webp`;
 
   return {
     sheetId,

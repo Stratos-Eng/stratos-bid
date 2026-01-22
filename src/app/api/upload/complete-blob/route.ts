@@ -5,11 +5,35 @@ import { takeoffSheets, takeoffProjects, documents, bids } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { PDFDocument } from 'pdf-lib';
 import { inngest } from '@/inngest/client';
-import { downloadFile } from '@/lib/storage';
+import { downloadFile, deleteFile } from '@/lib/storage';
+import { pythonApi } from '@/lib/python-api';
 
 // Force Node.js runtime for PDF parsing
 export const runtime = 'nodejs';
 export const maxDuration = 60;
+
+// Timeout for pdf-lib operations (55 seconds - leaves 5s for other ops within 60s function limit)
+const PDF_PARSE_TIMEOUT_MS = 55000;
+
+// Helper to add timeout to async operations
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  operation: string
+): Promise<T> {
+  let timeoutId: NodeJS.Timeout;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${operation} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId!);
+  }
+}
 
 interface BlobCompleteRequest {
   blobUrl: string;
@@ -23,6 +47,9 @@ interface BlobCompleteRequest {
 
 // POST /api/upload/blob-complete - Process uploaded blob
 export async function POST(request: NextRequest) {
+  // Track blobUrl at function scope for cleanup on failure
+  let uploadedBlobUrl: string | null = null;
+
   try {
     const session = await auth();
     if (!session?.user?.id) {
@@ -31,6 +58,7 @@ export async function POST(request: NextRequest) {
 
     const body: BlobCompleteRequest = await request.json();
     const { blobUrl, pathname, filename, projectId, bidId, folderName, relativePath } = body;
+    uploadedBlobUrl = blobUrl;
 
     if (!blobUrl || !filename) {
       return NextResponse.json(
@@ -81,27 +109,58 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Download and parse PDF to get page count and dimensions
-    console.log('[blob-complete] Downloading PDF for parsing:', blobUrl);
-    const buffer = await downloadFile(blobUrl);
-
-    const pdfDoc = await PDFDocument.load(buffer);
-    const pageCount = pdfDoc.getPageCount();
-
-    // Get first page dimensions
+    // Get PDF metadata (page count, dimensions)
+    // Use Python API if available (memory efficient), otherwise fallback to pdf-lib
+    let pageCount: number;
     let defaultWidth = 3300; // 11" at 300dpi
     let defaultHeight = 2550; // 8.5" at 300dpi
 
-    if (pageCount > 0) {
-      const firstPage = pdfDoc.getPage(0);
-      const { width, height } = firstPage.getSize();
+    if (pythonApi.isConfigured()) {
+      // Memory efficient: Python fetches PDF and extracts metadata
+      console.log('[blob-complete] Getting PDF metadata via Python API:', blobUrl);
+      const metadata = await pythonApi.metadata({ pdfUrl: blobUrl });
+
+      if (!metadata.success) {
+        throw new Error(`Failed to parse PDF: ${metadata.error}`);
+      }
+
+      pageCount = metadata.pageCount;
+
       // Convert from PDF points (72 DPI) to 300 DPI for better quality
-      const scaleFactor = 300 / 72;
-      defaultWidth = Math.round(width * scaleFactor);
-      defaultHeight = Math.round(height * scaleFactor);
+      if (metadata.width > 0 && metadata.height > 0) {
+        const scaleFactor = 300 / 72;
+        defaultWidth = Math.round(metadata.width * scaleFactor);
+        defaultHeight = Math.round(metadata.height * scaleFactor);
+      }
+    } else {
+      // Fallback: Download PDF and parse with pdf-lib (uses more memory)
+      // Wrap in timeout to prevent hanging on large/complex PDFs
+      console.log('[blob-complete] Python API not configured, falling back to pdf-lib');
+
+      const parsePdf = async () => {
+        const buffer = await downloadFile(blobUrl);
+        const pdfDoc = await PDFDocument.load(buffer);
+        return pdfDoc;
+      };
+
+      const pdfDoc = await withTimeout(
+        parsePdf(),
+        PDF_PARSE_TIMEOUT_MS,
+        'PDF parsing'
+      );
+
+      pageCount = pdfDoc.getPageCount();
+
+      if (pageCount > 0) {
+        const firstPage = pdfDoc.getPage(0);
+        const { width, height } = firstPage.getSize();
+        const scaleFactor = 300 / 72;
+        defaultWidth = Math.round(width * scaleFactor);
+        defaultHeight = Math.round(height * scaleFactor);
+      }
     }
 
-    console.log('[blob-complete] PDF parsed:', { pageCount, defaultWidth, defaultHeight });
+    console.log('[blob-complete] PDF metadata:', { pageCount, defaultWidth, defaultHeight });
 
     let documentId: string | null = null;
     const sheets: any[] = [];
@@ -203,6 +262,16 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error('[blob-complete] Error:', error);
+
+    // Clean up the uploaded blob on failure to avoid orphaned files
+    if (uploadedBlobUrl) {
+      try {
+        console.log('[blob-complete] Cleaning up blob after failure:', uploadedBlobUrl);
+        await deleteFile(uploadedBlobUrl);
+      } catch (cleanupError) {
+        console.error('[blob-complete] Failed to clean up blob:', cleanupError);
+      }
+    }
 
     let message = 'Failed to process PDF';
     if (error instanceof Error) {

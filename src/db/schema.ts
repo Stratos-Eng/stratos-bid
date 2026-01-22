@@ -11,7 +11,9 @@ export const connections = pgTable('connections', {
   status: text('status').notNull().default('active'), // 'active' | 'error' | 'needs_reauth'
   lastSynced: timestamp('last_synced'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  userIdx: index('connections_user_idx').on(table.userId),
+}));
 
 export const bids = pgTable('bids', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -38,7 +40,10 @@ export const bids = pgTable('bids', {
 
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  userIdx: index('bids_user_idx').on(table.userId),
+  statusIdx: index('bids_status_idx').on(table.status),
+}));
 
 export const documents = pgTable('documents', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -64,7 +69,10 @@ export const documents = pgTable('documents', {
   // Thumbnail generation status
   thumbnailsGenerated: boolean('thumbnails_generated').default(false),
   updatedAt: timestamp('updated_at'),
-});
+}, (table) => ({
+  bidIdx: index('documents_bid_idx').on(table.bidId),
+  extractionStatusIdx: index('documents_extraction_status_idx').on(table.extractionStatus),
+}));
 
 export const syncJobs = pgTable('sync_jobs', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -192,7 +200,9 @@ export const takeoffProjects = pgTable('takeoff_projects', {
 
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  userIdx: index('takeoff_projects_user_idx').on(table.userId),
+}));
 
 // Sheets within a takeoff project (PDF pages)
 export const takeoffSheets = pgTable('takeoff_sheets', {

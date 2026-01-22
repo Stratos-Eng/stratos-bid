@@ -6,11 +6,9 @@ import { eq, and } from 'drizzle-orm';
 import path from 'path';
 import fs from 'fs';
 import { renderPageSchema, formatZodError } from '@/lib/validations/takeoff';
+import { pythonApi } from '@/lib/python-api';
 
-// Python serverless function URL (set in environment)
-const PYTHON_RENDER_API_URL = process.env.PYTHON_RENDER_API_URL;
-
-// Try rendering using Python (PyMuPDF) serverless function
+// Try rendering using Python (PyMuPDF) via centralized API client
 async function renderWithPython(
   pdfData: Uint8Array,
   pageNum: number,
@@ -22,7 +20,7 @@ async function renderWithPython(
   height?: number;
   error?: string;
 }> {
-  if (!PYTHON_RENDER_API_URL) {
+  if (!pythonApi.isConfigured()) {
     return { success: false, error: 'Python API URL not configured' };
   }
 
@@ -30,36 +28,25 @@ async function renderWithPython(
     // Convert to base64
     const base64 = Buffer.from(pdfData).toString('base64');
 
-    const response = await fetch(PYTHON_RENDER_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        pdfData: base64,
-        pageNum,
-        scale,
-        returnBase64: true,
-      }),
+    const result = await pythonApi.render({
+      pdfData: base64,
+      pageNum,
+      scale,
+      returnBase64: true,
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      return { success: false, error: errorData.error || 'Python API request failed' };
-    }
-
-    const data = await response.json();
-
-    if (!data.success) {
-      return { success: false, error: data.error || 'Unknown error' };
+    if (!result.success || !result.image) {
+      return { success: false, error: result.error || 'Unknown error' };
     }
 
     // Decode base64 image
-    const imageBuffer = Buffer.from(data.image, 'base64');
+    const imageBuffer = Buffer.from(result.image, 'base64');
 
     return {
       success: true,
       imageBuffer,
-      width: data.width,
-      height: data.height,
+      width: result.width,
+      height: result.height,
     };
   } catch (error) {
     console.error('Python render failed:', error);
@@ -184,6 +171,8 @@ export async function GET(request: NextRequest) {
     }
 
     // Construct file path and verify it exists
+    // NOTE: This route uses local file storage which is deprecated.
+    // Takeoff projects should be migrated to use Vercel Blob storage.
     const uploadsDir = path.join(process.cwd(), 'uploads', 'takeoff', projectId);
     const filePath = path.join(uploadsDir, filename);
 
@@ -194,7 +183,16 @@ export async function GET(request: NextRequest) {
     }
 
     if (!fs.existsSync(filePath)) {
+      // In production, local files don't exist - this is expected
+      if (process.env.NODE_ENV === 'production') {
+        console.warn(`[DEPRECATED] Takeoff render attempted for local file: ${filename}. Local storage is not available in production.`);
+      }
       return NextResponse.json({ error: 'File not found' }, { status: 404 });
+    }
+
+    // Warn about local file usage in production
+    if (process.env.NODE_ENV === 'production') {
+      console.warn(`[DEPRECATED] Using local file storage for takeoff render. Migrate to Blob storage.`);
     }
 
     // Load PDF data

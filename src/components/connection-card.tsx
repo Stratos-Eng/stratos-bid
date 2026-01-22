@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useToast } from '@/components/ui/toast';
 
 interface Platform {
   id: string;
@@ -24,6 +25,7 @@ interface ConnectionCardProps {
 
 export function ConnectionCard({ platform, connection }: ConnectionCardProps) {
   const router = useRouter();
+  const { addToast } = useToast();
   const [isConnecting, setIsConnecting] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [email, setEmail] = useState('');
@@ -87,9 +89,16 @@ export function ConnectionCard({ platform, connection }: ConnectionCardProps) {
         throw new Error('Failed to disconnect');
       }
 
+      addToast({
+        type: 'success',
+        message: `Disconnected from ${platform.name}`
+      });
       router.refresh();
     } catch (err: any) {
-      alert(err.message);
+      addToast({
+        type: 'error',
+        message: err.message || 'Failed to disconnect'
+      });
     }
   };
 
@@ -105,9 +114,15 @@ export function ConnectionCard({ platform, connection }: ConnectionCardProps) {
         throw new Error('Failed to trigger sync');
       }
 
-      alert('Sync started! Refresh in a few minutes to see new bids.');
+      addToast({
+        type: 'success',
+        message: 'Sync started! Refresh in a few minutes to see new bids.'
+      });
     } catch (err: any) {
-      alert(err.message);
+      addToast({
+        type: 'error',
+        message: err.message || 'Failed to trigger sync'
+      });
     }
   };
 

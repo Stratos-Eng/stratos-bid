@@ -119,8 +119,9 @@ export async function POST(request: NextRequest) {
           heightPx: defaultHeight,
           tilesReady: false,
           maxZoomGenerated: -1,
-          // Fallback render URL for legacy/loading state
-          tileUrlTemplate: `/api/takeoff/render?projectId=${projectId}&documentId=${doc.id}&page=${pageNum}`,
+          // Use API tile endpoint - will generate tiles on-demand if not ready
+          // Format includes {z}/{x}/{y} so viewer knows to use XYZ tiles
+          tileUrlTemplate: null, // Set by Inngest job after tiles generated
         })
         .returning();
 

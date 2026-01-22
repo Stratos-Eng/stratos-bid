@@ -17,15 +17,21 @@ import psutil
 import time
 import fitz  # PyMuPDF
 
-# Memory limits - conservative for 512MB Render free tier
-MAX_PDF_SIZE_MB = 100  # Max PDF size in MB (reduced)
+# Memory limits - tuned for Render free tier (512MB RAM)
+# Stream large PDFs to disk and memory-map them to stay under limit
+MAX_PDF_SIZE_MB = 500  # Max PDF size in MB (large construction PDFs)
 MAX_PDF_SIZE_BYTES = MAX_PDF_SIZE_MB * 1024 * 1024
-MEMORY_THRESHOLD_MB = 200  # Trigger cleanup earlier
-MEMORY_CRITICAL_MB = 350  # Reject new requests above this
+MEMORY_THRESHOLD_MB = 250  # Trigger cleanup early on 512MB host
+MEMORY_CRITICAL_MB = 400  # Reject requests before hitting 512MB limit
 
-# Concurrency limit - only process one PDF at a time to prevent memory spikes
+# Lazy-loaded models (declared here to avoid NameError in unload_heavy_models)
+_ocr_reader = None
+_clip_model = None
+
+# Concurrency limit - 1 concurrent PDF for 512MB RAM hosts
+# Each PDF operation may use 100-200MB for rendering, so serialize them
 import asyncio
-_processing_semaphore = asyncio.Semaphore(1)  # Single concurrent PDF processing
+_processing_semaphore = asyncio.Semaphore(1)  # Single concurrent PDF operation
 
 app = FastAPI(
     title="Vector Extractor",
@@ -82,17 +88,64 @@ def cleanup_old_jobs():
         del jobs[k]
 
 
+# === PDF URL Fetching ===
+# NOTE: In-memory PDF caching disabled for 512MB RAM hosts.
+# All PDF fetching now streams to temp files for memory efficiency.
+
+async def fetch_pdf_from_url(url: str) -> bytes:
+    """
+    Fetch PDF from URL into memory. Use only for small PDFs.
+    For large PDFs, use fetch_pdf_to_tempfile() instead.
+    """
+    import httpx
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.content
+
+
+async def fetch_pdf_to_tempfile(url: str) -> str:
+    """
+    Fetch PDF from URL and save to temp file. Returns temp file path.
+    Memory efficient for large PDFs - uses streaming download.
+    Caller is responsible for deleting the temp file.
+    """
+    import httpx
+
+    # Create temp file
+    temp_fd, temp_path = tempfile.mkstemp(suffix='.pdf')
+    fd_closed = False
+
+    try:
+        # Stream download to file to avoid loading into memory
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream('GET', url) as response:
+                response.raise_for_status()
+                with os.fdopen(temp_fd, 'wb') as f:
+                    fd_closed = True  # fdopen takes ownership, will close on exit
+                    async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):  # 1MB chunks
+                        f.write(chunk)
+        return temp_path
+    except Exception:
+        # Clean up on error - only close fd if fdopen didn't take ownership
+        if not fd_closed:
+            os.close(temp_fd)
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
+
+
 @contextmanager
-def open_pdf_safely(pdf_bytes: bytes):
-    """Context manager to safely open and close PDF documents."""
+def open_pdf_from_file(file_path: str):
+    """Context manager to open PDF from file path. Memory efficient via memory-mapping."""
     doc = None
     try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        doc = fitz.open(file_path)  # Memory-mapped, much more efficient
         yield doc
     finally:
         if doc:
             doc.close()
-        # Force cleanup after processing
         cleanup_memory()
 
 
@@ -126,6 +179,92 @@ class SyncExtractionResponse(BaseModel):
     error: Optional[str] = None
 
 
+class SyncExtractionUrlRequest(BaseModel):
+    """Request format for URL-based extraction (memory efficient)."""
+    pdfUrl: str  # URL to fetch PDF from (Vercel Blob)
+    pageNum: int  # 1-indexed page number
+    scale: float = 1.5
+
+
+@app.post("/extract-url", response_model=SyncExtractionResponse)
+async def extract_sync_from_url(request: SyncExtractionUrlRequest):
+    """
+    Synchronous vector extraction via URL.
+
+    Memory-efficient: Streams PDF to temp file then processes.
+    """
+    from .extractor import extract_page_vectors
+
+    # Validate URL
+    if not request.pdfUrl.startswith('https://'):
+        return SyncExtractionResponse(success=False, error="pdfUrl must be an HTTPS URL")
+
+    # Check if memory is critical - reject early
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
+        cleanup_memory()
+        unload_heavy_models()
+        # Re-check after cleanup
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
+            return SyncExtractionResponse(
+                success=False,
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
+            )
+
+    # Use semaphore to limit concurrent PDF processing
+    async with _processing_semaphore:
+        tmp_path = None
+        try:
+            # Check memory before processing
+            if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                cleanup_memory()
+
+            # Stream PDF to temp file (memory efficient)
+            try:
+                tmp_path = await fetch_pdf_to_tempfile(request.pdfUrl)
+            except Exception as e:
+                return SyncExtractionResponse(
+                    success=False,
+                    error=f"Failed to fetch PDF: {str(e)}"
+                )
+
+            # Check file size
+            file_size = os.path.getsize(tmp_path)
+            if file_size > MAX_PDF_SIZE_BYTES:
+                return SyncExtractionResponse(
+                    success=False,
+                    error=f"PDF too large ({file_size / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
+                )
+
+            # Extract vectors (extractor uses the file path directly)
+            result = extract_page_vectors(
+                pdf_path=tmp_path,
+                page_number=request.pageNum - 1,  # Convert to 0-indexed
+                dpi=request.scale * 72,  # Convert scale to DPI
+            )
+
+            return SyncExtractionResponse(
+                success=True,
+                lines=result["lines"],
+                snapPoints=result["snap_points"],
+                rawPathCount=result["stats"]["raw_count"],
+                cleanedPathCount=result["stats"]["cleaned_count"],
+                quality=result["quality"],
+            )
+
+        except Exception as e:
+            return SyncExtractionResponse(
+                success=False,
+                error=str(e)
+            )
+        finally:
+            # Always clean up temp file
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            cleanup_memory()
+
+
 @app.post("/", response_model=SyncExtractionResponse)
 async def extract_sync(request: SyncExtractionRequest):
     """
@@ -133,6 +272,8 @@ async def extract_sync(request: SyncExtractionRequest):
 
     This is the primary endpoint called by /api/takeoff/vectors.
     Accepts base64 PDF data and returns vectors immediately.
+
+    @deprecated Use /extract-url for better memory efficiency.
     """
     from .extractor import extract_page_vectors
 
@@ -227,6 +368,207 @@ async def health():
     return {"status": "ok", "service": "vector-extractor"}
 
 
+# === PDF Metadata Endpoint ===
+
+class MetadataRequest(BaseModel):
+    """Request for PDF metadata."""
+    pdfUrl: str  # URL to fetch PDF from (Vercel Blob)
+
+
+class MetadataResponse(BaseModel):
+    """Response with PDF metadata."""
+    success: bool
+    pageCount: int = 0
+    width: float = 0  # First page width in points
+    height: float = 0  # First page height in points
+    title: Optional[str] = None
+    author: Optional[str] = None
+    error: Optional[str] = None
+
+
+@app.post("/metadata", response_model=MetadataResponse)
+async def get_metadata(request: MetadataRequest):
+    """
+    Get PDF metadata without loading entire document into Node.js memory.
+
+    Fetches PDF from URL (Vercel Blob) and returns:
+    - Page count
+    - First page dimensions (width, height in points)
+    - Document title and author if available
+
+    Memory-efficient: Streams PDF to temp file then memory-maps it,
+    allowing large PDFs on 512MB RAM hosts.
+    """
+    # Validate URL
+    if not request.pdfUrl.startswith('https://'):
+        return MetadataResponse(success=False, error="pdfUrl must be an HTTPS URL")
+
+    # Check if memory is critical - reject early
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
+        cleanup_memory()
+        unload_heavy_models()
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
+            return MetadataResponse(
+                success=False,
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
+            )
+
+    # Use semaphore to limit concurrent PDF processing
+    async with _processing_semaphore:
+        temp_path = None
+        try:
+            # Check memory before processing
+            if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                cleanup_memory()
+
+            # Stream PDF to temp file (memory efficient for large files)
+            try:
+                temp_path = await fetch_pdf_to_tempfile(request.pdfUrl)
+            except Exception as e:
+                return MetadataResponse(
+                    success=False,
+                    error=f"Failed to fetch PDF: {str(e)}"
+                )
+
+            # Check file size
+            file_size = os.path.getsize(temp_path)
+            if file_size > MAX_PDF_SIZE_BYTES:
+                return MetadataResponse(
+                    success=False,
+                    error=f"PDF too large ({file_size / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
+                )
+
+            # Open PDF from file (memory-mapped, very efficient)
+            with open_pdf_from_file(temp_path) as doc:
+                # Get first page dimensions
+                first_page = doc[0] if len(doc) > 0 else None
+                width = first_page.rect.width if first_page else 0
+                height = first_page.rect.height if first_page else 0
+
+                # Get document metadata
+                metadata = doc.metadata
+                title = metadata.get("title") if metadata else None
+                author = metadata.get("author") if metadata else None
+
+                return MetadataResponse(
+                    success=True,
+                    pageCount=len(doc),
+                    width=width,
+                    height=height,
+                    title=title if title else None,
+                    author=author if author else None,
+                )
+
+        except Exception as e:
+            cleanup_memory()
+            return MetadataResponse(
+                success=False,
+                error=str(e)
+            )
+        finally:
+            # Always clean up temp file
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+
+# === Pages Info Endpoint ===
+
+class PageInfoItem(BaseModel):
+    """Info for a single page."""
+    pageNum: int  # 1-indexed
+    width: float  # Width in points
+    height: float  # Height in points
+    rotation: int  # Rotation in degrees
+
+
+class PagesInfoResponse(BaseModel):
+    """Response with info for all pages."""
+    success: bool
+    pageCount: int = 0
+    pages: list[PageInfoItem] = []
+    error: Optional[str] = None
+
+
+@app.post("/pages-info", response_model=PagesInfoResponse)
+async def get_pages_info(request: MetadataRequest):
+    """
+    Get detailed info for all pages of a PDF.
+
+    Returns page count and dimensions for each page.
+    Memory-efficient: Streams to temp file then memory-maps.
+    """
+    # Validate URL
+    if not request.pdfUrl.startswith('https://'):
+        return PagesInfoResponse(success=False, error="pdfUrl must be an HTTPS URL")
+
+    # Check if memory is critical - reject early
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
+        cleanup_memory()
+        unload_heavy_models()
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
+            return PagesInfoResponse(
+                success=False,
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
+            )
+
+    # Use semaphore to limit concurrent PDF processing
+    async with _processing_semaphore:
+        temp_path = None
+        try:
+            # Check memory before processing
+            if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                cleanup_memory()
+
+            # Stream PDF to temp file
+            try:
+                temp_path = await fetch_pdf_to_tempfile(request.pdfUrl)
+            except Exception as e:
+                return PagesInfoResponse(
+                    success=False,
+                    error=f"Failed to fetch PDF: {str(e)}"
+                )
+
+            # Check file size
+            file_size = os.path.getsize(temp_path)
+            if file_size > MAX_PDF_SIZE_BYTES:
+                return PagesInfoResponse(
+                    success=False,
+                    error=f"PDF too large ({file_size / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
+                )
+
+            # Open PDF from file (memory-mapped)
+            with open_pdf_from_file(temp_path) as doc:
+                pages = []
+                for i in range(len(doc)):
+                    page = doc[i]
+                    pages.append(PageInfoItem(
+                        pageNum=i + 1,
+                        width=page.rect.width,
+                        height=page.rect.height,
+                        rotation=page.rotation,
+                    ))
+
+                return PagesInfoResponse(
+                    success=True,
+                    pageCount=len(doc),
+                    pages=pages,
+                )
+
+        except Exception as e:
+            cleanup_memory()
+            return PagesInfoResponse(
+                success=False,
+                error=str(e)
+            )
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+
 @app.get("/memory")
 async def memory_stats():
     """Get memory usage statistics for debugging."""
@@ -289,7 +631,7 @@ async def render_page(request: RenderRequest):
     """
     Render a PDF page to a PNG image using PyMuPDF.
 
-    Fetches PDF from URL (Vercel Blob) to minimize memory usage.
+    Memory-efficient: Streams PDF to temp file then memory-maps.
     Returns a base64-encoded PNG image.
     """
     # Validate URL
@@ -310,29 +652,31 @@ async def render_page(request: RenderRequest):
 
     # Use semaphore to limit concurrent PDF processing
     async with _processing_semaphore:
+        temp_path = None
         try:
             # Check memory before processing
             if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
                 cleanup_memory()
 
-            # Fetch PDF from URL
+            # Stream PDF to temp file
             try:
-                pdf_bytes = await fetch_pdf_from_url(request.pdfUrl)
+                temp_path = await fetch_pdf_to_tempfile(request.pdfUrl)
             except Exception as e:
                 return RenderResponse(
                     success=False,
                     error=f"Failed to fetch PDF: {str(e)}"
                 )
 
-            # Check PDF size
-            if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
+            # Check file size
+            file_size = os.path.getsize(temp_path)
+            if file_size > MAX_PDF_SIZE_BYTES:
                 return RenderResponse(
                     success=False,
-                    error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
+                    error=f"PDF too large ({file_size / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
                 )
 
-            # Use context manager for safe cleanup
-            with open_pdf_safely(pdf_bytes) as doc:
+            # Open PDF from file (memory-mapped)
+            with open_pdf_from_file(temp_path) as doc:
                 # Validate page number (1-indexed from API, 0-indexed internally)
                 page_index = request.pageNum - 1
                 if page_index < 0 or page_index >= len(doc):
@@ -375,6 +719,9 @@ async def render_page(request: RenderRequest):
                 success=False,
                 error=str(e)
             )
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
 
 
 # === Tile Rendering Endpoint ===
@@ -396,59 +743,6 @@ class TileResponse(BaseModel):
     error: Optional[str] = None
 
 
-# Cache for fetched PDFs (simple LRU with max size)
-_pdf_cache: dict[str, bytes] = {}
-_pdf_cache_order: list[str] = []
-PDF_CACHE_MAX_SIZE = 3  # Keep last 3 PDFs in memory
-
-
-def get_cached_pdf(url: str) -> bytes | None:
-    """Get PDF from cache if available."""
-    return _pdf_cache.get(url)
-
-
-def cache_pdf(url: str, data: bytes):
-    """Cache PDF data with LRU eviction."""
-    global _pdf_cache, _pdf_cache_order
-
-    # Don't cache very large PDFs (>20MB)
-    if len(data) > 20 * 1024 * 1024:
-        return
-
-    # Remove from order if already exists
-    if url in _pdf_cache_order:
-        _pdf_cache_order.remove(url)
-
-    # Evict oldest if at capacity
-    while len(_pdf_cache_order) >= PDF_CACHE_MAX_SIZE:
-        oldest = _pdf_cache_order.pop(0)
-        del _pdf_cache[oldest]
-
-    _pdf_cache[url] = data
-    _pdf_cache_order.append(url)
-
-
-async def fetch_pdf_from_url(url: str) -> bytes:
-    """Fetch PDF from URL with caching."""
-    import httpx
-
-    # Check cache first
-    cached = get_cached_pdf(url)
-    if cached:
-        return cached
-
-    # Fetch from URL
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.get(url)
-        response.raise_for_status()
-        data = response.content
-
-    # Cache for future requests
-    cache_pdf(url, data)
-
-    return data
-
-
 @app.post("/tile", response_model=TileResponse)
 async def render_tile(request: TileRequest):
     """
@@ -460,8 +754,7 @@ async def render_tile(request: TileRequest):
     - z=2: 4x4 grid (16 tiles)
     - etc.
 
-    Fetches PDF from URL (Vercel Blob) instead of receiving base64 data.
-    This keeps memory usage low regardless of PDF size.
+    Memory-efficient: Streams PDF to temp file then memory-maps.
     """
     # Validate zoom level
     if request.z < 0 or request.z > 4:
@@ -485,23 +778,25 @@ async def render_tile(request: TileRequest):
 
     # Use semaphore to limit concurrent processing
     async with _processing_semaphore:
+        temp_path = None
         try:
             if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
                 cleanup_memory()
 
-            # Fetch PDF from URL
+            # Stream PDF to temp file
             try:
-                pdf_bytes = await fetch_pdf_from_url(request.pdfUrl)
+                temp_path = await fetch_pdf_to_tempfile(request.pdfUrl)
             except Exception as e:
                 return TileResponse(success=False, error=f"Failed to fetch PDF: {str(e)}")
 
-            if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
+            file_size = os.path.getsize(temp_path)
+            if file_size > MAX_PDF_SIZE_BYTES:
                 return TileResponse(
                     success=False,
-                    error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB)"
+                    error=f"PDF too large ({file_size / 1024 / 1024:.1f}MB)"
                 )
 
-            with open_pdf_safely(pdf_bytes) as doc:
+            with open_pdf_from_file(temp_path) as doc:
                 page_index = request.pageNum - 1
                 if page_index < 0 or page_index >= len(doc):
                     return TileResponse(
@@ -568,6 +863,9 @@ async def render_tile(request: TileRequest):
         except Exception as e:
             cleanup_memory()
             return TileResponse(success=False, error=str(e))
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
 
 
 # === Text Extraction Endpoint ===
@@ -592,15 +890,22 @@ class TextExtractionResponse(BaseModel):
     error: Optional[str] = None
 
 
-@app.post("/text", response_model=TextExtractionResponse)
-async def extract_text(request: TextExtractionRequest):
-    """
-    Extract text from all pages of a PDF.
+class TextExtractionUrlRequest(BaseModel):
+    """Request for extracting text from PDF via URL."""
+    pdfUrl: str  # URL to fetch PDF from (Vercel Blob)
 
-    Uses PyMuPDF's text extraction which works well for PDFs with
-    embedded text (CAD exports, digital documents). Pages with very
-    little text (<50 chars) are flagged as needing OCR.
+
+@app.post("/text-url", response_model=TextExtractionResponse)
+async def extract_text_from_url(request: TextExtractionUrlRequest):
     """
+    Extract text from all pages of a PDF via URL.
+
+    Memory-efficient: Streams PDF to temp file then memory-maps.
+    """
+    # Validate URL
+    if not request.pdfUrl.startswith('https://'):
+        return TextExtractionResponse(success=False, error="pdfUrl must be an HTTPS URL")
+
     # Check if memory is critical - reject early
     is_critical, mem_mb = check_memory_critical()
     if is_critical:
@@ -615,29 +920,31 @@ async def extract_text(request: TextExtractionRequest):
 
     # Use semaphore to limit concurrent PDF processing
     async with _processing_semaphore:
+        temp_path = None
         try:
             # Check memory before processing
             if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
                 cleanup_memory()
 
-            # Decode base64 PDF data
+            # Stream PDF to temp file
             try:
-                pdf_bytes = base64.b64decode(request.pdfData)
+                temp_path = await fetch_pdf_to_tempfile(request.pdfUrl)
             except Exception as e:
                 return TextExtractionResponse(
                     success=False,
-                    error=f"Invalid base64 PDF data: {str(e)}"
+                    error=f"Failed to fetch PDF: {str(e)}"
                 )
 
-            # Check PDF size
-            if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
+            # Check file size
+            file_size = os.path.getsize(temp_path)
+            if file_size > MAX_PDF_SIZE_BYTES:
                 return TextExtractionResponse(
                     success=False,
-                    error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
+                    error=f"PDF too large ({file_size / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
                 )
 
-            # Use context manager for safe cleanup
-            with open_pdf_safely(pdf_bytes) as doc:
+            # Open PDF from file (memory-mapped)
+            with open_pdf_from_file(temp_path) as doc:
                 pages = []
                 for i in range(len(doc)):
                     page = doc[i]
@@ -664,6 +971,97 @@ async def extract_text(request: TextExtractionRequest):
                 success=False,
                 error=str(e)
             )
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+
+@app.post("/text", response_model=TextExtractionResponse)
+async def extract_text(request: TextExtractionRequest):
+    """
+    Extract text from all pages of a PDF.
+
+    Uses PyMuPDF's text extraction which works well for PDFs with
+    embedded text (CAD exports, digital documents). Pages with very
+    little text (<50 chars) are flagged as needing OCR.
+
+    @deprecated Use /text-url for better memory efficiency.
+    """
+    # Check if memory is critical - reject early
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
+        cleanup_memory()
+        unload_heavy_models()
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
+            return TextExtractionResponse(
+                success=False,
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
+            )
+
+    # Use semaphore to limit concurrent PDF processing
+    async with _processing_semaphore:
+        temp_path = None
+        try:
+            # Check memory before processing
+            if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                cleanup_memory()
+
+            # Decode base64 PDF data
+            try:
+                pdf_bytes = base64.b64decode(request.pdfData)
+            except Exception as e:
+                return TextExtractionResponse(
+                    success=False,
+                    error=f"Invalid base64 PDF data: {str(e)}"
+                )
+
+            # Check PDF size
+            if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
+                return TextExtractionResponse(
+                    success=False,
+                    error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
+                )
+
+            # Write to temp file for memory-efficient processing
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(pdf_bytes)
+                temp_path = tmp.name
+
+            # Clear pdf_bytes from memory immediately
+            del pdf_bytes
+
+            # Open from file (memory-mapped)
+            with open_pdf_from_file(temp_path) as doc:
+                pages = []
+                for i in range(len(doc)):
+                    page = doc[i]
+                    text = page.get_text()
+
+                    # Flag pages with very little text as needing OCR
+                    needs_ocr = len(text.strip()) < 50
+
+                    pages.append(PageTextResult(
+                        page=i + 1,  # 1-indexed
+                        text=text,
+                        needsOcr=needs_ocr,
+                    ))
+
+                return TextExtractionResponse(
+                    success=True,
+                    pages=pages,
+                    totalPages=len(pages),
+                )
+
+        except Exception as e:
+            cleanup_memory()
+            return TextExtractionResponse(
+                success=False,
+                error=str(e)
+            )
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
 
 
 # === Region Crop Endpoint ===
@@ -687,13 +1085,28 @@ class CropResponse(BaseModel):
     error: Optional[str] = None
 
 
-@app.post("/crop", response_model=CropResponse)
-async def crop_region(request: CropRequest):
+class CropUrlRequest(BaseModel):
+    """Request for cropping a region from a PDF page via URL."""
+    pdfUrl: str   # URL to fetch PDF from (Vercel Blob)
+    pageNum: int  # 1-indexed page number
+    x: float      # Center X coordinate (normalized 0-1)
+    y: float      # Center Y coordinate (normalized 0-1)
+    width: float = 100   # Width in pixels at 150 DPI
+    height: float = 100  # Height in pixels at 150 DPI
+
+
+@app.post("/crop-url", response_model=CropResponse)
+async def crop_region_from_url(request: CropUrlRequest):
     """
-    Crop a region from a PDF page around the specified coordinates.
+    Crop a region from a PDF page via URL.
 
     Input coordinates are normalized (0-1), output is a base64 PNG.
+    Memory-efficient: Streams PDF to temp file then memory-maps.
     """
+    # Validate URL
+    if not request.pdfUrl.startswith('https://'):
+        return CropResponse(success=False, error="pdfUrl must be an HTTPS URL")
+
     # Check if memory is critical - reject early
     is_critical, mem_mb = check_memory_critical()
     if is_critical:
@@ -708,26 +1121,28 @@ async def crop_region(request: CropRequest):
 
     # Use semaphore to limit concurrent PDF processing
     async with _processing_semaphore:
+        temp_path = None
         try:
             # Check memory before processing
             if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
                 cleanup_memory()
 
-            # Decode base64 PDF data
+            # Stream PDF to temp file
             try:
-                pdf_bytes = base64.b64decode(request.pdfData)
+                temp_path = await fetch_pdf_to_tempfile(request.pdfUrl)
             except Exception as e:
-                return CropResponse(success=False, error=f"Invalid base64 PDF data: {str(e)}")
+                return CropResponse(success=False, error=f"Failed to fetch PDF: {str(e)}")
 
-            # Check PDF size
-            if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
+            # Check file size
+            file_size = os.path.getsize(temp_path)
+            if file_size > MAX_PDF_SIZE_BYTES:
                 return CropResponse(
                     success=False,
-                    error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
+                    error=f"PDF too large ({file_size / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
                 )
 
-            # Use context manager for safe cleanup
-            with open_pdf_safely(pdf_bytes) as doc:
+            # Open PDF from file (memory-mapped)
+            with open_pdf_from_file(temp_path) as doc:
                 # Validate page number
                 page_index = request.pageNum - 1
                 if page_index < 0 or page_index >= len(doc):
@@ -783,12 +1198,124 @@ async def crop_region(request: CropRequest):
         except Exception as e:
             cleanup_memory()
             return CropResponse(success=False, error=str(e))
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+
+@app.post("/crop", response_model=CropResponse)
+async def crop_region(request: CropRequest):
+    """
+    Crop a region from a PDF page around the specified coordinates.
+
+    Input coordinates are normalized (0-1), output is a base64 PNG.
+
+    @deprecated Use /crop-url for better memory efficiency.
+    """
+    # Check if memory is critical - reject early
+    is_critical, mem_mb = check_memory_critical()
+    if is_critical:
+        cleanup_memory()
+        unload_heavy_models()
+        is_critical, mem_mb = check_memory_critical()
+        if is_critical:
+            return CropResponse(
+                success=False,
+                error=f"Server under high memory pressure ({mem_mb:.0f}MB). Please retry in a moment."
+            )
+
+    # Use semaphore to limit concurrent PDF processing
+    async with _processing_semaphore:
+        temp_path = None
+        try:
+            # Check memory before processing
+            if get_memory_usage_mb() > MEMORY_THRESHOLD_MB:
+                cleanup_memory()
+
+            # Decode base64 PDF data
+            try:
+                pdf_bytes = base64.b64decode(request.pdfData)
+            except Exception as e:
+                return CropResponse(success=False, error=f"Invalid base64 PDF data: {str(e)}")
+
+            # Check PDF size
+            if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
+                return CropResponse(
+                    success=False,
+                    error=f"PDF too large ({len(pdf_bytes) / 1024 / 1024:.1f}MB). Max size is {MAX_PDF_SIZE_MB}MB."
+                )
+
+            # Write to temp file for memory-efficient processing
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(pdf_bytes)
+                temp_path = tmp.name
+
+            # Clear pdf_bytes from memory immediately
+            del pdf_bytes
+
+            # Open from file (memory-mapped)
+            with open_pdf_from_file(temp_path) as doc:
+                # Validate page number
+                page_index = request.pageNum - 1
+                if page_index < 0 or page_index >= len(doc):
+                    return CropResponse(
+                        success=False,
+                        error=f"Invalid page number. Document has {len(doc)} pages."
+                    )
+
+                page = doc[page_index]
+
+                # Get page dimensions
+                page_rect = page.rect
+                page_width = page_rect.width
+                page_height = page_rect.height
+
+                # Convert normalized coordinates to page coordinates
+                center_x = request.x * page_width
+                center_y = request.y * page_height
+
+                # Calculate crop rectangle (in PDF points)
+                dpi_scale = 72 / 150
+                half_width = (request.width / 2) * dpi_scale
+                half_height = (request.height / 2) * dpi_scale
+
+                # Create clip rectangle
+                clip_rect = fitz.Rect(
+                    max(0, center_x - half_width),
+                    max(0, center_y - half_height),
+                    min(page_width, center_x + half_width),
+                    min(page_height, center_y + half_height)
+                )
+
+                # Render the cropped region at 150 DPI
+                mat = fitz.Matrix(150 / 72, 150 / 72)
+                pix = page.get_pixmap(matrix=mat, clip=clip_rect, alpha=False)
+
+                # Convert to PNG bytes
+                png_bytes = pix.tobytes("png")
+                image_b64 = base64.b64encode(png_bytes).decode("utf-8")
+
+                result = CropResponse(
+                    success=True,
+                    image=image_b64,
+                    width=pix.width,
+                    height=pix.height,
+                )
+
+                del pix
+                del png_bytes
+
+                return result
+
+        except Exception as e:
+            cleanup_memory()
+            return CropResponse(success=False, error=str(e))
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
 
 
 # === OCR Endpoint ===
-
-# Lazy-load OCR reader to avoid startup delay
-_ocr_reader = None
 
 def get_ocr_reader():
     global _ocr_reader
@@ -889,9 +1416,6 @@ async def ocr_image(request: OcrRequest):
 
 
 # === CLIP Embedding Endpoint ===
-
-# Lazy-load CLIP model to avoid startup delay
-_clip_model = None
 
 def get_clip_model():
     global _clip_model

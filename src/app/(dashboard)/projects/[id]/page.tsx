@@ -13,6 +13,7 @@ import { SearchPanel } from "@/components/projects/search-panel"
 import { SymbolSearchResults } from "@/components/projects/symbol-search-results"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { useToast } from "@/components/ui/toast"
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -64,6 +65,7 @@ export default function ProjectPage() {
   // Local UI state
   const [filmstripCollapsed, setFilmstripCollapsed] = useState(false)
   const [highlightTerms, setHighlightTerms] = useState<string[]>([])
+  const { addToast } = useToast()
 
   // Symbol picker state
   const [symbolPickerMode, setSymbolPickerMode] = useState(false)
@@ -312,16 +314,26 @@ export default function ProjectPage() {
       })
       if (res.ok) {
         mutate()
+        addToast({
+          type: 'success',
+          message: 'Extraction started'
+        })
       } else {
         const data = await res.json()
-        alert(data.error || "Failed to start extraction")
+        addToast({
+          type: 'error',
+          message: data.error || "Failed to start extraction"
+        })
       }
     } catch (err) {
-      alert("Failed to start extraction")
+      addToast({
+        type: 'error',
+        message: "Failed to start extraction"
+      })
     } finally {
       setExtracting(false)
     }
-  }, [projectId, mutate])
+  }, [projectId, mutate, addToast])
 
   if (error) {
     return (

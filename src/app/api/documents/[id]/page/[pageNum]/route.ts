@@ -9,11 +9,28 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { randomUUID } from 'crypto';
 import { downloadFile, isBlobUrl } from '@/lib/storage';
+import { pythonApi, PythonApiNotConfiguredError } from '@/lib/python-api';
 
 const execFileAsync = promisify(execFile);
 const unlinkAsync = promisify(fs.unlink);
 const readFileAsync = promisify(fs.readFile);
 const writeFileAsync = promisify(fs.writeFile);
+
+/**
+ * Safely cleanup temp files
+ */
+async function cleanupTempFiles(...files: (string | null | undefined)[]): Promise<void> {
+  for (const file of files) {
+    if (file) {
+      try {
+        await unlinkAsync(file);
+      } catch (err) {
+        // Log but don't throw - cleanup failures shouldn't affect the response
+        console.warn(`Failed to cleanup temp file ${file}:`, err);
+      }
+    }
+  }
+}
 
 // GET /api/documents/[id]/page/[pageNum] - Render a specific PDF page as an image
 export async function GET(
@@ -68,14 +85,49 @@ export async function GET(
       );
     }
 
-    // Prepare the PDF file for rendering
+    // For Blob URLs with Python API configured, use URL-based rendering (memory efficient)
+    // Python fetches the PDF directly, avoiding Node.js memory usage
+    if (isBlobUrl(storagePath) && pythonApi.isConfigured()) {
+      try {
+        const result = await pythonApi.render({
+          pdfUrl: storagePath,  // Pass URL directly - Python fetches it
+          pageNum: pageNum,
+          scale: scale,
+          returnBase64: true,
+        });
+
+        if (result.success && result.image) {
+          const imageBuffer = Buffer.from(result.image, 'base64');
+          return new NextResponse(new Uint8Array(imageBuffer), {
+            headers: {
+              'Content-Type': 'image/png',
+              'Cache-Control': 'public, max-age=86400',
+            },
+          });
+        }
+
+        return NextResponse.json(
+          { error: result.error || 'Failed to render PDF page' },
+          { status: 500 }
+        );
+      } catch (error) {
+        console.error('Python render service failed:', error);
+        return NextResponse.json(
+          { error: 'Failed to render PDF page' },
+          { status: 500 }
+        );
+      }
+    }
+
+    // For local files or when Python API is not configured, use local rendering
     let pdfPath: string;
-    let tempPdfPath: string | null = null;
 
     if (isBlobUrl(storagePath)) {
-      // Download Blob to temp file for rendering
+      // Python API not configured - need to download and use local renderer
+      // This path should rarely be hit in production
+      console.warn('[page-render] Python API not configured, falling back to local rendering');
       const buffer = await downloadFile(storagePath);
-      tempPdfPath = path.join('/tmp', `pdf-download-${randomUUID()}.pdf`);
+      const tempPdfPath = path.join('/tmp', `pdf-download-${randomUUID()}.pdf`);
       await writeFileAsync(tempPdfPath, buffer);
       pdfPath = tempPdfPath;
     } else {
@@ -100,12 +152,12 @@ export async function GET(
       }
     }
 
-    // Use pdftoppm to render the page (much more reliable than pdf.js with node-canvas)
+    // Use pdftoppm to render the page (local development only)
     const tempPrefix = path.join('/tmp', `pdf-page-${randomUUID()}`);
     const tempFile = `${tempPrefix}.png`;
+    const tempPdfPath = isBlobUrl(storagePath) ? pdfPath : null;
 
     try {
-      // Try pdftoppm first (local only, not available on Vercel)
       let imageBuffer: Buffer | null = null;
 
       try {
@@ -118,39 +170,33 @@ export async function GET(
           pdfPath,
           tempPrefix
         ], {
-          timeout: 30000 // 30 second timeout
+          timeout: 30000
         });
         imageBuffer = await readFileAsync(tempFile);
-        unlinkAsync(tempFile).catch(() => {});
       } catch {
-        // pdftoppm not available (serverless) - try Python service
-        const pythonApiUrl = process.env.PYTHON_VECTOR_API_URL || 'http://localhost:8001';
-        const pdfBuffer = await readFileAsync(pdfPath);
-        const pdfBase64 = pdfBuffer.toString('base64');
+        // pdftoppm not available - try Python with base64 data
+        if (pythonApi.isConfigured()) {
+          try {
+            const pdfBuffer = await readFileAsync(pdfPath);
+            const pdfBase64 = pdfBuffer.toString('base64');
 
-        const response = await fetch(`${pythonApiUrl}/render`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            pdfData: pdfBase64,
-            pageNum: pageNum,
-            scale: scale,
-            returnBase64: true,
-          }),
-        });
+            const result = await pythonApi.render({
+              pdfData: pdfBase64,
+              pageNum: pageNum,
+              scale: scale,
+              returnBase64: true,
+            });
 
-        if (response.ok) {
-          const result = await response.json();
-          if (result.success && result.image) {
-            imageBuffer = Buffer.from(result.image, 'base64');
+            if (result.success && result.image) {
+              imageBuffer = Buffer.from(result.image, 'base64');
+            }
+          } catch (pythonError) {
+            console.error('Python render service failed:', pythonError);
           }
         }
       }
 
-      // Clean up temp PDF if we downloaded it
-      if (tempPdfPath) {
-        unlinkAsync(tempPdfPath).catch(() => {});
-      }
+      await cleanupTempFiles(tempFile, tempPdfPath);
 
       if (!imageBuffer) {
         return NextResponse.json(
@@ -159,19 +205,14 @@ export async function GET(
         );
       }
 
-      // Return the image
       return new NextResponse(new Uint8Array(imageBuffer), {
         headers: {
           'Content-Type': 'image/png',
-          'Cache-Control': 'public, max-age=86400', // Cache for 1 day
+          'Cache-Control': 'public, max-age=86400',
         },
       });
     } catch (renderError) {
-      // Clean up temp files on error
-      unlinkAsync(tempFile).catch(() => {});
-      if (tempPdfPath) {
-        unlinkAsync(tempPdfPath).catch(() => {});
-      }
+      await cleanupTempFiles(tempFile, tempPdfPath);
       console.error('Page render error:', renderError);
       return NextResponse.json(
         { error: 'Failed to render PDF page' },

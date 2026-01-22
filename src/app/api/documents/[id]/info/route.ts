@@ -8,6 +8,7 @@ import fs from 'fs';
 import { getDocumentProxy } from 'unpdf';
 import { downloadFile, isBlobUrl } from '@/lib/storage';
 import { getAllThumbnailUrls } from '@/lib/thumbnail-generator';
+import { pythonApi } from '@/lib/python-api';
 
 interface PageInfo {
   width: number;
@@ -52,46 +53,64 @@ export async function GET(
 
     if (storagePath) {
       try {
-        let data: Uint8Array;
+        // Use Python API for Blob URLs (memory efficient)
+        if (isBlobUrl(storagePath) && pythonApi.isConfigured()) {
+          const pagesInfoResult = await pythonApi.pagesInfo({ pdfUrl: storagePath });
 
-        if (isBlobUrl(storagePath)) {
-          // Download from Vercel Blob
-          const buffer = await downloadFile(storagePath);
-          data = new Uint8Array(buffer);
+          if (pagesInfoResult.success) {
+            pageCount = pagesInfoResult.pageCount;
+            for (const pageInfo of pagesInfoResult.pages) {
+              pages.push({
+                width: pageInfo.width,
+                height: pageInfo.height,
+                rotation: pageInfo.rotation,
+                // Note: Python doesn't extract page labels yet
+              });
+            }
+          } else {
+            throw new Error(pagesInfoResult.error || 'Failed to get pages info');
+          }
         } else {
-          // Read from local file system
-          let resolvedPath = storagePath;
-          if (!path.isAbsolute(resolvedPath)) {
-            resolvedPath = path.join(process.cwd(), resolvedPath);
+          // Fallback: Download and parse with unpdf (local files or no Python API)
+          let data: Uint8Array;
+
+          if (isBlobUrl(storagePath)) {
+            const buffer = await downloadFile(storagePath);
+            data = new Uint8Array(buffer);
+          } else {
+            let resolvedPath = storagePath;
+            if (!path.isAbsolute(resolvedPath)) {
+              resolvedPath = path.join(process.cwd(), resolvedPath);
+            }
+            if (!fs.existsSync(resolvedPath)) {
+              throw new Error(`File not found: ${resolvedPath}`);
+            }
+            data = new Uint8Array(fs.readFileSync(resolvedPath));
           }
-          if (!fs.existsSync(resolvedPath)) {
-            throw new Error(`File not found: ${resolvedPath}`);
+
+          // Use unpdf which works in serverless environments
+          const pdfDocument = await getDocumentProxy(data);
+          pageCount = pdfDocument.numPages;
+
+          // Try to get page labels (e.g., "A1.1", "S-101")
+          let pageLabels: string[] | null = null;
+          try {
+            pageLabels = await pdfDocument.getPageLabels();
+          } catch {
+            // Page labels not available
           }
-          data = new Uint8Array(fs.readFileSync(resolvedPath));
-        }
 
-        // Use unpdf which works in serverless environments
-        const pdfDocument = await getDocumentProxy(data);
-        pageCount = pdfDocument.numPages;
-
-        // Try to get page labels (e.g., "A1.1", "S-101")
-        let pageLabels: string[] | null = null;
-        try {
-          pageLabels = await pdfDocument.getPageLabels();
-        } catch {
-          // Page labels not available
-        }
-
-        // Get dimensions for each page
-        for (let i = 1; i <= pageCount; i++) {
-          const page = await pdfDocument.getPage(i);
-          const viewport = page.getViewport({ scale: 1.0 });
-          pages.push({
-            width: viewport.width,
-            height: viewport.height,
-            rotation: viewport.rotation || 0,
-            label: pageLabels?.[i - 1] || undefined,
-          });
+          // Get dimensions for each page
+          for (let i = 1; i <= pageCount; i++) {
+            const page = await pdfDocument.getPage(i);
+            const viewport = page.getViewport({ scale: 1.0 });
+            pages.push({
+              width: viewport.width,
+              height: viewport.height,
+              rotation: viewport.rotation || 0,
+              label: pageLabels?.[i - 1] || undefined,
+            });
+          }
         }
 
         // Update page count in database if needed

@@ -8,7 +8,7 @@ import fs from 'fs';
 import { getDocumentProxy } from 'unpdf';
 import * as pdfjs from 'unpdf/pdfjs';
 import { extractVectorsSchema, getVectorsSchema, formatZodError } from '@/lib/validations/takeoff';
-import { downloadFile, isBlobUrl } from '@/lib/storage';
+import { isBlobUrl } from '@/lib/storage';
 
 // OPS constants for PDF operator list (moveTo, lineTo, etc.)
 const OPS = pdfjs.OPS;
@@ -237,8 +237,9 @@ function assessQuality(rawCount: number, cleanedCount: number): string {
 }
 
 // Try extracting vectors using Python (PyMuPDF) serverless function
+// Uses URL-based extraction when possible for memory efficiency
 async function extractVectorsWithPython(
-  pdfData: Uint8Array,
+  pdfDataOrUrl: Uint8Array | string,  // Uint8Array for local files, URL string for Blob
   pageNum: number,
   scale: number = 1.5
 ): Promise<{
@@ -255,17 +256,32 @@ async function extractVectorsWithPython(
   }
 
   try {
-    // Convert to base64
-    const base64 = Buffer.from(pdfData).toString('base64');
+    let body: Record<string, unknown>;
+    let endpoint: string;
 
-    const response = await fetch(PYTHON_VECTOR_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    if (typeof pdfDataOrUrl === 'string') {
+      // URL-based extraction (memory efficient for Blob URLs)
+      endpoint = `${PYTHON_VECTOR_API_URL}/extract-url`;
+      body = {
+        pdfUrl: pdfDataOrUrl,
+        pageNum,
+        scale,
+      };
+    } else {
+      // Base64-based extraction (for local files)
+      endpoint = PYTHON_VECTOR_API_URL;
+      const base64 = Buffer.from(pdfDataOrUrl).toString('base64');
+      body = {
         pdfData: base64,
         pageNum,
         scale,
-      }),
+      };
+    }
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
@@ -331,18 +347,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Sheet not found' }, { status: 404 });
     }
 
-    // Find the PDF file and load data
-    let pdfData: Uint8Array;
+    // Find the PDF file - prefer URL-based access for memory efficiency
     const storagePath = sheet.document?.storagePath;
+    let pdfDataOrUrl: Uint8Array | string;
+    let useBlobUrl = false;
 
     if (storagePath) {
       // Document has storage path - could be local or Blob URL
       if (isBlobUrl(storagePath)) {
-        // Download from Vercel Blob
-        const buffer = await downloadFile(storagePath);
-        pdfData = new Uint8Array(buffer);
+        // For Blob URLs, pass URL directly to Python (memory efficient)
+        pdfDataOrUrl = storagePath;
+        useBlobUrl = true;
       } else {
-        // Local file
+        // Local file - must load into memory
         let filePath = storagePath;
         if (!path.isAbsolute(filePath)) {
           filePath = path.join(process.cwd(), 'uploads', filePath);
@@ -350,7 +367,7 @@ export async function POST(request: NextRequest) {
         if (!fs.existsSync(filePath)) {
           return NextResponse.json({ error: 'PDF file not found' }, { status: 404 });
         }
-        pdfData = new Uint8Array(fs.readFileSync(filePath));
+        pdfDataOrUrl = new Uint8Array(fs.readFileSync(filePath));
       }
     } else {
       // Check takeoff uploads directory (local only)
@@ -363,7 +380,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'PDF file not found' }, { status: 404 });
       }
       const filePath = path.join(uploadsDir, files[0]);
-      pdfData = new Uint8Array(fs.readFileSync(filePath));
+      pdfDataOrUrl = new Uint8Array(fs.readFileSync(filePath));
     }
     const pageNum = sheet.sheet.pageNumber || 1;
     const renderScale = 1.5; // Match render API scale
@@ -376,7 +393,8 @@ export async function POST(request: NextRequest) {
     let extractionMethod = 'pdfjs';
 
     // Try Python (PyMuPDF) extraction first if configured
-    const pythonResult = await extractVectorsWithPython(pdfData, pageNum, renderScale);
+    // Uses URL-based extraction for Blob URLs (memory efficient)
+    const pythonResult = await extractVectorsWithPython(pdfDataOrUrl, pageNum, renderScale);
 
     if (pythonResult.success && pythonResult.lines && pythonResult.snapPoints) {
       // Use Python extraction results
@@ -387,11 +405,12 @@ export async function POST(request: NextRequest) {
       quality = pythonResult.quality || assessQuality(rawCount, cleanedCount);
       extractionMethod = 'pymupdf';
       console.log(`Vector extraction using PyMuPDF: ${snapPoints.length} snap points, ${lines.length} lines`);
-    } else {
+    } else if (!useBlobUrl && typeof pdfDataOrUrl !== 'string') {
       // Fallback to unpdf extraction (serverless compatible)
+      // Only available for local files where we have the data
       console.log(`Python extraction failed (${pythonResult.error}), falling back to unpdf`);
 
-      const pdfDocument = await getDocumentProxy(pdfData);
+      const pdfDocument = await getDocumentProxy(pdfDataOrUrl);
 
       if (pageNum > pdfDocument.numPages) {
         return NextResponse.json({ error: 'Invalid page number' }, { status: 400 });
@@ -405,6 +424,14 @@ export async function POST(request: NextRequest) {
       rawCount = pdfJsResult.rawCount;
       cleanedCount = pdfJsResult.cleanedCount;
       quality = assessQuality(rawCount, cleanedCount);
+    } else {
+      // For Blob URLs, if Python failed there's no fallback
+      // (we don't want to download the entire PDF to memory)
+      console.error(`Vector extraction failed for Blob URL: ${pythonResult.error}`);
+      return NextResponse.json(
+        { error: pythonResult.error || 'Vector extraction service unavailable' },
+        { status: 503 }
+      );
     }
 
     // Store vectors in database

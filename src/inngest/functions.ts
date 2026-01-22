@@ -9,6 +9,7 @@ import { generateThumbnails } from '@/lib/thumbnail-generator';
 import { generateInitialTiles, UPLOAD_ZOOM_LEVELS } from '@/lib/tile-generator';
 import { downloadFile } from '@/lib/storage';
 import { rm } from 'fs/promises';
+import { pythonApi, PythonApiNotConfiguredError } from '@/lib/python-api';
 
 // Daily sync - runs for all users every day at 6 AM
 export const dailySync = inngest.createFunction(
@@ -465,22 +466,23 @@ export const extractTextJob = inngest.createFunction(
     try {
       // Call Python service for text extraction
       const result = await step.run('extract-text', async () => {
-        // Download PDF file (handles both local files and Blob URLs)
-        const pdfBuffer = await downloadFile(doc.storagePath!);
-        const pythonApiUrl = process.env.PYTHON_VECTOR_API_URL || 'http://localhost:8001';
-        const pdfBase64 = pdfBuffer.toString('base64');
-
-        const response = await fetch(`${pythonApiUrl}/text`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pdfData: pdfBase64 }),
-        });
-
-        if (!response.ok) {
-          throw new Error(`Python service returned ${response.status}`);
+        // Check if Python API is configured
+        if (!pythonApi.isConfigured()) {
+          throw new PythonApiNotConfiguredError();
         }
 
-        return await response.json();
+        const storagePath = doc.storagePath!;
+
+        // Use URL-based extraction for Blob URLs (memory efficient)
+        // This avoids downloading the entire PDF into Node.js memory
+        if (storagePath.startsWith('https://')) {
+          return await pythonApi.extractTextFromUrl({ pdfUrl: storagePath });
+        }
+
+        // Fallback for local files: download and send as base64
+        const pdfBuffer = await downloadFile(storagePath);
+        const pdfBase64 = pdfBuffer.toString('base64');
+        return await pythonApi.extractText({ pdfData: pdfBase64 });
       });
 
       if (!result.success) {

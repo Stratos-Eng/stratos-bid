@@ -111,10 +111,25 @@ export function LineItemsTable({ items, bidId }: LineItemsTableProps) {
       });
 
       if (response.ok) {
+        addToast({
+          type: 'success',
+          message: updates.reviewStatus
+            ? `Item ${updates.reviewStatus}`
+            : 'Item updated'
+        });
         window.location.reload();
+      } else {
+        const data = await response.json().catch(() => ({}));
+        addToast({
+          type: 'error',
+          message: data.error || 'Failed to update item'
+        });
       }
     } catch (error) {
-      console.error('Update error:', error);
+      addToast({
+        type: 'error',
+        message: 'Failed to update item'
+      });
     }
   };
 

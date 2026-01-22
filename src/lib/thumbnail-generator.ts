@@ -4,11 +4,15 @@
  * Generates small preview images for all pages of a PDF document.
  * Thumbnails are stored in Vercel Blob and served via direct CDN URLs.
  * PDFs must be stored in Vercel Blob - passes URLs to Python for rendering.
+ *
+ * Memory optimized: Uses Python metadata endpoint to get page count
+ * without loading entire PDF into Node.js memory.
  */
 
 import sharp from 'sharp';
-import { PDFDocument } from 'pdf-lib';
 import { put, list } from '@vercel/blob';
+import { pythonApi, PythonApiNotConfiguredError } from './python-api';
+import { fetchWithTimeout } from './fetch-with-timeout';
 
 // Thumbnail settings
 const THUMBNAIL_WIDTH = 150;
@@ -104,26 +108,20 @@ async function renderPageViaPythonService(
   pdfUrl: string,
   pageNumber: number
 ): Promise<Buffer | null> {
-  const pythonApiUrl = process.env.PYTHON_VECTOR_API_URL || 'http://localhost:8001';
+  // Check if Python API is configured
+  if (!pythonApi.isConfigured()) {
+    console.warn('Python API not configured - cannot render PDF page');
+    return null;
+  }
 
   try {
-    const response = await fetch(`${pythonApiUrl}/render`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        pdfUrl,
-        pageNum: pageNumber,
-        scale: 0.25,
-        returnBase64: true,
-      }),
+    const result = await pythonApi.render({
+      pdfUrl,
+      pageNum: pageNumber,
+      scale: 0.25,
+      returnBase64: true,
     });
 
-    if (!response.ok) {
-      console.warn(`Python render service returned ${response.status}`);
-      return null;
-    }
-
-    const result = await response.json();
     if (!result.success || !result.image) {
       console.warn('Python render service failed:', result.error);
       return null;
@@ -131,6 +129,10 @@ async function renderPageViaPythonService(
 
     return Buffer.from(result.image, 'base64');
   } catch (error) {
+    // Don't log config errors as warnings since they're expected in some environments
+    if (error instanceof PythonApiNotConfiguredError) {
+      return null;
+    }
     console.warn(`Python render service failed for page ${pageNumber}:`, error);
     return null;
   }
@@ -173,14 +175,17 @@ export async function generateThumbnails(config: ThumbnailConfig): Promise<Thumb
     throw new Error('storagePath must be a Blob URL');
   }
 
-  // Fetch PDF to get page count
-  const response = await fetch(storagePath);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch PDF: ${response.status}`);
+  // Get page count via Python metadata endpoint (memory efficient)
+  // This avoids loading the entire PDF into Node.js memory
+  if (!pythonApi.isConfigured()) {
+    throw new Error('Python API is required for thumbnail generation');
   }
-  const pdfBuffer = Buffer.from(await response.arrayBuffer());
-  const pdfDoc = await PDFDocument.load(pdfBuffer);
-  const pageCount = pdfDoc.getPageCount();
+
+  const metadata = await pythonApi.metadata({ pdfUrl: storagePath });
+  if (!metadata.success) {
+    throw new Error(`Failed to get PDF metadata: ${metadata.error}`);
+  }
+  const pageCount = metadata.pageCount;
 
   let thumbnailsGenerated = 0;
   const thumbnailUrls: string[] = [];
@@ -238,7 +243,7 @@ export async function generateSingleThumbnail(
   // Check if already exists
   const existingUrl = await thumbnailExistsInBlob(documentId, pageNumber);
   if (existingUrl) {
-    const response = await fetch(existingUrl);
+    const response = await fetchWithTimeout(existingUrl, { timeoutMs: 30000 });
     const buffer = Buffer.from(await response.arrayBuffer());
     return { url: existingUrl, buffer };
   }
@@ -267,7 +272,7 @@ export async function getThumbnail(
 ): Promise<{ url: string; buffer: Buffer }> {
   const existingUrl = await thumbnailExistsInBlob(documentId, pageNumber);
   if (existingUrl) {
-    const response = await fetch(existingUrl);
+    const response = await fetchWithTimeout(existingUrl, { timeoutMs: 30000 });
     const buffer = Buffer.from(await response.arrayBuffer());
     return { url: existingUrl, buffer };
   }

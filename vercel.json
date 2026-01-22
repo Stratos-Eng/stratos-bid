@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "src/app/api/upload/complete-blob/route.ts": {
+      "memory": 1024,
+      "maxDuration": 60
+    },
+    "src/app/api/upload/multipart/route.ts": {
+      "memory": 1024,
+      "maxDuration": 300
+    }
+  }
+}

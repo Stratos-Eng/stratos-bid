@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { extractText, getDocumentProxy } from 'unpdf';
-import { downloadFile, isBlobUrl } from '@/lib/storage';
+import { downloadFile, isBlobUrl, validateBlobUrl, MAX_FILE_SIZE } from '@/lib/storage';
 
 export interface ParsedPage {
   pageNumber: number;
@@ -136,18 +136,22 @@ export function getFileSize(filePath: string): number {
 }
 
 /**
- * Check if file exists and is a PDF
- * For Blob URLs, only validates the URL format and extension
+ * Check if file exists and is a PDF (synchronous - for local files only)
+ * For Blob URLs, use validatePdfFileAsync instead
  */
 export function validatePdfFile(filePathOrUrl: string): { valid: boolean; error?: string } {
-  // Handle Blob URLs
+  // Handle Blob URLs - can only do basic sync validation
   if (isBlobUrl(filePathOrUrl)) {
-    // For Blob URLs, just check the extension in the URL
-    const urlPath = new URL(filePathOrUrl).pathname;
-    if (!urlPath.toLowerCase().endsWith('.pdf')) {
-      return { valid: false, error: 'File is not a PDF' };
+    try {
+      const urlPath = new URL(filePathOrUrl).pathname;
+      if (!urlPath.toLowerCase().endsWith('.pdf')) {
+        return { valid: false, error: 'File is not a PDF' };
+      }
+      // Note: For full validation including size, use validatePdfFileAsync
+      return { valid: true };
+    } catch {
+      return { valid: false, error: 'Invalid URL format' };
     }
-    return { valid: true };
   }
 
   // Local file validation
@@ -166,9 +170,30 @@ export function validatePdfFile(filePathOrUrl: string): { valid: boolean; error?
   }
 
   // Check for reasonable size (max 500MB)
-  if (size > 500 * 1024 * 1024) {
+  if (size > MAX_FILE_SIZE) {
     return { valid: false, error: 'File too large (max 500MB)' };
   }
 
   return { valid: true };
+}
+
+/**
+ * Async validation for PDF files - supports both local files and Blob URLs
+ * This should be used for Blob URLs as it validates size via API call
+ */
+export async function validatePdfFileAsync(
+  filePathOrUrl: string
+): Promise<{ valid: boolean; size?: number; error?: string }> {
+  // Handle Blob URLs with full validation
+  if (isBlobUrl(filePathOrUrl)) {
+    return validateBlobUrl(filePathOrUrl, MAX_FILE_SIZE);
+  }
+
+  // Local file validation (sync but wrapped in async)
+  const result = validatePdfFile(filePathOrUrl);
+  if (result.valid) {
+    const size = getFileSize(filePathOrUrl);
+    return { valid: true, size };
+  }
+  return result;
 }

@@ -6,9 +6,8 @@ import { eq, sql, and } from 'drizzle-orm';
 import fs from 'fs';
 import path from 'path';
 import { applyRateLimit, createRateLimitResponse, rateLimitConfigs } from '@/lib/rate-limit';
-import { downloadFile, isBlobUrl } from '@/lib/storage';
-
-const PYTHON_SERVICE_URL = process.env.PYTHON_VECTOR_API_URL || 'http://localhost:8001';
+import { isBlobUrl } from '@/lib/storage';
+import { pythonApi, PythonApiNotConfiguredError } from '@/lib/python-api';
 
 interface VisualSearchRequest {
   documentId: string;
@@ -90,49 +89,60 @@ export async function POST(
       return NextResponse.json({ error: 'Document not found' }, { status: 404 });
     }
 
-    // Get PDF data from storage
-    const storagePath = doc.storagePath;
-    let pdfData: Buffer;
-
-    if (isBlobUrl(storagePath)) {
-      // Download from Vercel Blob
-      pdfData = await downloadFile(storagePath);
-    } else {
-      // Read from local file system
-      let resolvedPath = storagePath;
-      if (!path.isAbsolute(resolvedPath)) {
-        resolvedPath = path.join(process.cwd(), resolvedPath);
-      }
-      if (!fs.existsSync(resolvedPath)) {
-        return NextResponse.json({ error: 'PDF file not found' }, { status: 404 });
-      }
-      pdfData = fs.readFileSync(resolvedPath);
+    // Check if Python API is configured
+    if (!pythonApi.isConfigured()) {
+      return NextResponse.json(
+        { error: 'Visual search service not configured' },
+        { status: 503 }
+      );
     }
 
-    const pdfBase64 = pdfData.toString('base64');
+    const storagePath = doc.storagePath;
 
     // Step 1: Crop region around click point
-    const cropResponse = await fetch(`${PYTHON_SERVICE_URL}/crop`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        pdfData: pdfBase64,
-        pageNum,
-        x,
-        y,
-        width,
-        height,
-      }),
-    });
+    // Use URL-based cropping for Blob URLs (memory efficient)
+    // Fall back to base64 for local files
+    let cropResult;
+    try {
+      if (isBlobUrl(storagePath)) {
+        // Memory efficient: Python fetches PDF directly from Blob URL
+        cropResult = await pythonApi.cropUrl({
+          pdfUrl: storagePath,
+          pageNum,
+          x,
+          y,
+          width,
+          height,
+        });
+      } else {
+        // Local file: Read and send as base64
+        let resolvedPath = storagePath;
+        if (!path.isAbsolute(resolvedPath)) {
+          resolvedPath = path.join(process.cwd(), resolvedPath);
+        }
+        if (!fs.existsSync(resolvedPath)) {
+          return NextResponse.json({ error: 'PDF file not found' }, { status: 404 });
+        }
+        const pdfData = fs.readFileSync(resolvedPath);
+        const pdfBase64 = pdfData.toString('base64');
 
-    if (!cropResponse.ok) {
+        cropResult = await pythonApi.crop({
+          pdfData: pdfBase64,
+          pageNum,
+          x,
+          y,
+          width,
+          height,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to crop region:', error);
       return NextResponse.json(
         { error: 'Failed to crop region' },
         { status: 500 }
       );
     }
 
-    const cropResult = await cropResponse.json();
     if (!cropResult.success || !cropResult.image) {
       return NextResponse.json(
         { error: cropResult.error || 'Failed to crop region' },
@@ -143,21 +153,17 @@ export async function POST(
     const croppedImage = cropResult.image;
 
     // Step 2: Try OCR on the cropped region
-    const ocrResponse = await fetch(`${PYTHON_SERVICE_URL}/ocr`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: croppedImage }),
-    });
-
     let ocrText: string | undefined;
     let ocrConfidence: number | undefined;
 
-    if (ocrResponse.ok) {
-      const ocrResult = await ocrResponse.json();
+    try {
+      const ocrResult = await pythonApi.ocr({ image: croppedImage });
       if (ocrResult.success && ocrResult.text && ocrResult.text.trim()) {
         ocrText = ocrResult.text.trim();
         ocrConfidence = ocrResult.confidence;
       }
+    } catch {
+      // OCR failure is non-fatal, continue with visual search
     }
 
     // Prepare base response
@@ -225,19 +231,15 @@ export async function POST(
     response.searchMethod = 'visual';
 
     // Generate embedding for the clicked region
-    const embedResponse = await fetch(`${PYTHON_SERVICE_URL}/embed`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: croppedImage }),
-    });
-
-    if (!embedResponse.ok) {
+    let embedResult;
+    try {
+      embedResult = await pythonApi.embed({ image: croppedImage });
+    } catch {
       // If embedding fails, still return success but with no matches
       response.searchMethod = 'none';
       return NextResponse.json(response);
     }
 
-    const embedResult = await embedResponse.json();
     if (!embedResult.success || !embedResult.embedding) {
       response.searchMethod = 'none';
       return NextResponse.json(response);

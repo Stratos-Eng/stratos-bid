@@ -80,8 +80,27 @@ export default function ProjectsPage() {
 
   if (isLoading) {
     return (
-      <div className="flex justify-center py-12">
-        <div className="text-muted-foreground">Loading projects...</div>
+      <div>
+        <div className="flex items-center justify-between mb-6">
+          <h1 className="text-2xl font-bold">Projects</h1>
+          <div className="h-10 w-32 bg-secondary rounded animate-pulse" />
+        </div>
+        <div className="grid gap-4">
+          {/* Skeleton cards */}
+          {[1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className="flex items-center gap-3 p-4 bg-card rounded-lg border"
+            >
+              <div className="w-5 h-5 rounded border-2 border-muted-foreground/20 flex-shrink-0" />
+              <div className="flex-1 min-w-0 space-y-2">
+                <div className="h-5 bg-secondary rounded w-48 animate-pulse" />
+                <div className="h-4 bg-secondary rounded w-32 animate-pulse" />
+              </div>
+              <div className="h-6 w-16 bg-secondary rounded animate-pulse" />
+            </div>
+          ))}
+        </div>
       </div>
     )
   }
