@@ -11,6 +11,7 @@ import { downloadFile, uploadFile, getPagePdfPath } from '@/lib/storage';
 import { rm } from 'fs/promises';
 import { pythonApi, PythonApiNotConfiguredError } from '@/lib/python-api';
 import sharp from 'sharp';
+import { PDFDocument } from 'pdf-lib';
 
 // Daily sync - runs for all users every day at 6 AM
 export const dailySync = inngest.createFunction(
@@ -709,8 +710,11 @@ export const processDocumentPages = inngest.createFunction(
 
 /**
  * Process a batch of pages: extract from PDF and generate thumbnails
- * Each page is processed in its own step to avoid exceeding Inngest's 4MB output limit.
- * PDF is cached after first page, so subsequent pages are fast.
+ *
+ * IMPORTANT: PDF splitting is done in Node.js (Vercel, 1GB RAM) using pdf-lib,
+ * NOT in Python (Render, 512MB RAM). This prevents Python OOM errors on large PDFs.
+ *
+ * Python is only used for rendering thumbnails from small single-page PDFs (~2MB each).
  */
 export const processPageBatch = inngest.createFunction(
   {
@@ -718,60 +722,108 @@ export const processPageBatch = inngest.createFunction(
     name: 'Process Page Batch',
     retries: 3,
     concurrency: {
-      limit: 1, // Serialize batch processing to avoid concurrent PDF downloads
+      limit: 1, // Serialize to avoid multiple large PDF downloads
     },
   },
   { event: 'page/process-batch' },
   async ({ event, step }) => {
     const { documentId, pdfUrl, pages, totalPages, batchIndex, totalBatches } = event.data;
 
+    // Step 1: Download PDF and split pages using pdf-lib (Node.js, not Python)
+    // This runs on Vercel with 1GB+ RAM, avoiding Python memory limits
+    const pageData = await step.run('split-pages-nodejs', async () => {
+      console.log(`[batch ${batchIndex}] Downloading PDF for pages ${pages.join(',')}`);
+      const pdfBuffer = await downloadFile(pdfUrl);
+      const pdfDoc = await PDFDocument.load(pdfBuffer);
+
+      const results: { pageNumber: number; data: string }[] = [];
+
+      for (const pageNumber of pages) {
+        const pageIndex = pageNumber - 1;
+        if (pageIndex < 0 || pageIndex >= pdfDoc.getPageCount()) {
+          console.warn(`[batch ${batchIndex}] Invalid page number ${pageNumber}`);
+          continue;
+        }
+
+        // Create single-page PDF
+        const singlePageDoc = await PDFDocument.create();
+        const [copiedPage] = await singlePageDoc.copyPages(pdfDoc, [pageIndex]);
+        singlePageDoc.addPage(copiedPage);
+
+        // Get bytes and encode as base64
+        const pageBytes = await singlePageDoc.save();
+        const pageBase64 = Buffer.from(pageBytes).toString('base64');
+
+        results.push({ pageNumber, data: pageBase64 });
+      }
+
+      // Return only metadata, not the full data (to avoid output_too_large)
+      // We'll process the data inline before returning
+      return { pageCount: results.length, pages: results.map(r => r.pageNumber) };
+    });
+
+    // Unfortunately we can't pass the page data between steps (too large)
+    // So we need to re-download and split for upload
+    // But this is still better than using Python for splitting
+
     const processed: number[] = [];
     const failed: number[] = [];
 
-    // Process each page in its own step to avoid large step outputs
-    // (base64 PDF data would exceed Inngest's 4MB limit if batched)
+    // Step 2: Process each page - upload and generate thumbnail
     for (const pageNumber of pages) {
-      // Extract, upload, and generate thumbnail in a single step
-      // This keeps base64 data transient (not stored as step output)
-      const result = await step.run(`process-page-${pageNumber}`, async () => {
+      const result = await step.run(`page-${pageNumber}`, async () => {
         try {
-          // Extract single page from PDF
-          const splitResult = await pythonApi.splitPage({ pdfUrl, pageNumber });
-          if (!splitResult.success || !splitResult.data) {
-            console.error(`Failed to extract page ${pageNumber}: ${splitResult.error}`);
-            return { success: false, pageNumber };
+          // Re-extract this specific page (pdf-lib is fast, this is acceptable)
+          const pdfBuffer = await downloadFile(pdfUrl);
+          const pdfDoc = await PDFDocument.load(pdfBuffer);
+
+          const pageIndex = pageNumber - 1;
+          if (pageIndex < 0 || pageIndex >= pdfDoc.getPageCount()) {
+            return { success: false, pageNumber, error: 'Invalid page number' };
           }
 
+          // Create single-page PDF
+          const singlePageDoc = await PDFDocument.create();
+          const [copiedPage] = await singlePageDoc.copyPages(pdfDoc, [pageIndex]);
+          singlePageDoc.addPage(copiedPage);
+          const pageBytes = await singlePageDoc.save();
+
           // Upload single-page PDF to Blob
-          const buffer = Buffer.from(splitResult.data, 'base64');
           const pathname = getPagePdfPath(documentId, pageNumber);
-          const { url: pageUrl } = await uploadFile(buffer, pathname, {
+          const { url: pageUrl } = await uploadFile(Buffer.from(pageBytes), pathname, {
             contentType: 'application/pdf',
           });
 
-          // Generate thumbnail from the single-page PDF
-          const renderResult = await pythonApi.render({
-            pdfUrl: pageUrl,
-            pageNum: 1,
-            scale: 0.2,
-            returnBase64: true,
-          });
+          // Generate thumbnail using Python (now only processing ~2MB single-page PDF)
+          if (pythonApi.isConfigured()) {
+            try {
+              const renderResult = await pythonApi.render({
+                pdfUrl: pageUrl,
+                pageNum: 1,
+                scale: 0.2,
+                returnBase64: true,
+              });
 
-          if (renderResult.success && renderResult.image) {
-            const thumbnail = await sharp(Buffer.from(renderResult.image, 'base64'))
-              .resize(150)
-              .webp({ quality: 75 })
-              .toBuffer();
+              if (renderResult.success && renderResult.image) {
+                const thumbnail = await sharp(Buffer.from(renderResult.image, 'base64'))
+                  .resize(150)
+                  .webp({ quality: 75 })
+                  .toBuffer();
 
-            await uploadFile(thumbnail, `thumbnails/${documentId}/${pageNumber}.webp`, {
-              contentType: 'image/webp',
-            });
+                await uploadFile(thumbnail, `thumbnails/${documentId}/${pageNumber}.webp`, {
+                  contentType: 'image/webp',
+                });
+              }
+            } catch (renderError) {
+              console.warn(`[page ${pageNumber}] Thumbnail render failed:`, renderError);
+              // Continue without thumbnail - it can be generated on-demand
+            }
           }
 
           return { success: true, pageNumber, pageUrl };
         } catch (error) {
-          console.error(`Error processing page ${pageNumber}:`, error);
-          return { success: false, pageNumber };
+          console.error(`[page ${pageNumber}] Error:`, error);
+          return { success: false, pageNumber, error: String(error) };
         }
       });
 
@@ -782,7 +834,7 @@ export const processPageBatch = inngest.createFunction(
       }
     }
 
-    // Mark pages ready if this is the last batch
+    // Step 3: Mark pages ready if this is the last batch
     const isLastBatch = batchIndex === totalBatches - 1;
     if (isLastBatch) {
       await step.run('mark-pages-ready', async () => {
@@ -806,7 +858,7 @@ export const processPageBatch = inngest.createFunction(
   }
 );
 
-// Keep single-page processor for backwards compatibility and retries
+// Single-page processor using pdf-lib (Node.js) for splitting
 export const processPage = inngest.createFunction(
   {
     id: 'process-page',
@@ -820,24 +872,37 @@ export const processPage = inngest.createFunction(
   async ({ event, step }) => {
     const { documentId, pdfUrl, pageNumber, totalPages } = event.data;
 
-    const pageData = await step.run('extract-page', async () => {
-      const result = await pythonApi.splitPage({ pdfUrl, pageNumber });
-      if (!result.success) {
-        throw new Error(`Failed to extract page ${pageNumber}: ${result.error}`);
-      }
-      return result;
-    });
+    // Extract and upload page using pdf-lib (Node.js, not Python)
+    const pageUrl = await step.run('extract-and-upload', async () => {
+      const pdfBuffer = await downloadFile(pdfUrl);
+      const pdfDoc = await PDFDocument.load(pdfBuffer);
 
-    const pageUrl = await step.run('upload-page', async () => {
-      const buffer = Buffer.from(pageData.data!, 'base64');
+      const pageIndex = pageNumber - 1;
+      if (pageIndex < 0 || pageIndex >= pdfDoc.getPageCount()) {
+        throw new Error(`Invalid page number ${pageNumber}`);
+      }
+
+      // Create single-page PDF
+      const singlePageDoc = await PDFDocument.create();
+      const [copiedPage] = await singlePageDoc.copyPages(pdfDoc, [pageIndex]);
+      singlePageDoc.addPage(copiedPage);
+      const pageBytes = await singlePageDoc.save();
+
+      // Upload to Blob
       const pathname = getPagePdfPath(documentId, pageNumber);
-      const { url } = await uploadFile(buffer, pathname, {
+      const { url } = await uploadFile(Buffer.from(pageBytes), pathname, {
         contentType: 'application/pdf',
       });
       return url;
     });
 
+    // Generate thumbnail using Python (small single-page PDF only)
     await step.run('generate-thumbnail', async () => {
+      if (!pythonApi.isConfigured()) {
+        console.warn('Python API not configured, skipping thumbnail');
+        return;
+      }
+
       const result = await pythonApi.render({
         pdfUrl: pageUrl,
         pageNum: 1,
@@ -846,7 +911,8 @@ export const processPage = inngest.createFunction(
       });
 
       if (!result.success || !result.image) {
-        throw new Error(`Failed to render page ${pageNumber}: ${result.error}`);
+        console.warn(`Failed to render page ${pageNumber}: ${result.error}`);
+        return; // Don't fail the whole job, thumbnail can be generated on-demand
       }
 
       const thumbnail = await sharp(Buffer.from(result.image, 'base64'))
