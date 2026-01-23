@@ -86,6 +86,21 @@ export default function DocumentViewerPage() {
     );
   }
 
+  // Check if PDF URL is available
+  if (!docInfo.pdfUrl) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="text-center text-red-600">
+          <p className="text-xl mb-2">PDF Not Available</p>
+          <p>The document file could not be loaded. It may still be processing.</p>
+          <Link href={`/bids/${bidId}/items`} className="text-blue-600 hover:underline mt-4 block">
+            Back to line items
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-screen flex flex-col bg-gray-100">
       {/* Header */}
