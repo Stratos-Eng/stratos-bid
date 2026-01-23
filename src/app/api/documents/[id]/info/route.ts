@@ -155,6 +155,7 @@ export async function GET(
       pages, // Array of page dimensions
       thumbnailUrls, // Direct Blob CDN URLs (or null if not generated)
       thumbnailsReady,
+      pdfUrl: storagePath, // Direct PDF URL for client-side rendering
       bidId: doc.bid.id,
       bidTitle: doc.bid.title,
       docType: doc.document.docType,

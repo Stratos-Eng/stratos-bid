@@ -3,12 +3,14 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { ThumbnailStrip } from '@/components/documents/thumbnail-strip';
+import { PdfPageRenderer } from '@/components/documents/pdf-page-renderer';
+import { LazyPdfThumbnail } from '@/components/documents/lazy-pdf-thumbnail';
 
 interface DocumentInfo {
   id: string;
   filename: string;
   pageCount: number;
+  pdfUrl: string;
   bidId: string;
   bidTitle: string;
 }
@@ -25,7 +27,6 @@ export default function DocumentViewerPage() {
   const [docInfo, setDocInfo] = useState<DocumentInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [imageLoading, setImageLoading] = useState(true);
   const [scale, setScale] = useState(1.5);
 
   // Fetch document info
@@ -56,7 +57,6 @@ export default function DocumentViewerPage() {
 
   const goToPage = useCallback((page: number) => {
     if (docInfo && page >= 1 && page <= docInfo.pageCount) {
-      setImageLoading(true);
       setCurrentPage(page);
     }
   }, [docInfo]);
@@ -162,34 +162,28 @@ export default function DocumentViewerPage() {
 
       {/* Main content area with thumbnail strip */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Thumbnail strip on the left */}
-        <ThumbnailStrip
-          documentId={documentId}
-          pageCount={docInfo.pageCount}
-          currentPage={currentPage}
-          onPageSelect={goToPage}
-        />
+        {/* Thumbnail strip on the left - client-side rendered with lazy loading */}
+        <div className="w-[120px] bg-gray-900 overflow-auto p-2 flex flex-col gap-2">
+          {Array.from({ length: docInfo.pageCount }, (_, i) => i + 1).map((pageNum) => (
+            <LazyPdfThumbnail
+              key={pageNum}
+              pdfUrl={docInfo.pdfUrl}
+              pageNumber={pageNum}
+              width={100}
+              isSelected={pageNum === currentPage}
+              onClick={() => goToPage(pageNum)}
+            />
+          ))}
+        </div>
 
-        {/* Page viewer */}
+        {/* Page viewer - client-side rendered */}
         <div className="flex-1 overflow-auto p-4">
           <div className="flex justify-center">
-            {imageLoading && (
-              <div className="absolute inset-0 flex items-center justify-center bg-gray-100/50">
-                <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full" />
-              </div>
-            )}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
+            <PdfPageRenderer
               key={`${documentId}-${currentPage}-${scale}`}
-              src={`/api/documents/${documentId}/page/${currentPage}?scale=${scale}`}
-              alt={`Page ${currentPage}`}
-              className="shadow-lg bg-white"
-              style={{ maxWidth: '100%' }}
-              onLoad={() => setImageLoading(false)}
-              onError={() => {
-                setImageLoading(false);
-                setError('Failed to load page');
-              }}
+              pdfUrl={docInfo.pdfUrl}
+              pageNumber={currentPage}
+              scale={scale}
             />
           </div>
         </div>
