@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { db } from '@/db';
-import { takeoffSheets, takeoffProjects, documents, bids } from '@/db/schema';
+import { takeoffSheets, takeoffProjects, documents, bids, pageText } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { PDFDocument } from 'pdf-lib';
-import { inngest } from '@/inngest/client';
-import { downloadFile, deleteFile } from '@/lib/storage';
-import { pythonApi } from '@/lib/python-api';
+import { deleteFile } from '@/lib/storage';
+import { extractPdfPageByPage, getPdfMetadata } from '@/extraction/pdf-parser';
 
 // Force Node.js runtime for PDF parsing
 export const runtime = 'nodejs';
@@ -109,55 +108,28 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Get PDF metadata (page count, dimensions)
-    // Use Python API if available (memory efficient), otherwise fallback to pdf-lib
+    // Get PDF metadata using unpdf (runs on Vercel with 1GB+ RAM)
+    console.log('[blob-complete] Getting PDF metadata via unpdf:', blobUrl);
+
     let pageCount = 0;
     let defaultWidth = 3300; // 11" at 300dpi
     let defaultHeight = 2550; // 8.5" at 300dpi
-    let usedPythonApi = false;
 
-    if (pythonApi.isConfigured()) {
-      // Memory efficient: Python fetches PDF and extracts metadata
-      // Falls back to pdf-lib if Python service is unavailable
-      try {
-        console.log('[blob-complete] Getting PDF metadata via Python API:', blobUrl);
-        const metadata = await pythonApi.metadata({ pdfUrl: blobUrl });
-
-        if (metadata.success) {
-          pageCount = metadata.pageCount;
-
-          // Convert from PDF points (72 DPI) to 300 DPI for better quality
-          if (metadata.width > 0 && metadata.height > 0) {
-            const scaleFactor = 300 / 72;
-            defaultWidth = Math.round(metadata.width * scaleFactor);
-            defaultHeight = Math.round(metadata.height * scaleFactor);
-          }
-          usedPythonApi = true;
-        } else {
-          console.warn('[blob-complete] Python API returned error, falling back to pdf-lib:', metadata.error);
-        }
-      } catch (pythonError) {
-        console.warn('[blob-complete] Python API failed, falling back to pdf-lib:', pythonError);
-      }
-    }
-
-    if (!usedPythonApi) {
-      // Fallback: Download PDF and parse with pdf-lib (uses more memory)
-      // Wrap in timeout to prevent hanging on large/complex PDFs
-      console.log('[blob-complete] Python API not configured, falling back to pdf-lib');
-
-      const parsePdf = async () => {
-        const buffer = await downloadFile(blobUrl);
-        const pdfDoc = await PDFDocument.load(buffer);
-        return pdfDoc;
-      };
-
-      const pdfDoc = await withTimeout(
-        parsePdf(),
+    try {
+      const metadata = await withTimeout(
+        getPdfMetadata(blobUrl),
         PDF_PARSE_TIMEOUT_MS,
-        'PDF parsing'
+        'PDF metadata extraction'
       );
+      pageCount = metadata.pageCount;
+      // Note: unpdf doesn't return dimensions, use defaults for now
+    } catch (metadataError) {
+      console.error('[blob-complete] Failed to get metadata via unpdf, trying pdf-lib:', metadataError);
 
+      // Fallback to pdf-lib for page count
+      const { downloadFile } = await import('@/lib/storage');
+      const buffer = await downloadFile(blobUrl);
+      const pdfDoc = await PDFDocument.load(buffer);
       pageCount = pdfDoc.getPageCount();
 
       if (pageCount > 0) {
@@ -185,44 +157,39 @@ export async function POST(request: NextRequest) {
           storagePath: blobUrl,
           pageCount,
           downloadedAt: new Date(),
-          extractionStatus: 'queued',
+          extractionStatus: 'text_extracted', // Will be updated after text extraction
         })
         .returning();
 
       documentId = doc.id;
 
-      // Trigger extraction and page-level processing via Inngest
+      // Extract text synchronously using unpdf (no background jobs)
+      console.log(`[blob-complete] Extracting text from ${pageCount} pages...`);
       try {
-        await inngest.send({
-          name: 'extraction/signage',
-          data: {
-            documentId: doc.id,
-            bidId,
-            userId: session.user.id,
-          },
-        });
+        const pages = await withTimeout(
+          extractPdfPageByPage(blobUrl),
+          PDF_PARSE_TIMEOUT_MS,
+          'Text extraction'
+        );
 
-        // Use page-level processing: splits PDF into individual pages and generates thumbnails
-        // This is memory-efficient (~15-20MB per page vs 100MB+ for batch)
-        await inngest.send({
-          name: 'document/process-pages',
-          data: {
+        // Store extracted text in database
+        for (const page of pages) {
+          await db.insert(pageText).values({
             documentId: doc.id,
-            pdfUrl: blobUrl,
-            pageCount,
-          },
-        });
+            pageNumber: page.pageNumber,
+            rawText: page.text,
+            extractionMethod: 'unpdf',
+            needsOcr: !page.hasContent, // Flag pages with little text
+          });
+        }
 
-        await inngest.send({
-          name: 'document/extract-text',
-          data: {
-            documentId: doc.id,
-          },
-        });
-
-        console.log(`[blob-complete] Queued Inngest jobs for document ${doc.id} (${pageCount} pages)`);
-      } catch (inngestError) {
-        console.error('[blob-complete] Failed to queue Inngest jobs:', inngestError);
+        console.log(`[blob-complete] Text extracted and stored for document ${doc.id}`);
+      } catch (extractError) {
+        console.error('[blob-complete] Text extraction failed:', extractError);
+        // Update status to indicate extraction failed
+        await db.update(documents)
+          .set({ extractionStatus: 'text_extraction_failed' })
+          .where(eq(documents.id, doc.id));
       }
     }
 

@@ -52,15 +52,24 @@ export default function ProjectPage() {
     toggleSearch,
   } = useProjectStore()
 
-  // Fetch project data - poll faster when extraction is in progress
+  // Fetch project data
   const { data, error, mutate } = useSWR(`/api/projects/${projectId}`, fetcher, {
-    refreshInterval: (latestData) => {
-      if (!latestData?.documents) return 0
-      const statuses = latestData.documents.map((d: any) => d.extractionStatus || "not_started")
-      const isExtracting = statuses.some((s: string) => s === "extracting" || s === "queued")
-      return isExtracting ? 2000 : 0 // Poll every 2s during extraction, stop when done
-    },
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
   })
+
+  // Poll only when extraction is in progress
+  useEffect(() => {
+    if (!data?.documents) return
+
+    const statuses = data.documents.map((d: any) => d.extractionStatus || "not_started")
+    const isExtracting = statuses.some((s: string) => s === "extracting")
+
+    if (!isExtracting) return // Stop polling when not extracting
+
+    const interval = setInterval(() => mutate(), 2000)
+    return () => clearInterval(interval)
+  }, [data, mutate])
 
   // Local UI state
   const [filmstripCollapsed, setFilmstripCollapsed] = useState(false)

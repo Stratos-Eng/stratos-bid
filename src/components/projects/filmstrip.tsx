@@ -2,11 +2,13 @@
 
 import { useRef, useEffect, useState } from "react"
 import { cn } from "@/lib/utils"
+import { LazyPdfThumbnail } from "@/components/documents/lazy-pdf-thumbnail"
 
 interface DocumentType {
   id: string
   filename: string
   pageCount: number
+  storagePath?: string
   thumbnailsGenerated?: boolean
 }
 
@@ -23,6 +25,8 @@ interface FilmstripProps {
 
 // Cache for page labels per document
 const pageLabelCache: Record<string, Record<number, string>> = {}
+// Cache for PDF URLs per document
+const pdfUrlCache: Record<string, string> = {}
 
 // Chevron icon component
 function ChevronIcon({ expanded }: { expanded: boolean }) {
@@ -146,36 +150,25 @@ function DocumentSearchSelect({
   )
 }
 
-function ThumbnailImage({ docId, page, pageLabel }: { docId: string; page: number; pageLabel?: string }) {
-  const [error, setError] = useState(false)
-  const [loading, setLoading] = useState(true)
-
+function ThumbnailImage({ pdfUrl, page, pageLabel }: { pdfUrl: string | null; page: number; pageLabel?: string }) {
   const displayLabel = pageLabel || String(page)
 
-  if (error) {
+  // Show placeholder if no PDF URL available yet
+  if (!pdfUrl) {
     return (
-      <div className="w-full aspect-[3/4] bg-muted flex items-center justify-center">
-        <span className="text-[10px] text-muted-foreground">{displayLabel}</span>
+      <div className="w-full bg-muted flex items-center justify-center" style={{ paddingBottom: '75%', position: 'relative' }}>
+        <span className="absolute text-[10px] text-muted-foreground">{displayLabel}</span>
       </div>
     )
   }
 
+  // Use client-side PDF.js rendering via LazyPdfThumbnail
   return (
-    <div className="relative">
-      {loading && (
-        <div className="w-full aspect-[3/4] bg-muted animate-pulse" />
-      )}
-      <img
-        src={`/api/documents/${docId}/thumbnail/${page}`}
-        alt={`Page ${displayLabel}`}
-        className={cn("w-full bg-white", loading && "absolute inset-0")}
-        onLoad={() => setLoading(false)}
-        onError={() => {
-          setLoading(false)
-          setError(true)
-        }}
-      />
-    </div>
+    <LazyPdfThumbnail
+      pdfUrl={pdfUrl}
+      pageNumber={page}
+      width={96}
+    />
   )
 }
 
@@ -184,6 +177,7 @@ interface DocumentGroupProps {
   isExpanded: boolean
   onToggle: () => void
   pageLabels: Record<number, string>
+  pdfUrl: string | null
   itemCounts: Record<string, number>
   currentDocumentId: string | null
   currentPage: number
@@ -196,6 +190,7 @@ function DocumentGroup({
   isExpanded,
   onToggle,
   pageLabels,
+  pdfUrl,
   itemCounts,
   currentDocumentId,
   currentPage,
@@ -257,7 +252,7 @@ function DocumentGroup({
                     : "border-border hover:border-primary/50"
                 )}
               >
-                <ThumbnailImage docId={document.id} page={page} pageLabel={pageLabel} />
+                <ThumbnailImage pdfUrl={pdfUrl} page={page} pageLabel={pageLabel} />
 
                 {/* Page label overlay */}
                 <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] py-0.5 text-center truncate px-1">
@@ -289,6 +284,7 @@ export function Filmstrip({
   const scrollRef = useRef<HTMLDivElement>(null)
   const activeRef = useRef<HTMLButtonElement>(null)
   const [pageLabels, setPageLabels] = useState<Record<string, Record<number, string>>>({})
+  const [pdfUrls, setPdfUrls] = useState<Record<string, string>>({})
   const [expandedDocs, setExpandedDocs] = useState<Record<string, boolean>>({})
 
   // Toggle document expansion
@@ -306,19 +302,33 @@ export function Filmstrip({
     }
   }, [currentDocumentId])
 
-  // Fetch page labels for all documents
+  // Fetch page labels and PDF URLs for all documents
   useEffect(() => {
-    const fetchLabels = async () => {
+    const fetchDocInfo = async () => {
       for (const doc of documents) {
-        if (pageLabelCache[doc.id]) {
+        // Use cached data if available
+        if (pageLabelCache[doc.id] && pdfUrlCache[doc.id]) {
           setPageLabels(prev => ({ ...prev, [doc.id]: pageLabelCache[doc.id] }))
+          setPdfUrls(prev => ({ ...prev, [doc.id]: pdfUrlCache[doc.id] }))
           continue
+        }
+
+        // Use storagePath from document if available (faster, no API call)
+        if (doc.storagePath) {
+          pdfUrlCache[doc.id] = doc.storagePath
+          setPdfUrls(prev => ({ ...prev, [doc.id]: doc.storagePath! }))
         }
 
         try {
           const res = await fetch(`/api/documents/${doc.id}/info`)
           if (res.ok) {
             const data = await res.json()
+            // Store PDF URL
+            if (data.pdfUrl) {
+              pdfUrlCache[doc.id] = data.pdfUrl
+              setPdfUrls(prev => ({ ...prev, [doc.id]: data.pdfUrl }))
+            }
+            // Store page labels
             if (data.pages) {
               const labels: Record<number, string> = {}
               data.pages.forEach((p: { label?: string }, idx: number) => {
@@ -335,7 +345,7 @@ export function Filmstrip({
         }
       }
     }
-    fetchLabels()
+    fetchDocInfo()
   }, [documents])
 
   // Scroll active item into view
@@ -381,6 +391,7 @@ export function Filmstrip({
             isExpanded={expandedDocs[doc.id] ?? true}
             onToggle={() => toggleDoc(doc.id)}
             pageLabels={pageLabels[doc.id] || {}}
+            pdfUrl={pdfUrls[doc.id] || null}
             itemCounts={itemCounts}
             currentDocumentId={currentDocumentId}
             currentPage={currentPage}

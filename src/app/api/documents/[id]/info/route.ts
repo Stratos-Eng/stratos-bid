@@ -3,19 +3,16 @@ import { auth } from '@/lib/auth';
 import { db } from '@/db';
 import { documents, bids } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import path from 'path';
-import fs from 'fs';
 import { getDocumentProxy } from 'unpdf';
 import { downloadFile, isBlobUrl } from '@/lib/storage';
-import { getAllThumbnailUrls } from '@/lib/thumbnail-generator';
-import { pythonApi } from '@/lib/python-api';
+import path from 'path';
+import fs from 'fs';
 
 interface PageInfo {
   width: number;
   height: number;
   rotation: number;
-  label?: string;  // Original page label from PDF (e.g., "A1.1", "S-101")
-  thumbnailUrl?: string;  // Direct Blob URL for thumbnail
+  label?: string;
 }
 
 // GET /api/documents/[id]/info - Get document metadata
@@ -53,72 +50,45 @@ export async function GET(
 
     if (storagePath) {
       try {
-        // Use Python API for Blob URLs (memory efficient)
-        // Falls back to unpdf if Python API fails or is unavailable
-        let usedPythonApi = false;
-        if (isBlobUrl(storagePath) && pythonApi.isConfigured()) {
-          try {
-            const pagesInfoResult = await pythonApi.pagesInfo({ pdfUrl: storagePath });
+        // Download and parse with unpdf
+        let data: Uint8Array;
 
-            if (pagesInfoResult.success) {
-              pageCount = pagesInfoResult.pageCount;
-              for (const pageInfo of pagesInfoResult.pages) {
-                pages.push({
-                  width: pageInfo.width,
-                  height: pageInfo.height,
-                  rotation: pageInfo.rotation,
-                  // Note: Python doesn't extract page labels yet
-                });
-              }
-              usedPythonApi = true;
-            }
-          } catch (pythonError) {
-            console.warn('Python API failed, falling back to unpdf:', pythonError);
-            // Will fall through to unpdf fallback below
+        if (isBlobUrl(storagePath)) {
+          const buffer = await downloadFile(storagePath);
+          data = new Uint8Array(buffer);
+        } else {
+          let resolvedPath = storagePath;
+          if (!path.isAbsolute(resolvedPath)) {
+            resolvedPath = path.join(process.cwd(), resolvedPath);
           }
+          if (!fs.existsSync(resolvedPath)) {
+            throw new Error(`File not found: ${resolvedPath}`);
+          }
+          data = new Uint8Array(fs.readFileSync(resolvedPath));
         }
 
-        if (!usedPythonApi) {
-          // Fallback: Download and parse with unpdf (local files or no Python API)
-          let data: Uint8Array;
+        // Use unpdf which works in serverless environments
+        const pdfDocument = await getDocumentProxy(data);
+        pageCount = pdfDocument.numPages;
 
-          if (isBlobUrl(storagePath)) {
-            const buffer = await downloadFile(storagePath);
-            data = new Uint8Array(buffer);
-          } else {
-            let resolvedPath = storagePath;
-            if (!path.isAbsolute(resolvedPath)) {
-              resolvedPath = path.join(process.cwd(), resolvedPath);
-            }
-            if (!fs.existsSync(resolvedPath)) {
-              throw new Error(`File not found: ${resolvedPath}`);
-            }
-            data = new Uint8Array(fs.readFileSync(resolvedPath));
-          }
+        // Try to get page labels (e.g., "A1.1", "S-101")
+        let pageLabels: string[] | null = null;
+        try {
+          pageLabels = await pdfDocument.getPageLabels();
+        } catch {
+          // Page labels not available
+        }
 
-          // Use unpdf which works in serverless environments
-          const pdfDocument = await getDocumentProxy(data);
-          pageCount = pdfDocument.numPages;
-
-          // Try to get page labels (e.g., "A1.1", "S-101")
-          let pageLabels: string[] | null = null;
-          try {
-            pageLabels = await pdfDocument.getPageLabels();
-          } catch {
-            // Page labels not available
-          }
-
-          // Get dimensions for each page
-          for (let i = 1; i <= pageCount; i++) {
-            const page = await pdfDocument.getPage(i);
-            const viewport = page.getViewport({ scale: 1.0 });
-            pages.push({
-              width: viewport.width,
-              height: viewport.height,
-              rotation: viewport.rotation || 0,
-              label: pageLabels?.[i - 1] || undefined,
-            });
-          }
+        // Get dimensions for each page
+        for (let i = 1; i <= pageCount; i++) {
+          const page = await pdfDocument.getPage(i);
+          const viewport = page.getViewport({ scale: 1.0 });
+          pages.push({
+            width: viewport.width,
+            height: viewport.height,
+            rotation: viewport.rotation || 0,
+            label: pageLabels?.[i - 1] || undefined,
+          });
         }
 
         // Update page count in database if needed
@@ -142,19 +112,11 @@ export async function GET(
       }
     }
 
-    // Get thumbnail URLs from Blob storage (direct CDN URLs)
-    // If thumbnails aren't ready, this returns nulls and client should use the batch endpoint
-    // to poll for when they're ready, or fall back to API endpoint
-    const thumbnailUrls = await getAllThumbnailUrls(id, pageCount);
-    const thumbnailsReady = thumbnailUrls.every(url => url !== null);
-
     return NextResponse.json({
       id: doc.document.id,
       filename: doc.document.filename,
       pageCount,
-      pages, // Array of page dimensions
-      thumbnailUrls, // Direct Blob CDN URLs (or null if not generated)
-      thumbnailsReady,
+      pages,
       pdfUrl: storagePath, // Direct PDF URL for client-side rendering
       bidId: doc.bid.id,
       bidTitle: doc.bid.title,

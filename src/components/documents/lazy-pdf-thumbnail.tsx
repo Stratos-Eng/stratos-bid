@@ -57,8 +57,8 @@ export function LazyPdfThumbnail({
   return (
     <div
       ref={ref}
-      className="w-full aspect-[3/4]"
-      style={{ minHeight: `${Math.round(width * 4 / 3)}px` }}
+      className="w-full"
+      style={{ minHeight: '40px' }}
     >
       {shouldRender ? (
         <PdfThumbnail
@@ -69,21 +69,21 @@ export function LazyPdfThumbnail({
           onClick={onClick}
         />
       ) : (
-        // Placeholder while not visible
+        // Placeholder while not visible - use a neutral aspect ratio
         <div
           onClick={onClick}
+          style={{ paddingBottom: '75%' }} // Default placeholder aspect
           className={`
-            w-full h-full cursor-pointer
+            w-full relative cursor-pointer
             transition-all duration-150
             ${isSelected
               ? 'ring-2 ring-blue-500 ring-offset-1 ring-offset-gray-900'
               : 'hover:ring-1 hover:ring-gray-500 hover:ring-offset-1 hover:ring-offset-gray-900'
             }
             rounded overflow-hidden bg-gray-700
-            flex items-center justify-center
           `}
         >
-          <span className="text-gray-400 text-sm">{pageNumber}</span>
+          <span className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm">{pageNumber}</span>
         </div>
       )}
     </div>

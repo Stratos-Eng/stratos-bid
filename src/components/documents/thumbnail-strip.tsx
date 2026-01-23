@@ -1,71 +1,27 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
+import { LazyPdfThumbnail } from './lazy-pdf-thumbnail';
 
 interface ThumbnailStripProps {
   documentId: string;
+  pdfUrl: string;
   pageCount: number;
   currentPage: number;
   onPageSelect: (page: number) => void;
   orientation?: 'vertical' | 'horizontal';
-  thumbnailUrls?: (string | null)[]; // Pre-fetched Blob URLs from batch endpoint
 }
 
 export function ThumbnailStrip({
   documentId,
+  pdfUrl,
   pageCount,
   currentPage,
   onPageSelect,
   orientation = 'vertical',
-  thumbnailUrls: initialUrls,
 }: ThumbnailStripProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const thumbnailRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  const [loadedThumbnails, setLoadedThumbnails] = useState<Set<number>>(new Set());
-  const [errorThumbnails, setErrorThumbnails] = useState<Set<number>>(new Set());
-  const [thumbnailUrls, setThumbnailUrls] = useState<(string | null)[]>(initialUrls || []);
-
-  // Fetch thumbnail URLs and poll if still generating
-  useEffect(() => {
-    let pollInterval: NodeJS.Timeout | null = null;
-
-    async function fetchThumbnailUrls() {
-      try {
-        const response = await fetch(`/api/documents/${documentId}/thumbnails`);
-        if (response.ok) {
-          const data = await response.json();
-          setThumbnailUrls(data.urls || []);
-
-          // If not all thumbnails are ready, poll every 5 seconds
-          const hasNulls = (data.urls || []).some((url: string | null) => url === null);
-          if (hasNulls && !pollInterval) {
-            pollInterval = setInterval(fetchThumbnailUrls, 5000);
-          } else if (!hasNulls && pollInterval) {
-            clearInterval(pollInterval);
-            pollInterval = null;
-          }
-        }
-      } catch (error) {
-        console.error('Failed to fetch thumbnail URLs:', error);
-      }
-    }
-
-    // Use initial URLs if provided, otherwise fetch
-    if (initialUrls && initialUrls.length > 0) {
-      setThumbnailUrls(initialUrls);
-      // Still check if we need to poll
-      const hasNulls = initialUrls.some(url => url === null);
-      if (hasNulls) {
-        pollInterval = setInterval(fetchThumbnailUrls, 5000);
-      }
-    } else {
-      fetchThumbnailUrls();
-    }
-
-    return () => {
-      if (pollInterval) clearInterval(pollInterval);
-    };
-  }, [documentId, initialUrls]);
 
   // Scroll current page thumbnail into view
   useEffect(() => {
@@ -78,39 +34,6 @@ export function ThumbnailStrip({
       });
     }
   }, [currentPage, orientation]);
-
-  // Lazy load thumbnails that are visible
-  useEffect(() => {
-    if (!containerRef.current) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            const pageNum = parseInt(entry.target.getAttribute('data-page') || '0', 10);
-            if (pageNum > 0 && !loadedThumbnails.has(pageNum)) {
-              setLoadedThumbnails((prev) => new Set(prev).add(pageNum));
-            }
-          }
-        });
-      },
-      {
-        root: containerRef.current,
-        rootMargin: '100px', // Preload nearby thumbnails
-        threshold: 0,
-      }
-    );
-
-    thumbnailRefs.current.forEach((el) => {
-      observer.observe(el);
-    });
-
-    return () => observer.disconnect();
-  }, [pageCount, loadedThumbnails]);
-
-  const handleThumbnailError = useCallback((pageNum: number) => {
-    setErrorThumbnails((prev) => new Set(prev).add(pageNum));
-  }, []);
 
   const setThumbnailRef = useCallback((pageNum: number, el: HTMLDivElement | null) => {
     if (el) {
@@ -138,52 +61,24 @@ export function ThumbnailStrip({
       >
         {Array.from({ length: pageCount }, (_, i) => i + 1).map((pageNum) => {
           const isSelected = pageNum === currentPage;
-          const isLoaded = loadedThumbnails.has(pageNum);
-          const hasError = errorThumbnails.has(pageNum);
 
           return (
             <div
               key={pageNum}
               ref={(el) => setThumbnailRef(pageNum, el)}
               data-page={pageNum}
-              onClick={() => onPageSelect(pageNum)}
               className={`
-                relative cursor-pointer flex-shrink-0
-                transition-all duration-150
-                ${isVertical ? 'w-full aspect-[3/4]' : 'h-full aspect-[3/4]'}
-                ${isSelected
-                  ? 'ring-2 ring-blue-500 ring-offset-1 ring-offset-gray-900'
-                  : 'hover:ring-1 hover:ring-gray-500 hover:ring-offset-1 hover:ring-offset-gray-900'
-                }
-                rounded overflow-hidden bg-gray-800
+                relative flex-shrink-0
+                ${isVertical ? 'w-full' : 'h-full aspect-[3/4]'}
               `}
             >
-              {isLoaded && !hasError && thumbnailUrls[pageNum - 1] ? (
-                // Direct Blob URL - no auth needed
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={thumbnailUrls[pageNum - 1]!}
-                  alt={`Page ${pageNum}`}
-                  className="w-full h-full object-contain bg-white"
-                  loading="lazy"
-                  onError={() => handleThumbnailError(pageNum)}
-                />
-              ) : hasError ? (
-                <div className="w-full h-full flex items-center justify-center text-gray-500 text-xs">
-                  Error
-                </div>
-              ) : thumbnailUrls[pageNum - 1] === null ? (
-                // Thumbnail not yet generated - show placeholder (don't hit API)
-                <div className="w-full h-full flex flex-col items-center justify-center bg-gray-700 text-gray-400">
-                  <div className="w-4 h-4 border-2 border-gray-500 border-t-gray-300 rounded-full animate-spin mb-1" />
-                  <span className="text-[10px]">Generating</span>
-                </div>
-              ) : (
-                // Loading state
-                <div className="w-full h-full flex items-center justify-center">
-                  <div className="w-4 h-4 border-2 border-gray-600 border-t-gray-400 rounded-full animate-spin" />
-                </div>
-              )}
+              <LazyPdfThumbnail
+                pdfUrl={pdfUrl}
+                pageNumber={pageNum}
+                width={isVertical ? 100 : 75}
+                isSelected={isSelected}
+                onClick={() => onPageSelect(pageNum)}
+              />
 
               {/* Page number badge */}
               <div
