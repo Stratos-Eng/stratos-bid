@@ -3,13 +3,14 @@ import { auth } from '@/lib/auth';
 import { db } from '@/db';
 import { documents, pageText, lineItems, bids } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { analyzePageText, ExtractedLineItem } from '@/extraction/claude-analyzer';
+import { extractSignageV2, getExtractionSummary } from '@/extraction/signage';
+import type { ParsedPage } from '@/extraction/pdf-parser';
 
-// Force Node.js runtime for Claude API calls
+// Force Node.js runtime for extraction
 export const runtime = 'nodejs';
-export const maxDuration = 300; // 5 minutes for large documents (requires Vercel Pro, otherwise 60s)
+export const maxDuration = 300; // 5 minutes for large documents
 
-// POST /api/extraction - Extract signage from a document (synchronous)
+// POST /api/extraction - Extract signage from a document using V2 system
 export async function POST(request: NextRequest) {
   try {
     const session = await auth();
@@ -52,97 +53,116 @@ export async function POST(request: NextRequest) {
 
     const bidId = doc.document.bidId;
 
-    // Get stored page text
-    const pages = await db
+    // Get stored page text and convert to ParsedPage format
+    const storedPages = await db
       .select()
       .from(pageText)
       .where(eq(pageText.documentId, documentId))
       .orderBy(pageText.pageNumber);
 
-    if (pages.length === 0) {
+    if (storedPages.length === 0) {
       return NextResponse.json(
         { error: 'No text extracted for this document. Please re-upload.' },
         { status: 400 }
       );
     }
 
+    // Convert to ParsedPage[] format for the V2 extractor
+    const pages: ParsedPage[] = storedPages.map(p => ({
+      pageNumber: p.pageNumber,
+      text: p.rawText || '',
+      hasContent: (p.rawText?.length || 0) > 50,
+    }));
+
     // Update status to extracting
     await db.update(documents)
       .set({ extractionStatus: 'extracting' })
       .where(eq(documents.id, documentId));
 
-    console.log(`[extraction] Starting extraction for document ${documentId} (${pages.length} pages)`);
+    console.log(`[extraction-v2] Starting extraction for document ${documentId} (${pages.length} pages)`);
 
-    // Extract signage from each page with text
-    const allItems: Array<ExtractedLineItem & { pageNumber: number }> = [];
-    let processedPages = 0;
+    // Run the V2 extraction system
+    const result = await extractSignageV2(pages);
 
-    for (const page of pages) {
-      // Skip pages with no text or flagged as needing OCR
-      if (!page.rawText || page.rawText.length < 100) {
-        console.log(`[extraction] Skipping page ${page.pageNumber} - insufficient text`);
-        continue;
-      }
+    console.log(`[extraction-v2] ${getExtractionSummary(result)}`);
 
-      try {
-        const result = await analyzePageText(
-          page.rawText,
-          page.pageNumber,
-          'division_10' // Signage
-        );
+    // Save extracted entries to database as line items
+    console.log(`[extraction-v2] Saving ${result.entries.length} entries to database`);
 
-        for (const item of result.items) {
-          allItems.push({ ...item, pageNumber: page.pageNumber });
-        }
-
-        processedPages++;
-        console.log(`[extraction] Page ${page.pageNumber}: found ${result.items.length} items`);
-      } catch (pageError) {
-        console.error(`[extraction] Error on page ${page.pageNumber}:`, pageError);
-        // Continue with other pages
-      }
-    }
-
-    // Save extracted items to database
-    console.log(`[extraction] Saving ${allItems.length} items to database`);
-
-    for (const item of allItems) {
+    for (const entry of result.entries) {
       await db.insert(lineItems).values({
         documentId,
         bidId,
         userId: session.user.id,
         tradeCode: 'division_10',
-        category: item.category,
-        description: item.description,
-        estimatedQty: item.estimatedQty,
-        unit: item.unit,
-        notes: item.notes,
-        specifications: item.specifications,
-        pageNumber: item.pageNumber,
-        pageReference: item.pageReference,
-        extractionConfidence: item.confidence,
-        extractionModel: 'claude-sonnet-4-20250514',
-        reviewStatus: 'pending',
+        category: entry.name, // Use room/sign name as category
+        description: `${entry.name}${entry.roomNumber ? ` (${entry.roomNumber})` : ''}`,
+        estimatedQty: String(entry.quantity),
+        unit: 'EA',
+        notes: buildNotes(entry),
+        pageNumber: entry.pageNumbers[0], // Primary page
+        pageReference: entry.sheetRefs.join(', '),
+        extractionConfidence: entry.confidence,
+        extractionModel: 'signage-extraction-v2',
+        rawExtractionJson: {
+          id: entry.id,
+          identifier: entry.identifier,
+          source: entry.source,
+          isGrouped: entry.isGrouped,
+          groupRange: entry.groupRange,
+          allPages: entry.pageNumbers,
+          allSheetRefs: entry.sheetRefs,
+        },
+        reviewStatus: entry.confidence >= 0.8 ? 'pending' : 'needs_review',
         extractedAt: new Date(),
       });
     }
 
-    // Update document status
+    // Store extraction metadata on document
     await db.update(documents)
       .set({
         extractionStatus: 'completed',
-        lineItemCount: allItems.length,
+        lineItemCount: result.entries.length,
+        signageLegend: {
+          // V2 extraction metadata
+          v2Extraction: true,
+          primarySource: result.primarySource,
+          sourcesUsed: result.sourcesUsed,
+          totalCount: result.totalCount,
+          confidence: result.confidence,
+          converged: result.converged,
+          iterations: result.iterations,
+          discrepancies: result.discrepancies.map(d => ({
+            type: d.type,
+            description: d.description,
+            autoResolvable: d.autoResolvable,
+          })),
+          clarifications: result.clarifications.map(c => ({
+            priority: c.priority,
+            category: c.category,
+            question: c.question,
+            suggestedRFI: c.suggestedRFI,
+          })),
+          warnings: result.warnings,
+          extractedAt: new Date().toISOString(),
+        },
       })
       .where(eq(documents.id, documentId));
 
-    console.log(`[extraction] Completed for document ${documentId}: ${allItems.length} items`);
+    console.log(`[extraction-v2] Completed for document ${documentId}: ${result.entries.length} items, ${result.confidence * 100}% confidence`);
 
     return NextResponse.json({
       success: true,
       documentId,
-      itemCount: allItems.length,
-      processedPages,
-      totalPages: pages.length,
+      itemCount: result.entries.length,
+      totalCount: result.totalCount,
+      confidence: result.confidence,
+      primarySource: result.primarySource,
+      sourcesUsed: result.sourcesUsed,
+      converged: result.converged,
+      clarificationsCount: result.clarifications.length,
+      discrepanciesCount: result.discrepancies.length,
+      warnings: result.warnings,
     });
 
   } catch (error) {
@@ -165,6 +185,35 @@ export async function POST(request: NextRequest) {
   }
 }
 
+/**
+ * Build notes string from SignageEntry
+ */
+function buildNotes(entry: {
+  source: string;
+  isGrouped: boolean;
+  groupRange?: [number, number];
+  notes?: string;
+  sheetRefs: string[];
+}): string {
+  const parts: string[] = [];
+
+  if (entry.isGrouped && entry.groupRange) {
+    parts.push(`Grouped entry (${entry.groupRange[0]}-${entry.groupRange[1]})`);
+  }
+
+  parts.push(`Source: ${entry.source}`);
+
+  if (entry.sheetRefs.length > 0) {
+    parts.push(`Sheets: ${entry.sheetRefs.join(', ')}`);
+  }
+
+  if (entry.notes) {
+    parts.push(entry.notes);
+  }
+
+  return parts.join(' | ');
+}
+
 // GET /api/extraction?documentId=xxx - Get extraction status
 export async function GET(request: NextRequest) {
   try {
@@ -183,7 +232,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Get document status (no more background jobs - just document state)
+    // Get document status
     const [doc] = await db
       .select()
       .from(documents)
@@ -194,11 +243,32 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Document not found' }, { status: 404 });
     }
 
+    // Extract V2 metadata if available
+    const v2Metadata = doc.signageLegend as {
+      v2Extraction?: boolean;
+      primarySource?: string;
+      sourcesUsed?: string[];
+      confidence?: number;
+      converged?: boolean;
+      clarifications?: Array<{ priority: string; question: string }>;
+      discrepancies?: Array<{ type: string; description: string }>;
+      warnings?: string[];
+    } | null;
+
     return NextResponse.json({
       document: {
         id: doc.id,
         extractionStatus: doc.extractionStatus,
         lineItemCount: doc.lineItemCount,
+        // V2 extraction info
+        v2Extraction: v2Metadata?.v2Extraction || false,
+        primarySource: v2Metadata?.primarySource,
+        sourcesUsed: v2Metadata?.sourcesUsed,
+        confidence: v2Metadata?.confidence,
+        converged: v2Metadata?.converged,
+        clarificationsCount: v2Metadata?.clarifications?.length || 0,
+        discrepanciesCount: v2Metadata?.discrepancies?.length || 0,
+        warnings: v2Metadata?.warnings,
       },
     });
   } catch (error) {

@@ -56,6 +56,70 @@ export {
   type ExportOptions,
 } from './export';
 
+// ===========================================================================
+// NEW: Source-of-Truth Extraction System
+// ===========================================================================
+// These utilities provide a more comprehensive extraction approach:
+// 1. Discover available sources (signage/door/finish schedules, floor plans)
+// 2. Parse each source type with specialized parsers
+// 3. Deduplicate across sources
+// 4. Cross-verify for consistency
+// 5. Generate clarifications for unresolved issues
+
+// Re-export types for new extraction system
+export * from './types';
+
+// Source discovery
+export {
+  discoverSources,
+  hasSignageContent,
+  getPagesForSourceType,
+  analyzePageSources,
+} from './source-finder';
+
+// Specialized parsers
+export { parseDoorSchedule, detectGroupedEntry, analyzeDoorScheduleContent } from './parsers/door-schedule';
+export { parseSignageSchedule, analyzeSignageScheduleContent } from './parsers/signage-schedule';
+export { extractFromFloorPlans, analyzeFloorPlanContent } from './parsers/floor-plan';
+
+// Deduplication utilities
+export {
+  deduplicateEntries,
+  deduplicateByRoomNumber,
+  deduplicateByName,
+  deduplicateAcrossSources,
+  findPotentialDuplicates,
+  normalizeRoomName,
+  hasRoomNumbers,
+  hasConsistentNames,
+} from './deduplication';
+
+// Verification
+export {
+  crossVerifySources,
+  applyResolution,
+  generateVerificationSummary,
+  getManualReviewItems,
+  getAutoResolvableItems,
+} from './verifier';
+
+// Clarifications
+export {
+  generateClarifications,
+  formatClarifications,
+  getClarificationsByPriority,
+  getClarificationsByCategory,
+  generateRFIList,
+  countByPriority,
+} from './clarifications';
+
+// Orchestrator (new extraction entry points)
+export {
+  extractSignage as extractSignageV2,
+  quickExtractSignage,
+  getExtractionSummary,
+} from './orchestrator';
+
 /**
  * Signage extraction options
  */
