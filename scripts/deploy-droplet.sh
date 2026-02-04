@@ -4,7 +4,7 @@ set -euo pipefail
 # Deploy Stratos worker/runtime on the OpenClaw droplet.
 # This script is designed to be run over SSH by GitHub Actions.
 
-APP_DIR=${APP_DIR:-/opt/stratos-bid}
+APP_DIR=${APP_DIR:-/home/openclaw/stratos-bid}
 REPO_URL=${REPO_URL:-https://github.com/Stratos-Eng/stratos-bid.git}
 BRANCH=${BRANCH:-main}
 
@@ -13,8 +13,7 @@ echo "[deploy] APP_DIR=${APP_DIR} BRANCH=${BRANCH}"
 
 if [[ ! -d "${APP_DIR}/.git" ]]; then
   echo "[deploy] cloning repo into ${APP_DIR}"
-  sudo mkdir -p "${APP_DIR}"
-  sudo chown "$(whoami)":"$(whoami)" "${APP_DIR}"
+  mkdir -p "${APP_DIR}"
   git clone "${REPO_URL}" "${APP_DIR}"
 fi
 
