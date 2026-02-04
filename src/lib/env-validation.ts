@@ -40,6 +40,13 @@ const RECOMMENDED_VARS = [
  * Validate all environment variables
  */
 export function validateEnv(): EnvValidationResult {
+  // Next.js evaluates some server modules during `next build`.
+  // In Docker builds (e.g. DigitalOcean App Platform), runtime secrets may not be present
+  // in the build environment. Don't fail builds on missing runtime env vars.
+  if (process.env.NEXT_PHASE === 'phase-production-build') {
+    return { valid: true, errors: [], warnings: [] };
+  }
+
   const errors: string[] = [];
   const warnings: string[] = [];
 

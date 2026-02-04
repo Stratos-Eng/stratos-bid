@@ -20,7 +20,15 @@ export function getAnthropicClient(): Anthropic {
   const baseURL = process.env.INFERENCE_BASE_URL;
   const apiKey = process.env.INFERENCE_API_KEY || process.env.ANTHROPIC_API_KEY;
 
+  // During `next build`, Next.js can evaluate server modules while runtime secrets
+  // are not available in the build environment (common on App Platform).
+  // Avoid throwing at import-time; failures should happen at runtime when inference is used.
+  const isBuild = process.env.NEXT_PHASE === 'phase-production-build';
+
   if (!apiKey) {
+    if (isBuild) {
+      return new Anthropic({ apiKey: 'build-placeholder' });
+    }
     throw new Error(
       'Missing API key. Set ANTHROPIC_API_KEY (direct) or INFERENCE_API_KEY (gateway).'
     );
