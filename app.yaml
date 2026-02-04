@@ -1,0 +1,27 @@
+# DigitalOcean App Platform spec
+# https://docs.digitalocean.com/products/app-platform/how-to/configure-apps/spec/
+name: stratos-bid
+services:
+  - name: web
+    github:
+      repo: Stratos-Eng/stratos-bid
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: Dockerfile
+    http_port: 3000
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    routes:
+      - path: /
+    envs:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
+      # Add all secrets in the DO UI (or here as type: SECRET) before deploying:
+      # - key: DATABASE_URL
+      #   type: SECRET
+      # - key: CLERK_SECRET_KEY
+      #   type: SECRET
+      # - key: ANTHROPIC_API_KEY
+      #   type: SECRET

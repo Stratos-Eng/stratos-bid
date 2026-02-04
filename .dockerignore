@@ -1,0 +1,12 @@
+node_modules
+.next
+.git
+.gitignore
+README.md
+Dockerfile
+npm-debug.log
+yarn.lock
+pnpm-lock.yaml
+.env*
+playwright-report
+test-results
