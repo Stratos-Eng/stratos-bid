@@ -3,12 +3,14 @@
 import { useState } from 'react';
 
 interface DocumentActionsProps {
+  bidId: string;
   documentId: string;
   extractionStatus: string | null;
   hasStoragePath: boolean;
 }
 
 export function DocumentActions({
+  bidId,
   documentId,
   extractionStatus,
   hasStoragePath,
@@ -21,10 +23,10 @@ export function DocumentActions({
     setStatus('queued');
 
     try {
-      const response = await fetch('/api/extraction-v3', {
+      const response = await fetch('/api/takeoff/enqueue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentId }),
+        body: JSON.stringify({ bidId, documentIds: [documentId] }),
       });
 
       if (response.ok) {

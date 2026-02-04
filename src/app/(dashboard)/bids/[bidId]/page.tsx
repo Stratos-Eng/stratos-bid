@@ -214,6 +214,7 @@ export default async function BidDetailPage({
                 </div>
 
                 <DocumentActions
+                  bidId={bidId}
                   documentId={doc.id}
                   extractionStatus={doc.extractionStatus}
                   hasStoragePath={!!doc.storagePath}

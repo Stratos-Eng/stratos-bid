@@ -188,10 +188,10 @@ export default function NewProjectPage() {
         .filter((id): id is string => !!id)
 
       if (documentIds.length > 0) {
-        await fetch('/api/extraction-v3', {
+        await fetch('/api/takeoff/enqueue', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ documentIds }),
+          body: JSON.stringify({ bidId: projectId, documentIds }),
         })
       }
 

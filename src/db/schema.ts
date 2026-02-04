@@ -239,3 +239,47 @@ export type NewPageText = typeof pageText.$inferInsert;
 export type PageText = typeof pageText.$inferSelect;
 export type NewSymbolRegion = typeof symbolRegions.$inferInsert;
 export type SymbolRegion = typeof symbolRegions.$inferSelect;
+
+// ========================================
+// Takeoff job queue (droplet worker)
+// ========================================
+
+export const takeoffJobs = pgTable('takeoff_jobs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  bidId: uuid('bid_id').notNull().references(() => bids.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull(),
+  status: text('status').notNull().default('queued'), // queued | running | succeeded | failed
+  requestedDocumentIds: jsonb('requested_document_ids'),
+  bidFolder: text('bid_folder'),
+
+  lockId: text('lock_id'),
+  lockedAt: timestamp('locked_at'),
+
+  attempts: integer('attempts').notNull().default(0),
+  lastError: text('last_error'),
+
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  startedAt: timestamp('started_at'),
+  finishedAt: timestamp('finished_at'),
+}, (table) => ({
+  statusIdx: index('takeoff_jobs_status_idx').on(table.status),
+  bidIdx: index('takeoff_jobs_bid_idx').on(table.bidId),
+  userIdx: index('takeoff_jobs_user_idx').on(table.userId),
+}));
+
+export const takeoffJobDocuments = pgTable('takeoff_job_documents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  jobId: uuid('job_id').notNull().references(() => takeoffJobs.id, { onDelete: 'cascade' }),
+  documentId: uuid('document_id').notNull().references(() => documents.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  uniqueJobDoc: uniqueIndex('takeoff_job_documents_unique').on(table.jobId, table.documentId),
+  jobIdx: index('takeoff_job_documents_job_idx').on(table.jobId),
+  docIdx: index('takeoff_job_documents_doc_idx').on(table.documentId),
+}));
+
+export type TakeoffJob = typeof takeoffJobs.$inferSelect;
+export type NewTakeoffJob = typeof takeoffJobs.$inferInsert;
+export type TakeoffJobDocument = typeof takeoffJobDocuments.$inferSelect;
+export type NewTakeoffJobDocument = typeof takeoffJobDocuments.$inferInsert;

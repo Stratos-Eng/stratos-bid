@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "worker": "tsx worker/takeoff-worker.ts",
     "lint": "eslint",
     "test": "playwright test",
     "test:ui": "playwright test --ui",
@@ -53,6 +54,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.1.1",
     "tailwindcss": "^4",
+    "tsx": "^4.20.3",
     "typescript": "^5"
   }
 }

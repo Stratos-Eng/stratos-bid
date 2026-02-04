@@ -324,10 +324,10 @@ export default function ProjectPage() {
         addToast({ type: 'error', message: 'No documents to extract' })
         return
       }
-      const res = await fetch('/api/extraction-v3', {
+      const res = await fetch('/api/takeoff/enqueue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentIds }),
+        body: JSON.stringify({ bidId: projectId, documentIds }),
       })
       if (res.ok) {
         const result = await res.json()

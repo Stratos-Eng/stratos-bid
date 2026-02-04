@@ -1,0 +1,25 @@
+[Unit]
+Description=Stratos Takeoff Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openclaw
+WorkingDirectory=/home/openclaw/stratos-bid
+Environment=NODE_ENV=production
+# Put secrets here:
+#   DATABASE_URL=
+#   SPACES_ACCESS_KEY_ID=
+#   SPACES_SECRET_ACCESS_KEY=
+#   SPACES_BUCKET=
+#   SPACES_REGION=sfo3
+#   INFERENCE_BASE_URL=https://openclaw.stratos.to/v1
+#   INFERENCE_API_KEY=... (or OPENCLAW_... depending on current code)
+EnvironmentFile=/home/openclaw/stratos-bid/.env.worker
+ExecStart=/home/linuxbrew/.linuxbrew/bin/npm run worker
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
