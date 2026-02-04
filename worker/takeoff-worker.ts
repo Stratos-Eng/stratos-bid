@@ -53,8 +53,7 @@ async function claimNextJob(): Promise<JobRow | null> {
     RETURNING *;
   `);
 
-  // @ts-expect-error drizzle execute typing varies by driver
-  const rows = (result?.rows || result) as JobRow[];
+  const rows = (result as any)?.rows ? (result as any).rows as JobRow[] : (result as any as JobRow[]);
   return rows?.[0] || null;
 }
 
