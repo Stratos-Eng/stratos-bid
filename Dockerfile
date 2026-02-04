@@ -12,6 +12,9 @@ RUN npm ci
 FROM node:20-bookworm-slim AS builder
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
+# Next.js/TypeScript can be memory-hungry during `next build`.
+# App Platform Docker builds were OOM'ing around ~2GB heap; allow a larger heap.
+ENV NODE_OPTIONS=--max-old-space-size=4096
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .

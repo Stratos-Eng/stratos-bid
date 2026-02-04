@@ -39,10 +39,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate API key before doing any work
-    if (!process.env.ANTHROPIC_API_KEY) {
+    // Validate inference config before doing any work
+    // - Direct Anthropic: ANTHROPIC_API_KEY
+    // - OpenClaw gateway: INFERENCE_API_KEY (+ INFERENCE_BASE_URL)
+    if (!process.env.ANTHROPIC_API_KEY && !process.env.INFERENCE_API_KEY) {
       return NextResponse.json(
-        { error: 'Extraction service unavailable: API key not configured' },
+        { error: 'Extraction service unavailable: inference not configured' },
         { status: 503 }
       );
     }
