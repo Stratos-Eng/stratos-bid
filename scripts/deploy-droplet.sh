@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Ensure Homebrew (linuxbrew) Node is available in non-interactive shells
+export PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH"
+
 # Deploy Stratos worker/runtime on the OpenClaw droplet.
 # This script is designed to be run over SSH by GitHub Actions.
 
