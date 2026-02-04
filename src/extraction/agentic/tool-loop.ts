@@ -5,7 +5,8 @@
  * documents iteratively using tools until extraction is complete.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
+import { getAnthropicClient } from '@/lib/anthropic';
 import type {
   DocumentInfo,
   AgenticExtractionResult,
@@ -60,13 +61,7 @@ export async function runExtractionLoop(
   bidFolder: string,
   documents: DocumentInfo[]
 ): Promise<AgenticExtractionResult> {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error(
-      'ANTHROPIC_API_KEY environment variable is required for extraction'
-    );
-  }
-
-  const client = new Anthropic();
+  const client = getAnthropicClient();
   const messages: Anthropic.MessageParam[] = [];
 
   // Initial prompt

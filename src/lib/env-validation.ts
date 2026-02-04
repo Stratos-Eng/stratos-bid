@@ -30,7 +30,10 @@ const REQUIRED_VARS = [
  * Optional but recommended environment variables
  */
 const RECOMMENDED_VARS = [
+  // Either direct Anthropic or an inference gateway key should be set.
+  // (We can't express "one of" in this simple validator, so we check manually below.)
   'ANTHROPIC_API_KEY',
+  'INFERENCE_API_KEY',
 ] as const;
 
 /**
@@ -52,6 +55,11 @@ export function validateEnv(): EnvValidationResult {
     if (!process.env[varName]) {
       warnings.push(`Missing recommended environment variable: ${varName}`);
     }
+  }
+
+  // Special case: we require at least one inference key
+  if (!process.env.ANTHROPIC_API_KEY && !process.env.INFERENCE_API_KEY) {
+    warnings.push('Missing inference credentials: set ANTHROPIC_API_KEY or INFERENCE_API_KEY');
   }
 
   return {

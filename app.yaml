@@ -9,7 +9,8 @@ services:
       deploy_on_push: true
     dockerfile_path: Dockerfile
     http_port: 3000
-    instance_size_slug: basic-xxs
+    # Bump size because Next.js builds can OOM on small builders
+    instance_size_slug: basic-xs
     instance_count: 1
     routes:
       - path: /

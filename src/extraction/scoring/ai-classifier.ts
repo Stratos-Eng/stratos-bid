@@ -10,9 +10,9 @@
  * - "Bid Documents/Addendum 3 - Revised Sign Legend.pdf"
  */
 
-import Anthropic from '@anthropic-ai/sdk';
+import { getAnthropicClient } from '@/lib/anthropic';
 
-const anthropic = new Anthropic();
+const anthropic = getAnthropicClient();
 
 /**
  * Classification result for a single file
