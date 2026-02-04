@@ -3,7 +3,7 @@ import { auth } from '@/lib/auth';
 import { db } from '@/db';
 import { documents, bids } from '@/db/schema';
 import { eq, inArray } from 'drizzle-orm';
-import { inngest } from '@/inngest/client';
+import { takeoffJobs, takeoffJobDocuments } from '@/db/schema';
 import { dirname } from 'path';
 
 /**
@@ -13,8 +13,8 @@ import { dirname } from 'path';
  *   { documentId: string }           — single document (legacy)
  *   { documentIds: string[] }        — batch of documents (preferred)
  *
- * Groups documents by bid and sends ONE Inngest event per bid.
- * One auth call, one Inngest batch send. Returns immediately.
+ * Enqueues a takeoff job (DB-backed) for the droplet worker.
+ * Returns immediately.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -65,8 +65,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No documents found' }, { status: 404 });
     }
 
-    // Group documents by bid — send ONE event per bid (not per document)
-    const docsByBid = new Map<string, { bidId: string; documentIds: string[]; bidFolder: string }>();
+    // Group by bid (primary workflow is 1 job per bid)
+    const docsByBid = new Map<string, { bidId: string; documentIds: string[]; bidFolder: string | null }>();
     const queuedIds: string[] = [];
     const skipped: string[] = [];
 
@@ -76,13 +76,9 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      let bidFolder = body.bidFolder;
+      let bidFolder: string | null = typeof body.bidFolder === 'string' ? body.bidFolder : null;
       if (!bidFolder && doc.document.storagePath) {
         bidFolder = dirname(doc.document.storagePath);
-      }
-      if (!bidFolder) {
-        skipped.push(doc.document.id);
-        continue;
       }
 
       const existing = docsByBid.get(doc.document.bidId);
@@ -105,56 +101,44 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Batch update statuses
+    // Batch update statuses (UI polls these)
     await db.update(documents)
       .set({ extractionStatus: 'queued' })
       .where(inArray(documents.id, queuedIds));
 
-    // Build ONE event per bid (not per document)
-    const events = Array.from(docsByBid.values()).map(bid => ({
-      name: 'extraction/signage-agentic' as const,
-      data: {
-        bidId: bid.bidId,
-        documentIds: bid.documentIds,
-        bidFolder: bid.bidFolder,
-        userId: session.user!.id,
-      },
-    }));
+    // Create ONE job per bid
+    const jobs = [] as { id: string; bidId: string; documentIds: string[] }[];
 
-    console.log(`[extraction-v3] Queuing agentic extraction: ${queuedIds.length} document(s) across ${events.length} bid(s)`);
+    for (const bid of docsByBid.values()) {
+      const [job] = await db
+        .insert(takeoffJobs)
+        .values({
+          bidId: bid.bidId,
+          userId: session.user!.id,
+          status: 'queued',
+          requestedDocumentIds: bid.documentIds,
+          bidFolder: bid.bidFolder,
+          updatedAt: new Date(),
+        })
+        .returning();
 
-    // Send events to Inngest *asynchronously* so we can return immediately.
-    // DO App Platform / edge proxies can return 504 if we block too long waiting on upstreams.
-    // If this fails, we mark the docs as failed in the background.
-    setImmediate(async () => {
-      const timeoutMs = 10_000;
-      const timeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`Inngest send timed out after ${timeoutMs}ms`)), timeoutMs)
+      await db.insert(takeoffJobDocuments).values(
+        bid.documentIds.map((documentId) => ({
+          jobId: job.id,
+          documentId,
+        }))
       );
 
-      try {
-        await Promise.race([inngest.send(events), timeout]);
-        console.log('[extraction-v3] Inngest events sent successfully');
-      } catch (inngestError) {
-        console.error(
-          '[extraction-v3] Failed to send Inngest events (async):',
-          inngestError instanceof Error ? inngestError.message : inngestError
-        );
+      jobs.push({ id: job.id, bidId: bid.bidId, documentIds: bid.documentIds });
+    }
 
-        try {
-          await db.update(documents)
-            .set({ extractionStatus: 'failed' })
-            .where(inArray(documents.id, queuedIds));
-        } catch (dbErr) {
-          console.error('[extraction-v3] Failed to mark docs as failed after Inngest error:', dbErr);
-        }
-      }
-    });
+    console.log(`[extraction-v3] Enqueued takeoff: ${queuedIds.length} document(s) across ${jobs.length} bid(s)`);
 
     return NextResponse.json(
       {
         success: true,
-        message: `Extraction queued for ${queuedIds.length} document(s) across ${events.length} bid(s)`,
+        message: `Takeoff queued for ${queuedIds.length} document(s) across ${jobs.length} bid(s)`,
+        jobs,
         queued: queuedIds,
         skipped,
       },
