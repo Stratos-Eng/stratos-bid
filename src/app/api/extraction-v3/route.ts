@@ -123,29 +123,43 @@ export async function POST(request: NextRequest) {
 
     console.log(`[extraction-v3] Queuing agentic extraction: ${queuedIds.length} document(s) across ${events.length} bid(s)`);
 
-    // Send events to Inngest
-    try {
-      await inngest.send(events);
-    } catch (inngestError) {
-      console.error('[extraction-v3] Failed to send Inngest events:', inngestError instanceof Error ? inngestError.message : inngestError);
-
-      // Revert statuses
-      await db.update(documents)
-        .set({ extractionStatus: 'failed' })
-        .where(inArray(documents.id, queuedIds));
-
-      return NextResponse.json(
-        { error: 'Extraction service unavailable. Inngest may not be running.' },
-        { status: 503 }
+    // Send events to Inngest *asynchronously* so we can return immediately.
+    // DO App Platform / edge proxies can return 504 if we block too long waiting on upstreams.
+    // If this fails, we mark the docs as failed in the background.
+    setImmediate(async () => {
+      const timeoutMs = 10_000;
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Inngest send timed out after ${timeoutMs}ms`)), timeoutMs)
       );
-    }
 
-    return NextResponse.json({
-      success: true,
-      message: `Extraction queued for ${queuedIds.length} document(s) across ${events.length} bid(s)`,
-      queued: queuedIds,
-      skipped,
+      try {
+        await Promise.race([inngest.send(events), timeout]);
+        console.log('[extraction-v3] Inngest events sent successfully');
+      } catch (inngestError) {
+        console.error(
+          '[extraction-v3] Failed to send Inngest events (async):',
+          inngestError instanceof Error ? inngestError.message : inngestError
+        );
+
+        try {
+          await db.update(documents)
+            .set({ extractionStatus: 'failed' })
+            .where(inArray(documents.id, queuedIds));
+        } catch (dbErr) {
+          console.error('[extraction-v3] Failed to mark docs as failed after Inngest error:', dbErr);
+        }
+      }
     });
+
+    return NextResponse.json(
+      {
+        success: true,
+        message: `Extraction queued for ${queuedIds.length} document(s) across ${events.length} bid(s)`,
+        queued: queuedIds,
+        skipped,
+      },
+      { status: 202 }
+    );
 
   } catch (error) {
     console.error('[extraction-v3] Error:', error);
