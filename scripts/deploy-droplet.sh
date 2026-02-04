@@ -80,12 +80,43 @@ else
   echo "[deploy] no worker secrets provided; leaving ${ENV_FILE} unchanged"
 fi
 
-echo "[deploy] restart worker service (if present)"
-if systemctl list-unit-files | grep -q '^stratos-takeoff-worker\.service'; then
-  sudo systemctl restart stratos-takeoff-worker
-  sudo systemctl --no-pager --full status stratos-takeoff-worker | sed -n '1,30p'
+echo "[deploy] ensure worker systemd unit is installed"
+UNIT_SRC="${APP_DIR}/worker/stratos-takeoff-worker.service"
+UNIT_DST="/etc/systemd/system/stratos-takeoff-worker.service"
+
+maybe_sudo() {
+  # If running as root, run directly. Otherwise require passwordless sudo.
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "$@"
+  else
+    sudo -n "$@"
+  fi
+}
+
+if [[ -f "${UNIT_SRC}" ]]; then
+  if [[ ! -f "${UNIT_DST}" ]]; then
+    echo "[deploy] installing systemd unit to ${UNIT_DST}"
+    if ! maybe_sudo cp "${UNIT_SRC}" "${UNIT_DST}"; then
+      echo "[deploy] ERROR: could not install systemd unit (needs passwordless sudo or root SSH user)."
+      echo "[deploy] Fix: set DROPLET_USER=root in GitHub secrets OR add a sudoers rule for ${USER} to run systemctl/cp without password."
+      exit 1
+    fi
+    maybe_sudo systemctl daemon-reload
+    maybe_sudo systemctl enable stratos-takeoff-worker
+  fi
 else
-  echo "[deploy] NOTE: stratos-takeoff-worker.service not installed yet; skipping restart"
+  echo "[deploy] WARNING: ${UNIT_SRC} not found; cannot install worker unit"
+fi
+
+echo "[deploy] restart worker service"
+if systemctl list-unit-files | grep -q '^stratos-takeoff-worker\.service'; then
+  if ! maybe_sudo systemctl restart stratos-takeoff-worker; then
+    echo "[deploy] ERROR: failed to restart worker (needs passwordless sudo or root SSH user)."
+    exit 1
+  fi
+  maybe_sudo systemctl --no-pager --full status stratos-takeoff-worker | sed -n '1,30p'
+else
+  echo "[deploy] NOTE: stratos-takeoff-worker.service not installed; skipping restart"
 fi
 
 echo "[deploy] done"

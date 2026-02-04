@@ -29,6 +29,7 @@ jobs:
       - name: Deploy (pull/build/restart)
         env:
           DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
+          # Recommended: set this to root so systemd unit install/restarts don't require sudo password.
           DROPLET_USER: ${{ secrets.DROPLET_USER }}
 
           # Worker secrets (write to /home/openclaw/stratos-bid/.env.worker)
