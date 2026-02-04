@@ -1,0 +1,218 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { auth } from '@/lib/auth';
+import { db } from '@/db';
+import { documents, bids } from '@/db/schema';
+import { eq, inArray } from 'drizzle-orm';
+import { inngest } from '@/inngest/client';
+import { dirname } from 'path';
+
+/**
+ * POST /api/extraction-v3 - Extract signage using Agentic extraction system
+ *
+ * Accepts either:
+ *   { documentId: string }           — single document (legacy)
+ *   { documentIds: string[] }        — batch of documents (preferred)
+ *
+ * Groups documents by bid and sends ONE Inngest event per bid.
+ * One auth call, one Inngest batch send. Returns immediately.
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const session = await auth();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+
+    // Normalise to an array
+    const ids: string[] = body.documentIds
+      ? body.documentIds
+      : body.documentId
+        ? [body.documentId]
+        : [];
+
+    if (ids.length === 0) {
+      return NextResponse.json(
+        { error: 'documentId or documentIds is required' },
+        { status: 400 }
+      );
+    }
+
+    // Validate API key before doing any work
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return NextResponse.json(
+        { error: 'Extraction service unavailable: API key not configured' },
+        { status: 503 }
+      );
+    }
+
+    // Fetch all documents + verify ownership in one query
+    const docs = await db
+      .select({
+        document: documents,
+        bid: bids,
+      })
+      .from(documents)
+      .innerJoin(bids, eq(documents.bidId, bids.id))
+      .where(inArray(documents.id, ids));
+
+    const ownedDocs = docs.filter((d) => d.bid.userId === session.user!.id);
+
+    if (ownedDocs.length === 0) {
+      return NextResponse.json({ error: 'No documents found' }, { status: 404 });
+    }
+
+    // Group documents by bid — send ONE event per bid (not per document)
+    const docsByBid = new Map<string, { bidId: string; documentIds: string[]; bidFolder: string }>();
+    const queuedIds: string[] = [];
+    const skipped: string[] = [];
+
+    for (const doc of ownedDocs) {
+      if (!doc.document.bidId) {
+        skipped.push(doc.document.id);
+        continue;
+      }
+
+      let bidFolder = body.bidFolder;
+      if (!bidFolder && doc.document.storagePath) {
+        bidFolder = dirname(doc.document.storagePath);
+      }
+      if (!bidFolder) {
+        skipped.push(doc.document.id);
+        continue;
+      }
+
+      const existing = docsByBid.get(doc.document.bidId);
+      if (existing) {
+        existing.documentIds.push(doc.document.id);
+      } else {
+        docsByBid.set(doc.document.bidId, {
+          bidId: doc.document.bidId,
+          documentIds: [doc.document.id],
+          bidFolder,
+        });
+      }
+      queuedIds.push(doc.document.id);
+    }
+
+    if (queuedIds.length === 0) {
+      return NextResponse.json(
+        { error: 'No documents eligible for extraction' },
+        { status: 400 }
+      );
+    }
+
+    // Batch update statuses
+    await db.update(documents)
+      .set({ extractionStatus: 'queued' })
+      .where(inArray(documents.id, queuedIds));
+
+    // Build ONE event per bid (not per document)
+    const events = Array.from(docsByBid.values()).map(bid => ({
+      name: 'extraction/signage-agentic' as const,
+      data: {
+        bidId: bid.bidId,
+        documentIds: bid.documentIds,
+        bidFolder: bid.bidFolder,
+        userId: session.user!.id,
+      },
+    }));
+
+    console.log(`[extraction-v3] Queuing agentic extraction: ${queuedIds.length} document(s) across ${events.length} bid(s)`);
+
+    // Send events to Inngest
+    try {
+      await inngest.send(events);
+    } catch (inngestError) {
+      console.error('[extraction-v3] Failed to send Inngest events:', inngestError instanceof Error ? inngestError.message : inngestError);
+
+      // Revert statuses
+      await db.update(documents)
+        .set({ extractionStatus: 'failed' })
+        .where(inArray(documents.id, queuedIds));
+
+      return NextResponse.json(
+        { error: 'Extraction service unavailable. Inngest may not be running.' },
+        { status: 503 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: `Extraction queued for ${queuedIds.length} document(s) across ${events.length} bid(s)`,
+      queued: queuedIds,
+      skipped,
+    });
+
+  } catch (error) {
+    console.error('[extraction-v3] Error:', error);
+
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// GET /api/extraction-v3?documentId=xxx - Get extraction status
+export async function GET(request: NextRequest) {
+  try {
+    const session = await auth();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const documentId = searchParams.get('documentId');
+
+    if (!documentId) {
+      return NextResponse.json(
+        { error: 'documentId query parameter is required' },
+        { status: 400 }
+      );
+    }
+
+    const [doc] = await db
+      .select()
+      .from(documents)
+      .where(eq(documents.id, documentId))
+      .limit(1);
+
+    if (!doc) {
+      return NextResponse.json({ error: 'Document not found' }, { status: 404 });
+    }
+
+    const metadata = doc.signageLegend as {
+      agenticExtraction?: boolean;
+      totalCount?: number;
+      confidence?: number;
+      iterationsUsed?: number;
+      toolCallsCount?: number;
+      notes?: string;
+      extractedAt?: string;
+    } | null;
+
+    return NextResponse.json({
+      document: {
+        id: doc.id,
+        extractionStatus: doc.extractionStatus,
+        lineItemCount: doc.lineItemCount,
+        // Agentic extraction info
+        agenticExtraction: metadata?.agenticExtraction || false,
+        totalCount: metadata?.totalCount,
+        confidence: metadata?.confidence,
+        iterationsUsed: metadata?.iterationsUsed,
+        toolCallsCount: metadata?.toolCallsCount,
+        notes: metadata?.notes,
+        extractedAt: metadata?.extractedAt,
+      },
+    });
+  } catch (error) {
+    console.error('[extraction-v3] Status API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

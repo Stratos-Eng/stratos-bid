@@ -14,9 +14,9 @@ The platform helps subcontractors:
 
 This is a **Next.js 16 full-stack application** using:
 - **Database**: PostgreSQL with Drizzle ORM
-- **Auth**: NextAuth 5 with Google OAuth
+- **Auth**: Clerk with Google OAuth
 - **Background Jobs**: Inngest
-- **PDF Processing**: pdf.js (client) + PyMuPDF (Python service)
+- **PDF Processing**: pdf.js (client) + unpdf (server)
 - **Browser Automation**: Playwright
 
 ```
@@ -71,7 +71,7 @@ stratos-bid/
 │   │   │   ├── sync/           # Sync triggers
 │   │   │   ├── inngest/        # Background job webhook
 │   │   │   ├── extension/      # Chrome extension endpoints
-│   │   │   └── auth/           # NextAuth endpoints
+│   │   │   └── auth/           # Auth endpoints
 │   │   └── extension/          # Extension connection page
 │   ├── components/
 │   │   ├── takeoff/            # PDF viewer, sheet panel, measurement tools
@@ -86,7 +86,7 @@ stratos-bid/
 │   │   └── schema.ts           # Drizzle schema (PostgreSQL)
 │   ├── inngest/                # Background job definitions
 │   ├── lib/
-│   │   ├── auth.ts             # NextAuth config
+│   │   ├── auth.ts             # Clerk auth config
 │   │   ├── crypto.ts           # Credential encryption
 │   │   ├── browser-agent.ts    # Claude agent for browser automation
 │   │   └── validations/        # Zod schemas
@@ -168,20 +168,24 @@ uvicorn src.main:app --port 8001
 DATABASE_URL=postgresql://user:password@localhost:5432/stratos_bid
 ENCRYPTION_KEY=<64-char hex string>
 
-# NextAuth
-NEXTAUTH_SECRET=<random string>
-NEXTAUTH_URL=http://localhost:3000
+# Clerk Auth
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=<from Clerk dashboard>
+CLERK_SECRET_KEY=<from Clerk dashboard>
 
-# Google OAuth (required for auth)
-GOOGLE_CLIENT_ID=<from Google Cloud Console>
-GOOGLE_CLIENT_SECRET=<from Google Cloud Console>
+# Google OAuth (for Gmail integration - configure in Clerk dashboard)
+# GOOGLE_CLIENT_ID=<from Google Cloud Console>
+# GOOGLE_CLIENT_SECRET=<from Google Cloud Console>
+
+# DigitalOcean Spaces (file storage)
+DO_SPACES_BUCKET=stratos-bid-files
+DO_SPACES_REGION=nyc3
+DO_SPACES_ENDPOINT=https://nyc3.digitaloceanspaces.com
+DO_SPACES_KEY=<access-key>
+DO_SPACES_SECRET=<secret-key>
 
 # Inngest (for background jobs)
 INNGEST_EVENT_KEY=<from Inngest dashboard>
 INNGEST_SIGNING_KEY=<from Inngest dashboard>
-
-# Python Vector Service (optional)
-PYTHON_VECTOR_API_URL=http://localhost:8001
 
 # Chrome Extension (optional)
 EXTENSION_TOKEN_SECRET=<random string>
@@ -209,7 +213,7 @@ EXTENSION_TOKEN_SECRET=<random string>
 ## Database Schema
 
 Key tables:
-- `users` - NextAuth users
+- `users` - Clerk users
 - `connections` - Platform connections (encrypted credentials)
 - `bids` - Scraped bid opportunities
 - `documents` - Downloaded bid documents

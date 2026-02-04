@@ -3,7 +3,7 @@ import { auth } from '@/lib/auth';
 import { db } from '@/db';
 import { documents, bids } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { downloadFile, fileExists, isBlobUrl } from '@/lib/storage';
+import { downloadFile } from '@/lib/storage';
 
 // GET /api/documents/[id]/view - Serve PDF file for viewing
 export async function GET(
@@ -33,7 +33,7 @@ export async function GET(
       return NextResponse.json({ error: 'Document not found' }, { status: 404 });
     }
 
-    // Get file path - could be a Vercel Blob URL or local path
+    // Get file path - could be a DO Spaces URL, legacy Vercel Blob URL, or local path
     const storagePath = doc.document.storagePath;
 
     if (!storagePath) {
@@ -43,21 +43,8 @@ export async function GET(
       );
     }
 
-    // For Vercel Blob URLs, redirect to the blob URL directly for better performance
-    if (isBlobUrl(storagePath)) {
-      return NextResponse.redirect(storagePath);
-    }
-
-    // For local files, check existence and serve
-    const exists = await fileExists(storagePath);
-    if (!exists) {
-      return NextResponse.json(
-        { error: 'File not found' },
-        { status: 404 }
-      );
-    }
-
-    // Download and serve the file
+    // Download file via authenticated S3 SDK (for DO Spaces / legacy Vercel URLs)
+    // or read from local filesystem
     const fileBuffer = await downloadFile(storagePath);
     const filename = doc.document.filename || 'document.pdf';
 

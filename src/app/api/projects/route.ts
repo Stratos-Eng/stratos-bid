@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth"
 import { db } from "@/db"
 import { bids, documents, lineItems } from "@/db/schema"
 import { eq, and, inArray } from "drizzle-orm"
+import { deleteFile } from "@/lib/storage"
 
 // POST /api/projects - Create a new project
 export async function POST(req: NextRequest) {
@@ -90,22 +91,24 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: "No valid projects to delete" }, { status: 404 })
     }
 
-    // Delete related data first (cascade)
-    // Delete signage items for documents in these bids
+    // Get documents to clean up blob storage
     const docsToDelete = await db
-      .select({ id: documents.id })
+      .select({ id: documents.id, storagePath: documents.storagePath })
       .from(documents)
       .where(inArray(documents.bidId, ownedIds))
 
-    if (docsToDelete.length > 0) {
-      const docIds = docsToDelete.map(d => d.id)
-      await db.delete(lineItems).where(inArray(lineItems.documentId, docIds))
+    // Clean up blob storage for each document
+    for (const doc of docsToDelete) {
+      if (doc.storagePath) {
+        try {
+          await deleteFile(doc.storagePath);
+        } catch (err) {
+          console.error(`Failed to delete blob for document ${doc.id}:`, err);
+        }
+      }
     }
 
-    // Delete documents
-    await db.delete(documents).where(inArray(documents.bidId, ownedIds))
-
-    // Delete bids (projects)
+    // Delete bids (cascades to documents, lineItems, pageText via FK)
     await db.delete(bids).where(inArray(bids.id, ownedIds))
 
     return NextResponse.json({

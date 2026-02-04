@@ -1,13 +1,11 @@
 'use client';
 
 import { useState, useCallback, useRef } from 'react';
-import { upload } from '@vercel/blob/client';
 
 // Configuration for uploads
-// Note: All uploads use client-side direct upload to Vercel Blob
-// This bypasses serverless function body limits (4.5MB)
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000;
+const CONCURRENT_UPLOADS = 3;
 
 export interface UploadProgress {
   filename: string;
@@ -19,11 +17,10 @@ export interface UploadProgress {
 }
 
 export interface UploadOptions {
-  projectId?: string; // For takeoff flow
-  bidId?: string; // For projects flow
+  bidId?: string;
   onProgress?: (files: UploadProgress[]) => void;
-  onFileComplete?: (result: { filename: string; sheets?: string[]; documentId?: string }) => void;
-  onAllComplete?: (results: { filename: string; sheets?: string[]; documentId?: string }[]) => void;
+  onFileComplete?: (result: { filename: string; documentId?: string }) => void;
+  onAllComplete?: (results: { filename: string; documentId?: string }[]) => void;
   onError?: (filename: string, error: string) => void;
 }
 
@@ -31,13 +28,11 @@ export interface FileToUpload {
   file: File;
   folderName?: string;
   relativePath?: string;
-  projectId?: string; // Override projectId for this file
   bidId?: string; // Override bidId for this file
 }
 
 export function useChunkedUpload(options: UploadOptions) {
   const {
-    projectId,
     bidId,
     onProgress,
     onFileComplete,
@@ -63,24 +58,65 @@ export function useChunkedUpload(options: UploadOptions) {
   // Helper function to delay execution
   const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+  // Upload to DO Spaces via presigned URL with XHR for progress tracking
+  const uploadToStorage = useCallback(
+    (uploadUrl: string, file: File, filename: string): Promise<void> => {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', uploadUrl);
+        xhr.setRequestHeader('Content-Type', 'application/pdf');
+
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const progress = Math.round((event.loaded / event.total) * 100);
+            updateUpload(filename, { progress, status: 'uploading' });
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve();
+          } else {
+            reject(new Error(`Upload failed with status ${xhr.status}`));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error('Failed to fetch'));
+        xhr.ontimeout = () => reject(new Error('timeout'));
+
+        xhr.send(file);
+      });
+    },
+    [updateUpload]
+  );
+
   // Upload with retry logic
   const uploadWithRetry = useCallback(
     async (
-      pathname: string,
       file: File,
+      effectiveBidId: string,
       filename: string,
       retryCount = 0
     ): Promise<{ url: string; pathname: string }> => {
       try {
-        const blob = await upload(pathname, file, {
-          access: 'public',
-          handleUploadUrl: '/api/upload/token',
-          onUploadProgress: (event) => {
-            const progress = Math.round((event.loaded / event.total) * 100);
-            updateUpload(filename, { progress, status: 'uploading' });
-          },
+        // Step 1: Get presigned URL from our API
+        const presignRes = await fetch('/api/upload/presign', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename, bidId: effectiveBidId }),
         });
-        return blob;
+
+        if (!presignRes.ok) {
+          const err = await presignRes.json();
+          throw new Error(err.error || 'Failed to get upload URL');
+        }
+
+        const { uploadUrl, key, publicUrl } = await presignRes.json();
+
+        // Step 2: PUT file directly to DO Spaces via presigned URL
+        await uploadToStorage(uploadUrl, file, filename);
+
+        return { url: publicUrl, pathname: key };
       } catch (error) {
         const isNetworkError =
           error instanceof Error &&
@@ -101,24 +137,22 @@ export function useChunkedUpload(options: UploadOptions) {
           });
 
           await delay(delayMs);
-          return uploadWithRetry(pathname, file, filename, nextRetry);
+          return uploadWithRetry(file, effectiveBidId, filename, nextRetry);
         }
         throw error;
       }
     },
-    [updateUpload]
+    [updateUpload, uploadToStorage]
   );
 
   const uploadFile = useCallback(
-    async (fileInfo: FileToUpload): Promise<{ filename: string; sheets?: string[]; documentId?: string }> => {
-      const { file, folderName, relativePath, projectId: fileProjectId, bidId: fileBidId } = fileInfo;
+    async (fileInfo: FileToUpload): Promise<{ filename: string; documentId?: string }> => {
+      const { file, folderName, relativePath, bidId: fileBidId } = fileInfo;
 
-      // Use per-file IDs if provided, otherwise use hook-level IDs
-      const effectiveProjectId = fileProjectId || projectId;
       const effectiveBidId = fileBidId || bidId;
 
-      if (!effectiveProjectId && !effectiveBidId) {
-        throw new Error('Either projectId or bidId is required');
+      if (!effectiveBidId) {
+        throw new Error('bidId is required');
       }
 
       const fileSizeMB = (file.size / 1024 / 1024).toFixed(1);
@@ -129,25 +163,12 @@ export function useChunkedUpload(options: UploadOptions) {
       abortControllersRef.current.set(file.name, abortController);
 
       try {
-        // Determine storage path
-        const timestamp = Date.now();
-        const sanitizedFilename = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-        const storageFilename = `${timestamp}-${sanitizedFilename}`;
-
-        let pathname: string;
-        if (effectiveProjectId) {
-          pathname = `takeoff/${effectiveProjectId}/${storageFilename}`;
-        } else {
-          pathname = `projects/${effectiveBidId}/${storageFilename}`;
-        }
-
         updateUpload(file.name, { status: 'uploading', progress: 0 });
 
-        // Use client-side direct upload to Vercel Blob
-        // This bypasses serverless function body limits and handles any file size
-        const blob = await uploadWithRetry(pathname, file, file.name);
+        // Upload via presigned URL
+        const blob = await uploadWithRetry(file, effectiveBidId, file.name);
 
-        console.log('[upload] Blob upload complete:', blob.url);
+        console.log('[upload] Upload complete:', blob.url);
 
         // Check if cancelled during upload
         if (abortController.signal.aborted) {
@@ -164,7 +185,6 @@ export function useChunkedUpload(options: UploadOptions) {
             blobUrl: blob.url,
             pathname: blob.pathname,
             filename: file.name,
-            projectId: effectiveProjectId,
             bidId: effectiveBidId,
             folderName,
             relativePath,
@@ -185,7 +205,6 @@ export function useChunkedUpload(options: UploadOptions) {
 
         const uploadResult = {
           filename: file.name,
-          sheets: result.sheets,
           documentId: result.documentId,
         };
 
@@ -196,7 +215,7 @@ export function useChunkedUpload(options: UploadOptions) {
         throw error;
       }
     },
-    [projectId, bidId, updateUpload, onFileComplete, uploadWithRetry]
+    [bidId, updateUpload, onFileComplete, uploadWithRetry]
   );
 
   const uploadFiles = useCallback(
@@ -216,32 +235,44 @@ export function useChunkedUpload(options: UploadOptions) {
         }))
       );
 
-      const results: { filename: string; sheets?: string[]; documentId?: string }[] = [];
+      const results: { filename: string; documentId?: string }[] = [];
       const errors: { filename: string; error: string }[] = [];
 
-      // Upload files sequentially to avoid overwhelming the server
-      for (const fileInfo of files) {
-        try {
-          const result = await uploadFile(fileInfo);
-          results.push(result);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      // Upload files concurrently with limited parallelism
+      let index = 0;
 
-          // Don't report cancelled uploads as errors
-          if (errorMessage !== 'Upload cancelled') {
-            errors.push({
-              filename: fileInfo.file.name,
-              error: errorMessage,
+      async function worker() {
+        while (index < files.length) {
+          const current = index++;
+          const fileInfo = files[current];
+          try {
+            const result = await uploadFile(fileInfo);
+            results.push(result);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+            // Don't report cancelled uploads as errors
+            if (errorMessage !== 'Upload cancelled') {
+              errors.push({
+                filename: fileInfo.file.name,
+                error: errorMessage,
+              });
+              onError?.(fileInfo.file.name, errorMessage);
+            }
+
+            updateUpload(fileInfo.file.name, {
+              status: errorMessage === 'Upload cancelled' ? 'cancelled' : 'error',
+              error: errorMessage === 'Upload cancelled' ? undefined : errorMessage,
             });
-            onError?.(fileInfo.file.name, errorMessage);
           }
-
-          updateUpload(fileInfo.file.name, {
-            status: errorMessage === 'Upload cancelled' ? 'cancelled' : 'error',
-            error: errorMessage === 'Upload cancelled' ? undefined : errorMessage,
-          });
         }
       }
+
+      const workers = Array.from(
+        { length: Math.min(CONCURRENT_UPLOADS, files.length) },
+        () => worker()
+      );
+      await Promise.all(workers);
 
       setIsUploading(false);
 
@@ -290,6 +321,3 @@ export function useChunkedUpload(options: UploadOptions) {
     reset,
   };
 }
-
-// Legacy export for backwards compatibility
-export { useChunkedUpload as useBlobUpload };

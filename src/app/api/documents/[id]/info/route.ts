@@ -117,7 +117,7 @@ export async function GET(
       filename: doc.document.filename,
       pageCount,
       pages,
-      pdfUrl: storagePath, // Direct PDF URL for client-side rendering
+      pdfUrl: `/api/documents/${id}/view`, // Proxy through authenticated API route
       bidId: doc.bid.id,
       bidTitle: doc.bid.title,
       docType: doc.document.docType,

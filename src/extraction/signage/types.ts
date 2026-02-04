@@ -12,6 +12,8 @@ import type { ParsedPage } from '../pdf-parser';
 
 export type SourceType =
   | 'signage_schedule'    // Dedicated signage schedule (best)
+  | 'legend'              // Sign legend/key
+  | 'site_plan'           // Site plan with callouts (Metro D/P series)
   | 'door_schedule'       // Door schedule with room names
   | 'finish_schedule'     // Room finish schedule
   | 'floor_plan'          // Floor plan room tags (fallback)

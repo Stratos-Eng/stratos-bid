@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@source not "../extraction";
+@source not "../../scripts";
 
 /* The Drafting Table - Earth & Stone palette */
 /* Fallback hex values for browsers without oklch support */

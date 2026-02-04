@@ -57,7 +57,6 @@ export default async function LineItemsPage({
       pageReference: lineItems.pageReference,
       extractionConfidence: lineItems.extractionConfidence,
       reviewStatus: lineItems.reviewStatus,
-      pdfFilePath: lineItems.pdfFilePath,
       documentId: lineItems.documentId,
     })
     .from(lineItems)

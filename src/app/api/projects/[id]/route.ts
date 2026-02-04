@@ -52,7 +52,6 @@ export async function GET(
         filename: d.filename,
         pageCount: d.pageCount,
         extractionStatus: d.extractionStatus,
-        thumbnailsGenerated: d.thumbnailsGenerated,
       })),
       items: items.map((i) => ({
         id: i.id,

@@ -21,8 +21,8 @@ const fraunces = Fraunces({
 });
 
 export const metadata: Metadata = {
-  title: "Stratos Takeoff - Precision Measurement Tools",
-  description: "AI-native takeoff tools for specialty trades. Turn messy plan sets into accurate measurements.",
+  title: "Stratos - AI-Native Preconstruction Platform",
+  description: "Fewer misses. Tighter bids. More wins. AI-powered signage extraction for specialty trade subcontractors.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

@@ -302,33 +302,54 @@ export function Filmstrip({
     }
   }, [currentDocumentId])
 
-  // Fetch page labels and PDF URLs for all documents
-  useEffect(() => {
-    const fetchDocInfo = async () => {
-      for (const doc of documents) {
-        // Use cached data if available
-        if (pageLabelCache[doc.id] && pdfUrlCache[doc.id]) {
-          setPageLabels(prev => ({ ...prev, [doc.id]: pageLabelCache[doc.id] }))
-          setPdfUrls(prev => ({ ...prev, [doc.id]: pdfUrlCache[doc.id] }))
-          continue
-        }
+  // Track which documents we've already fetched info for (across renders)
+  const fetchedDocsRef = useRef<Set<string>>(new Set())
 
-        // Use storagePath from document if available (faster, no API call)
-        if (doc.storagePath) {
-          pdfUrlCache[doc.id] = doc.storagePath
-          setPdfUrls(prev => ({ ...prev, [doc.id]: doc.storagePath! }))
-        }
+  // Fetch page labels and PDF URLs for documents
+  // Only fetch for documents we haven't fetched yet
+  useEffect(() => {
+    const docsToFetch = documents.filter(doc => {
+      // Already fetched this session
+      if (fetchedDocsRef.current.has(doc.id)) return false
+      // Already in module cache
+      if (pageLabelCache[doc.id] && pdfUrlCache[doc.id]) {
+        setPageLabels(prev => ({ ...prev, [doc.id]: pageLabelCache[doc.id] }))
+        setPdfUrls(prev => ({ ...prev, [doc.id]: pdfUrlCache[doc.id] }))
+        fetchedDocsRef.current.add(doc.id)
+        return false
+      }
+      // Has storagePath - use it as PDF URL, still need labels
+      if (doc.storagePath && !pdfUrlCache[doc.id]) {
+        pdfUrlCache[doc.id] = doc.storagePath
+        setPdfUrls(prev => ({ ...prev, [doc.id]: doc.storagePath! }))
+      }
+      return true
+    })
+
+    if (docsToFetch.length === 0) return
+
+    // Fetch only the current document's info immediately,
+    // defer the rest to avoid hammering the API
+    const fetchDocInfo = async () => {
+      // Prioritize: fetch current document first
+      const sorted = [...docsToFetch].sort((a, b) => {
+        if (a.id === currentDocumentId) return -1
+        if (b.id === currentDocumentId) return 1
+        return 0
+      })
+
+      for (const doc of sorted) {
+        if (fetchedDocsRef.current.has(doc.id)) continue
+        fetchedDocsRef.current.add(doc.id)
 
         try {
           const res = await fetch(`/api/documents/${doc.id}/info`)
           if (res.ok) {
             const data = await res.json()
-            // Store PDF URL
             if (data.pdfUrl) {
               pdfUrlCache[doc.id] = data.pdfUrl
               setPdfUrls(prev => ({ ...prev, [doc.id]: data.pdfUrl }))
             }
-            // Store page labels
             if (data.pages) {
               const labels: Record<number, string> = {}
               data.pages.forEach((p: { label?: string }, idx: number) => {
@@ -346,7 +367,7 @@ export function Filmstrip({
       }
     }
     fetchDocInfo()
-  }, [documents])
+  }, [documents, currentDocumentId])
 
   // Scroll active item into view
   useEffect(() => {

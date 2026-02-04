@@ -1,26 +1,20 @@
 import { neon } from '@neondatabase/serverless';
 import { drizzle } from 'drizzle-orm/neon-http';
 import * as schema from './schema';
-import { validateEnv, getFeatureSummary } from '@/lib/env-validation';
+import { validateEnv } from '@/lib/env-validation';
 
-// Validate environment on module load (first import)
-if (typeof window === 'undefined') {
+// Validate environment once on first import (not per-request)
+const _envValidated = globalThis as unknown as { __envValidated?: boolean };
+if (typeof window === 'undefined' && !_envValidated.__envValidated) {
+  _envValidated.__envValidated = true;
   const result = validateEnv();
 
-  // Log warnings
   for (const warning of result.warnings) {
     console.warn(`[ENV] ${warning}`);
   }
 
-  // Log errors but don't throw - allow app to start for debugging
   for (const error of result.errors) {
     console.error(`[ENV ERROR] ${error}`);
-  }
-
-  // Log feature availability in development
-  if (process.env.NODE_ENV === 'development') {
-    const features = getFeatureSummary();
-    console.log('[ENV] Feature availability:', features);
   }
 }
 

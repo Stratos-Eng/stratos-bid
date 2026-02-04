@@ -175,8 +175,7 @@ export default function NewProjectPage() {
         })
       }
 
-      // 3. Trigger extraction - this queues background jobs via Inngest
-      // Extraction status polling will handle completion and redirect
+      // 3. Trigger V3 agentic extraction for all documents in one batch call
       setUploadState({
         status: "extracting",
         progress: 75,
@@ -184,9 +183,17 @@ export default function NewProjectPage() {
         projectId,
       })
 
-      await fetch(`/api/projects/${projectId}/extract`, {
-        method: "POST",
-      })
+      const documentIds = results
+        .map((r) => r.documentId)
+        .filter((id): id is string => !!id)
+
+      if (documentIds.length > 0) {
+        await fetch('/api/extraction-v3', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ documentIds }),
+        })
+      }
 
       // Note: Don't set complete here - the useExtractionStatus hook
       // will poll for completion and trigger the redirect

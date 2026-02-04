@@ -19,22 +19,18 @@ export interface EnvValidationResult {
  */
 const REQUIRED_VARS = [
   'DATABASE_URL',
-  'BLOB_READ_WRITE_TOKEN',
-] as const;
-
-/**
- * Environment variables required for PDF operations
- */
-const PDF_OPERATION_VARS = [
-  'PYTHON_VECTOR_API_URL',
+  'DO_SPACES_BUCKET',
+  'DO_SPACES_REGION',
+  'DO_SPACES_ENDPOINT',
+  'DO_SPACES_KEY',
+  'DO_SPACES_SECRET',
 ] as const;
 
 /**
  * Optional but recommended environment variables
  */
 const RECOMMENDED_VARS = [
-  'NEXTAUTH_SECRET',
-  'NEXTAUTH_URL',
+  'ANTHROPIC_API_KEY',
 ] as const;
 
 /**
@@ -48,15 +44,6 @@ export function validateEnv(): EnvValidationResult {
   for (const varName of REQUIRED_VARS) {
     if (!process.env[varName]) {
       errors.push(`Missing required environment variable: ${varName}`);
-    }
-  }
-
-  // Check PDF operation variables (warn but don't fail)
-  for (const varName of PDF_OPERATION_VARS) {
-    if (!process.env[varName]) {
-      warnings.push(
-        `Missing ${varName} - PDF rendering, tile generation, and vector extraction will be unavailable`
-      );
     }
   }
 
@@ -94,49 +81,4 @@ export function validateEnvOrThrow(): void {
       `Environment validation failed:\n${result.errors.join('\n')}`
     );
   }
-}
-
-/**
- * Check if a specific feature is available based on env vars
- */
-export const featureAvailability = {
-  /**
-   * Check if PDF rendering is available
-   */
-  pdfRendering(): boolean {
-    return !!process.env.PYTHON_VECTOR_API_URL;
-  },
-
-  /**
-   * Check if tile generation is available
-   */
-  tileGeneration(): boolean {
-    return !!process.env.PYTHON_VECTOR_API_URL;
-  },
-
-  /**
-   * Check if vector extraction is available
-   */
-  vectorExtraction(): boolean {
-    return !!process.env.PYTHON_VECTOR_API_URL;
-  },
-
-  /**
-   * Check if visual search is available
-   */
-  visualSearch(): boolean {
-    return !!process.env.PYTHON_VECTOR_API_URL;
-  },
-};
-
-/**
- * Get a summary of available features
- */
-export function getFeatureSummary(): Record<string, boolean> {
-  return {
-    pdfRendering: featureAvailability.pdfRendering(),
-    tileGeneration: featureAvailability.tileGeneration(),
-    vectorExtraction: featureAvailability.vectorExtraction(),
-    visualSearch: featureAvailability.visualSearch(),
-  };
 }

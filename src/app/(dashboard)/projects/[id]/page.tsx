@@ -67,7 +67,7 @@ export default function ProjectPage() {
 
     if (!isExtracting) return // Stop polling when not extracting
 
-    const interval = setInterval(() => mutate(), 2000)
+    const interval = setInterval(() => mutate(), 5000)
     return () => clearInterval(interval)
   }, [data, mutate])
 
@@ -318,20 +318,29 @@ export default function ProjectPage() {
   const handleExtract = useCallback(async () => {
     setExtracting(true)
     try {
-      const res = await fetch(`/api/projects/${projectId}/extract`, {
-        method: "POST",
+      const docs = data?.documents || []
+      const documentIds = docs.map((d: { id: string }) => d.id)
+      if (documentIds.length === 0) {
+        addToast({ type: 'error', message: 'No documents to extract' })
+        return
+      }
+      const res = await fetch('/api/extraction-v3', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentIds }),
       })
       if (res.ok) {
+        const result = await res.json()
         mutate()
         addToast({
           type: 'success',
-          message: 'Extraction started'
+          message: `Extraction queued for ${result.queued?.length || 0} document(s)`
         })
       } else {
-        const data = await res.json()
+        const err = await res.json()
         addToast({
           type: 'error',
-          message: data.error || "Failed to start extraction"
+          message: err.error || 'Failed to start extraction'
         })
       }
     } catch (err) {
@@ -342,7 +351,7 @@ export default function ProjectPage() {
     } finally {
       setExtracting(false)
     }
-  }, [projectId, mutate, addToast])
+  }, [data, mutate, addToast])
 
   if (error) {
     return (

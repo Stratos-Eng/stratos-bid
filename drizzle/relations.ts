@@ -1,5 +1,5 @@
 import { relations } from "drizzle-orm/relations";
-import { user, connections, bids, documents, extractionJobs, lineItems, session, account, syncJobs, takeoffProjects, takeoffCategories, takeoffMeasurements, takeoffSheets, userSettings, sheetVectors, uploadSessions } from "./schema";
+import { user, connections, bids, documents, extractionJobs, lineItems, session, account, syncJobs, userSettings, uploadSessions } from "./schema";
 
 export const connectionsRelations = relations(connections, ({one, many}) => ({
 	user: one(user, {
@@ -23,8 +23,6 @@ export const userRelations = relations(user, ({many}) => ({
 	sessions: many(session),
 	accounts: many(account),
 	syncJobs: many(syncJobs),
-	takeoffProjects: many(takeoffProjects),
-	takeoffMeasurements: many(takeoffMeasurements),
 	userSettings: many(userSettings),
 	uploadSessions: many(uploadSessions),
 }));
@@ -40,7 +38,6 @@ export const bidsRelations = relations(bids, ({one, many}) => ({
 	}),
 	documents: many(documents),
 	lineItems: many(lineItems),
-	takeoffProjects: many(takeoffProjects),
 }));
 
 export const documentsRelations = relations(documents, ({one, many}) => ({
@@ -50,7 +47,6 @@ export const documentsRelations = relations(documents, ({one, many}) => ({
 	}),
 	extractionJobs: many(extractionJobs),
 	lineItems: many(lineItems),
-	takeoffSheets: many(takeoffSheets),
 }));
 
 export const extractionJobsRelations = relations(extractionJobs, ({one}) => ({
@@ -110,56 +106,6 @@ export const syncJobsRelations = relations(syncJobs, ({one}) => ({
 	}),
 }));
 
-export const takeoffProjectsRelations = relations(takeoffProjects, ({one, many}) => ({
-	user: one(user, {
-		fields: [takeoffProjects.userId],
-		references: [user.id]
-	}),
-	bid: one(bids, {
-		fields: [takeoffProjects.bidId],
-		references: [bids.id]
-	}),
-	takeoffCategories: many(takeoffCategories),
-	takeoffSheets: many(takeoffSheets),
-	uploadSessions: many(uploadSessions),
-}));
-
-export const takeoffMeasurementsRelations = relations(takeoffMeasurements, ({one}) => ({
-	takeoffCategory: one(takeoffCategories, {
-		fields: [takeoffMeasurements.categoryId],
-		references: [takeoffCategories.id]
-	}),
-	takeoffSheet: one(takeoffSheets, {
-		fields: [takeoffMeasurements.sheetId],
-		references: [takeoffSheets.id]
-	}),
-	user: one(user, {
-		fields: [takeoffMeasurements.createdBy],
-		references: [user.id]
-	}),
-}));
-
-export const takeoffCategoriesRelations = relations(takeoffCategories, ({one, many}) => ({
-	takeoffMeasurements: many(takeoffMeasurements),
-	takeoffProject: one(takeoffProjects, {
-		fields: [takeoffCategories.projectId],
-		references: [takeoffProjects.id]
-	}),
-}));
-
-export const takeoffSheetsRelations = relations(takeoffSheets, ({one, many}) => ({
-	takeoffMeasurements: many(takeoffMeasurements),
-	takeoffProject: one(takeoffProjects, {
-		fields: [takeoffSheets.projectId],
-		references: [takeoffProjects.id]
-	}),
-	document: one(documents, {
-		fields: [takeoffSheets.documentId],
-		references: [documents.id]
-	}),
-	sheetVectors: many(sheetVectors),
-}));
-
 export const userSettingsRelations = relations(userSettings, ({one}) => ({
 	user: one(user, {
 		fields: [userSettings.userId],
@@ -167,20 +113,9 @@ export const userSettingsRelations = relations(userSettings, ({one}) => ({
 	}),
 }));
 
-export const sheetVectorsRelations = relations(sheetVectors, ({one}) => ({
-	takeoffSheet: one(takeoffSheets, {
-		fields: [sheetVectors.sheetId],
-		references: [takeoffSheets.id]
-	}),
-}));
-
 export const uploadSessionsRelations = relations(uploadSessions, ({one}) => ({
 	user: one(user, {
 		fields: [uploadSessions.userId],
 		references: [user.id]
-	}),
-	takeoffProject: one(takeoffProjects, {
-		fields: [uploadSessions.projectId],
-		references: [takeoffProjects.id]
 	}),
 }));

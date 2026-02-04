@@ -21,7 +21,7 @@ export function DocumentActions({
     setStatus('queued');
 
     try {
-      const response = await fetch('/api/extraction', {
+      const response = await fetch('/api/extraction-v3', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ documentId }),

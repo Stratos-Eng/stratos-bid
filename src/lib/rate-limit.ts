@@ -128,41 +128,13 @@ export function addRateLimitHeaders(
   return response;
 }
 
-// Pre-configured rate limiters for different use cases
+// Pre-configured rate limiters
 export const rateLimitConfigs = {
-  // General API: 100 requests per minute
-  api: {
-    windowMs: 60 * 1000,
-    maxRequests: 100,
-    keyPrefix: 'api',
-  },
-
-  // Upload: 10 uploads per minute
-  upload: {
-    windowMs: 60 * 1000,
-    maxRequests: 10,
-    keyPrefix: 'upload',
-  },
-
-  // AI/Extraction: 20 requests per minute (expensive operations)
+  // AI/Extraction: 50 requests per minute (expensive operations)
   extraction: {
     windowMs: 60 * 1000,
-    maxRequests: 20,
+    maxRequests: 50,
     keyPrefix: 'extraction',
-  },
-
-  // Auth: 10 attempts per 15 minutes
-  auth: {
-    windowMs: 15 * 60 * 1000,
-    maxRequests: 10,
-    keyPrefix: 'auth',
-  },
-
-  // Search: 30 requests per minute
-  search: {
-    windowMs: 60 * 1000,
-    maxRequests: 30,
-    keyPrefix: 'search',
   },
 };
 

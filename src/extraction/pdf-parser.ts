@@ -58,6 +58,52 @@ export async function getPdfMetadata(filePath: string): Promise<PdfMetadata> {
 }
 
 /**
+ * Get metadata from a pre-downloaded PDF buffer (avoids redundant downloads)
+ */
+export async function getPdfMetadataFromBuffer(buffer: Buffer): Promise<PdfMetadata> {
+  const pdf = await getDocumentProxy(new Uint8Array(buffer));
+
+  const metadata = await pdf.getMetadata();
+  const info = metadata?.info as Record<string, unknown> | undefined;
+
+  const result = {
+    pageCount: pdf.numPages,
+    title: info?.Title as string | undefined,
+    author: info?.Author as string | undefined,
+    creator: info?.Creator as string | undefined,
+  };
+
+  await pdf.cleanup();
+  return result;
+}
+
+/**
+ * Extract text page by page from a pre-downloaded PDF buffer (avoids redundant downloads)
+ */
+export async function extractPdfPageByPageFromBuffer(buffer: Buffer): Promise<ParsedPage[]> {
+  const pdf = await getDocumentProxy(new Uint8Array(buffer));
+
+  const { text: pageTexts } = await extractText(pdf, { mergePages: false });
+
+  const pages: ParsedPage[] = [];
+  const textArray = Array.isArray(pageTexts) ? pageTexts : [pageTexts];
+
+  for (let i = 0; i < textArray.length; i++) {
+    const pageText = textArray[i] || '';
+    const cleanedText = pageText.replace(/\s+/g, ' ').trim();
+
+    pages.push({
+      pageNumber: i + 1,
+      text: cleanedText,
+      hasContent: cleanedText.length > 50,
+    });
+  }
+
+  await pdf.cleanup();
+  return pages;
+}
+
+/**
  * Extract text from all pages of a PDF
  */
 export async function extractPdfText(filePath: string): Promise<string> {

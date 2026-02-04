@@ -47,29 +47,20 @@ export const bids = pgTable('bids', {
 
 export const documents = pgTable('documents', {
   id: uuid('id').primaryKey().defaultRandom(),
-  bidId: uuid('bid_id').references(() => bids.id, { onDelete: 'cascade' }), // Optional for takeoff docs
+  bidId: uuid('bid_id').references(() => bids.id, { onDelete: 'cascade' }),
   filename: text('filename').notNull(),
   docType: text('doc_type'), // 'plans' | 'specs' | 'addendum' | 'other'
   storagePath: text('storage_path'),
-  extractedText: text('extracted_text'),
   relevanceScore: real('relevance_score').default(0),
   pageCount: integer('page_count'),
-  tileConfig: text('tile_config'), // JSON: { zoomLevels, tileUrlPattern, pageWidth, pageHeight }
   downloadedAt: timestamp('downloaded_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  // Extraction status (signage items)
   extractionStatus: text('extraction_status').default('not_started'), // 'not_started' | 'queued' | 'extracting' | 'completed' | 'failed'
-  // Text extraction status (for search)
   textExtractionStatus: text('text_extraction_status').default('not_started'), // 'not_started' | 'extracting' | 'completed' | 'failed'
   lineItemCount: integer('line_item_count').default(0),
   pagesWithTrades: jsonb('pages_with_trades'), // [{ page: 13, trades: ['signage'] }]
-  // Signage legend data (extracted from sign legend/schedule pages)
-  // Structure: { found: boolean, legendPages: number[], sheetNumbers: string[], symbols: SymbolDefinition[], confidence: number }
   signageLegend: jsonb('signage_legend'),
-  // Thumbnail generation status
-  thumbnailsGenerated: boolean('thumbnails_generated').default(false),
-  // Page-level architecture: individual pages split and stored separately
-  pagesReady: boolean('pages_ready').default(false), // true when all pages are split and stored
+  pagesReady: boolean('pages_ready').default(false),
   updatedAt: timestamp('updated_at'),
 }, (table) => ({
   bidIdx: index('documents_bid_idx').on(table.bidId),
@@ -87,7 +78,10 @@ export const syncJobs = pgTable('sync_jobs', {
   bidsFound: integer('bids_found'),
   docsDownloaded: integer('docs_downloaded'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  userIdx: index('sync_jobs_user_idx').on(table.userId),
+  statusIdx: index('sync_jobs_status_idx').on(table.status),
+}));
 
 // Page text for full-text search
 export const pageText = pgTable('page_text', {
@@ -116,7 +110,6 @@ export const lineItems = pgTable('line_items', {
   category: text('category').notNull(), // e.g., 'Exit Signs', 'Storefront', 'Curtain Wall'
 
   // Location in PDF
-  pdfFilePath: text('pdf_file_path'),
   pageNumber: integer('page_number'),
   pageReference: text('page_reference'), // e.g., "A2.1" for architectural drawings
   pageX: real('page_x'), // X coordinate on PDF page (0-1 normalized)
@@ -129,7 +122,6 @@ export const lineItems = pgTable('line_items', {
 
   // Additional context
   notes: text('notes'),
-  specifications: jsonb('specifications'), // Division/section references
 
   // AI extraction metadata
   extractionConfidence: real('extraction_confidence'), // 0-1 confidence score
@@ -151,31 +143,6 @@ export const lineItems = pgTable('line_items', {
   userIdx: index('line_items_user_idx').on(table.userId),
 }));
 
-// Track extraction job progress
-export const extractionJobs = pgTable('extraction_jobs', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  documentId: uuid('document_id').notNull().references(() => documents.id, { onDelete: 'cascade' }),
-  userId: text('user_id').notNull(), // Clerk user ID
-
-  status: text('status').notNull().default('pending'), // 'pending' | 'processing' | 'completed' | 'failed'
-  tradeFilter: jsonb('trade_filter'), // ['division_08', 'division_10']
-
-  // Progress tracking
-  totalPages: integer('total_pages'),
-  processedPages: integer('processed_pages').default(0),
-  itemsExtracted: integer('items_extracted').default(0),
-
-  // Timing
-  startedAt: timestamp('started_at'),
-  completedAt: timestamp('completed_at'),
-
-  // Results
-  errorMessage: text('error_message'),
-  processingTimeMs: integer('processing_time_ms'),
-
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-});
-
 // User preferences for trades and settings
 export const userSettings = pgTable('user_settings', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -185,124 +152,6 @@ export const userSettings = pgTable('user_settings', {
   autoExtract: boolean('auto_extract').default(true), // Auto-extract when docs downloaded
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
-
-// Takeoff projects (for full takeoff builder)
-export const takeoffProjects = pgTable('takeoff_projects', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: text('user_id').notNull(), // Clerk user ID
-  bidId: uuid('bid_id').references(() => bids.id, { onDelete: 'set null' }),
-
-  name: text('name').notNull(),
-  clientName: text('client_name'),
-  address: text('address'),
-
-  defaultUnit: text('default_unit').default('imperial'), // 'imperial' | 'metric'
-  status: text('status').notNull().default('active'), // 'active' | 'completed' | 'archived'
-
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
-}, (table) => ({
-  userIdx: index('takeoff_projects_user_idx').on(table.userId),
-}));
-
-// Sheets within a takeoff project (PDF pages)
-export const takeoffSheets = pgTable('takeoff_sheets', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  projectId: uuid('project_id').notNull().references(() => takeoffProjects.id, { onDelete: 'cascade' }),
-  documentId: uuid('document_id').references(() => documents.id),
-
-  pageNumber: integer('page_number').notNull(),
-  name: text('name'), // e.g., "A2.1 - Floor Plan Level 1"
-
-  // Dimensions
-  widthPx: integer('width_px'),
-  heightPx: integer('height_px'),
-
-  // Scale calibration (user-set)
-  calibration: jsonb('calibration'), // { pixelLength, realLength, unit, pixelsPerUnit }
-
-  // Legacy scale fields (deprecated, use calibration instead)
-  scaleValue: real('scale_value'), // pixels per foot
-  scaleSource: text('scale_source'), // 'auto_titleblock' | 'auto_scalebar' | 'manual'
-  scaleConfidence: real('scale_confidence'), // 0-1
-
-  // Processing status
-  tilesReady: boolean('tiles_ready').default(false),
-  maxZoomGenerated: integer('max_zoom_generated').default(-1), // -1 = none, 0-4 = zoom levels
-  vectorsReady: boolean('vectors_ready').default(false),
-  vectorQuality: text('vector_quality'), // 'good' | 'medium' | 'poor' | 'none'
-
-  // Tile URL pattern
-  tileUrlTemplate: text('tile_url_template'),
-
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-}, (table) => ({
-  projectIdx: index('takeoff_sheets_project_idx').on(table.projectId),
-}));
-
-// Measurement categories in takeoff
-export const takeoffCategories = pgTable('takeoff_categories', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  projectId: uuid('project_id').notNull().references(() => takeoffProjects.id, { onDelete: 'cascade' }),
-
-  name: text('name').notNull(),
-  color: text('color').notNull().default('#3B82F6'),
-  measurementType: text('measurement_type').notNull(), // 'count' | 'linear' | 'area'
-  sortOrder: integer('sort_order').default(0),
-
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-});
-
-// Individual measurements/annotations
-export const takeoffMeasurements = pgTable('takeoff_measurements', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  categoryId: uuid('category_id').notNull().references(() => takeoffCategories.id, { onDelete: 'cascade' }),
-  sheetId: uuid('sheet_id').notNull().references(() => takeoffSheets.id, { onDelete: 'cascade' }),
-
-  // GeoJSON geometry
-  geometry: jsonb('geometry').notNull(), // { type: 'Point' | 'LineString' | 'Polygon', coordinates: [...] }
-
-  // Measurement type and unit - MUST be persisted, not derived from geometry
-  measurementType: text('measurement_type').notNull(), // 'count' | 'linear' | 'area'
-  unit: text('unit').notNull(), // 'EA', 'LF', 'SF', 'm', 'sqm'
-  label: text('label'), // User-defined label for this measurement
-
-  // Calculated values
-  quantity: real('quantity').notNull(), // count=1, linear=feet, area=sqft
-
-  // Metadata
-  createdBy: text('created_by'), // Clerk user ID
-  source: text('source').notNull().default('manual'), // 'manual' | 'find_similar' | 'ai_detected'
-  confidence: real('confidence'), // For AI-generated
-
-  // For auditing
-  snappedTo: text('snapped_to'), // 'pdf_vector' | 'annotation' | 'grid' | 'none'
-
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
-}, (table) => ({
-  categoryIdx: index('takeoff_measurements_category_idx').on(table.categoryId),
-  sheetIdx: index('takeoff_measurements_sheet_idx').on(table.sheetId),
-}));
-
-// Sheet vectors for snapping (extracted from PDF)
-export const sheetVectors = pgTable('sheet_vectors', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  sheetId: uuid('sheet_id').notNull().references(() => takeoffSheets.id, { onDelete: 'cascade' }).unique(),
-
-  // Simplified snap points for client
-  snapPoints: jsonb('snap_points'), // Array<{ type: 'endpoint' | 'midpoint' | 'intersection', coords: [x, y] }>
-
-  // Line segments for on-line snapping
-  lines: jsonb('lines'), // Array<{ start: [x, y], end: [x, y] }>
-
-  // Extraction metadata
-  extractedAt: timestamp('extracted_at'),
-  rawPathCount: integer('raw_path_count'),
-  cleanedPathCount: integer('cleaned_path_count'),
-
-  createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
 // Symbol regions for visual similarity search
@@ -347,8 +196,7 @@ export const planetbidsPortals = pgTable('planetbids_portals', {
 export const uploadSessions = pgTable('upload_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: text('user_id').notNull(), // Clerk user ID
-  projectId: uuid('project_id').references(() => takeoffProjects.id, { onDelete: 'cascade' }),
-  bidId: uuid('bid_id').references(() => bids.id, { onDelete: 'cascade' }), // For projects flow
+  bidId: uuid('bid_id').references(() => bids.id, { onDelete: 'cascade' }),
 
   // File metadata
   filename: text('filename').notNull(),
@@ -376,19 +224,15 @@ export const uploadSessions = pgTable('upload_sessions', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   expiresAt: timestamp('expires_at').notNull(), // Auto-cleanup stale uploads
-});
+}, (table) => ({
+  expiresAtIdx: index('upload_sessions_expires_at_idx').on(table.expiresAt),
+}));
 
 // Type exports for inserting data
 export type NewBid = typeof bids.$inferInsert;
 export type NewPlanetbidsPortal = typeof planetbidsPortals.$inferInsert;
 export type NewDocument = typeof documents.$inferInsert;
 export type NewLineItem = typeof lineItems.$inferInsert;
-export type NewExtractionJob = typeof extractionJobs.$inferInsert;
-export type NewTakeoffProject = typeof takeoffProjects.$inferInsert;
-export type NewTakeoffSheet = typeof takeoffSheets.$inferInsert;
-export type NewTakeoffCategory = typeof takeoffCategories.$inferInsert;
-export type NewTakeoffMeasurement = typeof takeoffMeasurements.$inferInsert;
-export type NewSheetVectors = typeof sheetVectors.$inferInsert;
 export type NewUploadSession = typeof uploadSessions.$inferInsert;
 export type UploadSession = typeof uploadSessions.$inferSelect;
 export type NewPageText = typeof pageText.$inferInsert;

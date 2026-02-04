@@ -59,7 +59,6 @@ export const documents = pgTable("documents", {
 	filename: text().notNull(),
 	docType: text("doc_type"),
 	storagePath: text("storage_path"),
-	extractedText: text("extracted_text"),
 	relevanceScore: real("relevance_score").default(0),
 	pageCount: integer("page_count"),
 	downloadedAt: timestamp("downloaded_at", { mode: 'string' }),
@@ -67,7 +66,6 @@ export const documents = pgTable("documents", {
 	extractionStatus: text("extraction_status").default('not_started'),
 	lineItemCount: integer("line_item_count").default(0),
 	pagesWithTrades: jsonb("pages_with_trades"),
-	tileConfig: text("tile_config"),
 	signageLegend: jsonb("signage_legend"),
 }, (table) => [
 	foreignKey({
@@ -111,14 +109,12 @@ export const lineItems = pgTable("line_items", {
 	userId: uuid("user_id").notNull(),
 	tradeCode: text("trade_code").notNull(),
 	category: text().notNull(),
-	pdfFilePath: text("pdf_file_path"),
 	pageNumber: integer("page_number"),
 	pageReference: text("page_reference"),
 	description: text().notNull(),
 	estimatedQty: text("estimated_qty"),
 	unit: text(),
 	notes: text(),
-	specifications: jsonb(),
 	extractionConfidence: real("extraction_confidence"),
 	extractedAt: timestamp("extracted_at", { mode: 'string' }),
 	extractionModel: text("extraction_model"),
@@ -226,65 +222,6 @@ export const syncJobs = pgTable("sync_jobs", {
 		}),
 ]);
 
-export const takeoffProjects = pgTable("takeoff_projects", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	userId: uuid("user_id").notNull(),
-	bidId: uuid("bid_id"),
-	name: text().notNull(),
-	clientName: text("client_name"),
-	address: text(),
-	defaultUnit: text("default_unit").default('imperial'),
-	status: text().default('active').notNull(),
-	createdAt: timestamp("created_at", { mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { mode: 'string' }).defaultNow().notNull(),
-}, (table) => [
-	foreignKey({
-			columns: [table.userId],
-			foreignColumns: [user.id],
-			name: "takeoff_projects_user_id_user_id_fk"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.bidId],
-			foreignColumns: [bids.id],
-			name: "takeoff_projects_bid_id_bids_id_fk"
-		}).onDelete("set null"),
-]);
-
-export const takeoffMeasurements = pgTable("takeoff_measurements", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	categoryId: uuid("category_id").notNull(),
-	sheetId: uuid("sheet_id").notNull(),
-	geometry: jsonb().notNull(),
-	measurementType: text("measurement_type").notNull(),
-	unit: text().notNull(),
-	label: text(),
-	quantity: real().notNull(),
-	createdBy: uuid("created_by"),
-	source: text().default('manual').notNull(),
-	confidence: real(),
-	snappedTo: text("snapped_to"),
-	createdAt: timestamp("created_at", { mode: 'string' }).defaultNow().notNull(),
-	updatedAt: timestamp("updated_at", { mode: 'string' }).defaultNow().notNull(),
-}, (table) => [
-	index("takeoff_measurements_category_idx").using("btree", table.categoryId.asc().nullsLast().op("uuid_ops")),
-	index("takeoff_measurements_sheet_idx").using("btree", table.sheetId.asc().nullsLast().op("uuid_ops")),
-	foreignKey({
-			columns: [table.categoryId],
-			foreignColumns: [takeoffCategories.id],
-			name: "takeoff_measurements_category_id_takeoff_categories_id_fk"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.sheetId],
-			foreignColumns: [takeoffSheets.id],
-			name: "takeoff_measurements_sheet_id_takeoff_sheets_id_fk"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.createdBy],
-			foreignColumns: [user.id],
-			name: "takeoff_measurements_created_by_user_id_fk"
-		}),
-]);
-
 export const userSettings = pgTable("user_settings", {
 	id: uuid().defaultRandom().primaryKey().notNull(),
 	userId: uuid("user_id").notNull(),
@@ -300,53 +237,6 @@ export const userSettings = pgTable("user_settings", {
 			name: "user_settings_user_id_user_id_fk"
 		}).onDelete("cascade"),
 	unique("user_settings_user_id_unique").on(table.userId),
-]);
-
-export const takeoffCategories = pgTable("takeoff_categories", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	projectId: uuid("project_id").notNull(),
-	name: text().notNull(),
-	color: text().default('#3B82F6').notNull(),
-	measurementType: text("measurement_type").notNull(),
-	sortOrder: integer("sort_order").default(0),
-	createdAt: timestamp("created_at", { mode: 'string' }).defaultNow().notNull(),
-}, (table) => [
-	foreignKey({
-			columns: [table.projectId],
-			foreignColumns: [takeoffProjects.id],
-			name: "takeoff_categories_project_id_takeoff_projects_id_fk"
-		}).onDelete("cascade"),
-]);
-
-export const takeoffSheets = pgTable("takeoff_sheets", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	projectId: uuid("project_id").notNull(),
-	documentId: uuid("document_id"),
-	pageNumber: integer("page_number").notNull(),
-	name: text(),
-	widthPx: integer("width_px"),
-	heightPx: integer("height_px"),
-	calibration: jsonb(),
-	scaleValue: real("scale_value"),
-	scaleSource: text("scale_source"),
-	scaleConfidence: real("scale_confidence"),
-	tilesReady: boolean("tiles_ready").default(false),
-	vectorsReady: boolean("vectors_ready").default(false),
-	vectorQuality: text("vector_quality"),
-	tileUrlTemplate: text("tile_url_template"),
-	createdAt: timestamp("created_at", { mode: 'string' }).defaultNow().notNull(),
-}, (table) => [
-	index("takeoff_sheets_project_idx").using("btree", table.projectId.asc().nullsLast().op("uuid_ops")),
-	foreignKey({
-			columns: [table.projectId],
-			foreignColumns: [takeoffProjects.id],
-			name: "takeoff_sheets_project_id_takeoff_projects_id_fk"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.documentId],
-			foreignColumns: [documents.id],
-			name: "takeoff_sheets_document_id_documents_id_fk"
-		}),
 ]);
 
 export const verificationToken = pgTable("verificationToken", {
@@ -368,28 +258,9 @@ export const user = pgTable("user", {
 	unique("user_email_unique").on(table.email),
 ]);
 
-export const sheetVectors = pgTable("sheet_vectors", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	sheetId: uuid("sheet_id").notNull(),
-	snapPoints: jsonb("snap_points"),
-	lines: jsonb(),
-	extractedAt: timestamp("extracted_at", { mode: 'string' }),
-	rawPathCount: integer("raw_path_count"),
-	cleanedPathCount: integer("cleaned_path_count"),
-	createdAt: timestamp("created_at", { mode: 'string' }).defaultNow().notNull(),
-}, (table) => [
-	foreignKey({
-			columns: [table.sheetId],
-			foreignColumns: [takeoffSheets.id],
-			name: "sheet_vectors_sheet_id_takeoff_sheets_id_fk"
-		}).onDelete("cascade"),
-	unique("sheet_vectors_sheet_id_unique").on(table.sheetId),
-]);
-
 export const uploadSessions = pgTable("upload_sessions", {
 	id: uuid().defaultRandom().primaryKey().notNull(),
 	userId: uuid("user_id").notNull(),
-	projectId: uuid("project_id"),
 	filename: text().notNull(),
 	fileSize: integer("file_size").notNull(),
 	mimeType: text("mime_type").notNull(),
@@ -410,10 +281,5 @@ export const uploadSessions = pgTable("upload_sessions", {
 			columns: [table.userId],
 			foreignColumns: [user.id],
 			name: "upload_sessions_user_id_user_id_fk"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.projectId],
-			foreignColumns: [takeoffProjects.id],
-			name: "upload_sessions_project_id_takeoff_projects_id_fk"
 		}).onDelete("cascade"),
 ]);

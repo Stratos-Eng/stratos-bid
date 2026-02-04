@@ -7,7 +7,10 @@ export type ExtractionStatus =
   | 'queued'
   | 'extracting'
   | 'completed'
-  | 'failed';
+  | 'failed'
+  | 'timeout';
+
+const POLLING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 interface DocumentStatus {
   id: string;
@@ -45,17 +48,30 @@ interface UseExtractionStatusOptions {
 export function useExtractionStatus({
   projectId,
   enabled = true,
-  pollIntervalMs = 3000,
+  pollIntervalMs = 5000,
   onComplete,
   onError,
 }: UseExtractionStatusOptions): ExtractionStatusResult {
   const [documents, setDocuments] = useState<DocumentStatus[]>([]);
   const [error, setError] = useState<Error | null>(null);
+  const [timedOut, setTimedOut] = useState(false);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const hasCalledComplete = useRef(false);
+  const pollingStartTime = useRef<number>(Date.now());
 
   const fetchStatus = useCallback(async () => {
     if (!projectId || !enabled) return;
+
+    // Check for timeout
+    if (Date.now() - pollingStartTime.current > POLLING_TIMEOUT_MS) {
+      setTimedOut(true);
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      onError?.(new Error('Extraction timed out after 10 minutes'));
+      return;
+    }
 
     try {
       const response = await fetch(`/api/projects/${projectId}`);
@@ -96,6 +112,8 @@ export function useExtractionStatus({
 
     // Reset state when projectId changes
     hasCalledComplete.current = false;
+    pollingStartTime.current = Date.now();
+    setTimedOut(false);
 
     // Initial fetch
     fetchStatus();
@@ -115,7 +133,7 @@ export function useExtractionStatus({
   const overallStatus = calculateOverallStatus(documents);
   const isComplete = overallStatus === 'completed';
   const isProcessing = overallStatus === 'queued' || overallStatus === 'extracting';
-  const hasError = overallStatus === 'failed' || error !== null;
+  const hasError = overallStatus === 'failed' || error !== null || timedOut;
 
   // Calculate progress
   const completed = documents.filter(
