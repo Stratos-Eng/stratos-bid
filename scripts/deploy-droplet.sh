@@ -36,9 +36,13 @@ else
 fi
 
 echo "[deploy] build"
-# If/when we add a worker package, we'll add a dedicated build step here.
-# For now, ensure the repo still builds.
-NODE_OPTIONS=--max-old-space-size=4096 npm run build
+# NOTE: This droplet deploy is intended for the long-running worker.
+# Building the full Next.js app requires many runtime env vars (DATABASE_URL, Spaces creds, etc.)
+# which we do not want to store on the droplet deploy user.
+#
+# Once the worker is implemented as its own package (e.g. ./worker), we will build only that.
+# For now, we skip `next build` here.
+echo "[deploy] skipping next build (worker not yet implemented)"
 
 echo "[deploy] restart worker service (if present)"
 if systemctl list-unit-files | grep -q '^stratos-takeoff-worker\.service'; then
