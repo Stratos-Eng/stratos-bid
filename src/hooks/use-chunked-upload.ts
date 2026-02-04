@@ -76,9 +76,17 @@ export function useChunkedUpload(options: UploadOptions) {
         xhr.onload = () => {
           if (xhr.status >= 200 && xhr.status < 300) {
             resolve();
-          } else {
-            reject(new Error(`Upload failed with status ${xhr.status}`));
+            return;
           }
+
+          // When the browser blocks the request due to CORS, XHR often reports status 0.
+          // Treat that as a likely CORS failure so we can fall back to server-side upload.
+          if (xhr.status === 0) {
+            reject(new Error('CORS'));
+            return;
+          }
+
+          reject(new Error(`Upload failed with status ${xhr.status}`));
         };
 
         xhr.onerror = () => reject(new Error('Failed to fetch'));
@@ -121,6 +129,7 @@ export function useChunkedUpload(options: UploadOptions) {
           const msg = e instanceof Error ? e.message : String(e);
           const isCors =
             msg.toLowerCase().includes('cors') ||
+            msg.toLowerCase().includes('status 0') ||
             msg.toLowerCase().includes('err_failed') ||
             msg.toLowerCase().includes('failed to fetch');
 
