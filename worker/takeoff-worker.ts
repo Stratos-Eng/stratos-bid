@@ -7,13 +7,12 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { db } from '@/db';
-import { bids, documents, lineItems, takeoffJobs, takeoffJobDocuments } from '@/db/schema';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { documents, lineItems, takeoffJobs, takeoffJobDocuments } from '@/db/schema';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { downloadFile } from '@/lib/storage';
 import { scoreAllDocuments, formatScoresForLog, getTopDocument } from '@/extraction/scoring';
 import { detectSourceType, extractPdfText, tryFastPathExtraction } from '@/extraction/fast-path';
-import { runExtractionLoop } from '@/extraction/agentic';
-import type { DocumentInfo } from '@/extraction/agentic';
+import { estimatorTakeoffFromLocalPdfs } from '@/extraction/estimator-takeoff';
 
 type JobRow = typeof takeoffJobs.$inferSelect;
 
@@ -95,32 +94,6 @@ async function downloadBidPdfsToTemp(bidId: string): Promise<string> {
 
   console.log(`[takeoff-worker] Downloaded ${downloaded}/${bidDocs.length} PDFs to ${tempDir}`);
   return tempDir;
-}
-
-function buildExtractionNotes(entry: {
-  source: string;
-  isGrouped: boolean;
-  groupRange?: [number, number];
-  notes?: string;
-  sheetRefs: string[];
-}): string {
-  const parts: string[] = [];
-
-  if (entry.isGrouped && entry.groupRange) {
-    parts.push(`Grouped entry (${entry.groupRange[0]}-${entry.groupRange[1]})`);
-  }
-
-  parts.push(`Source: ${entry.source}`);
-
-  if (entry.sheetRefs.length > 0) {
-    parts.push(`Sheets: ${entry.sheetRefs.join(', ')}`);
-  }
-
-  if (entry.notes) {
-    parts.push(entry.notes);
-  }
-
-  return parts.join(' | ');
 }
 
 async function runJob(job: JobRow) {
@@ -217,42 +190,43 @@ async function runJob(job: JobRow) {
       }
     }
 
-    // STEP 3: agentic loop
-    const topScored = scoredDocs[0];
-    if (!topScored) throw new Error('No documents found in bid folder');
+    // STEP 3: estimator-grade takeoff (OpenClaw) + second-pass verification
+    const localPdfPaths = scoredDocs
+      .slice(0, 5)
+      .map((d) => ({ filename: d.filename, path: d.path }));
 
-    const topDocInfo: DocumentInfo = {
-      id: topScored.documentId,
-      name: topScored.filename,
-      path: topScored.path,
-      pageCount: undefined,
-    };
+    const { result, evidence } = await estimatorTakeoffFromLocalPdfs({
+      localPdfPaths,
+      maxPagesPerDoc: 60,
+    });
 
-    const result = await runExtractionLoop(localBidFolder, [topDocInfo]);
-
-    const values = result.entries.map((entry) => ({
+    const values = result.items.map((item, idx) => ({
       documentId: documentIds[0],
       bidId,
       userId: job.userId,
       tradeCode: 'division_10',
-      category: entry.name,
-      description: `${entry.name}${entry.roomNumber ? ` (${entry.roomNumber})` : ''}`,
-      estimatedQty: String(entry.quantity),
+      category: item.category,
+      description: item.description,
+      estimatedQty: item.qty,
       unit: 'EA',
-      notes: buildExtractionNotes(entry),
-      pageNumber: entry.pageNumbers[0],
-      pageReference: entry.sheetRefs.join(', '),
-      extractionConfidence: entry.confidence,
-      extractionModel: 'signage-agentic',
+      notes: [
+        ...((item.reviewFlags || []).map((f) => `FLAG: ${f}`)),
+        ...item.sources.slice(0, 3).map((s) => `Source: ${s.filename} p${s.page} — ${s.whyAuthoritative} — ${s.evidence}`),
+      ].join(' | '),
+      pageNumber: item.sources?.[0]?.page,
+      pageReference: item.sources?.[0]?.sheetRef,
+      extractionConfidence: item.confidence,
+      extractionModel: 'openclaw:Stratos-bid',
       rawExtractionJson: {
-        id: entry.id,
-        identifier: entry.identifier,
-        source: entry.source,
-        isGrouped: entry.isGrouped,
-        groupRange: entry.groupRange,
-        signTypeCode: entry.signTypeCode,
+        itemIndex: idx,
+        item,
+        discrepancyLog: result.discrepancyLog,
+        missingItems: result.missingItems,
+        reviewFlags: result.reviewFlags,
+        verification: result.verification,
+        evidenceSample: evidence.slice(0, 120),
       },
-      reviewStatus: entry.confidence >= 0.8 ? 'pending' : 'needs_review',
+      reviewStatus: item.confidence >= 0.8 ? 'pending' : 'needs_review',
       extractedAt: new Date(),
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -264,16 +238,17 @@ async function runJob(job: JobRow) {
       .update(documents)
       .set({
         extractionStatus: 'completed',
-        lineItemCount: result.entries.length,
+        lineItemCount: result.items.length,
         signageLegend: {
-          agenticExtraction: true,
-          totalCount: result.totalCount,
-          confidence: result.confidence,
-          iterationsUsed: result.iterationsUsed,
-          toolCallsCount: result.toolCallsCount,
+          estimatorTakeoff: true,
+          confidence: Math.max(0, Math.min(1, result.items.reduce((s, it) => s + (it.confidence || 0), 0) / Math.max(1, result.items.length))),
+          totalCount: result.items.length,
+          discrepancyCount: result.discrepancyLog.length,
+          missingItems: result.missingItems,
+          reviewFlags: result.reviewFlags,
+          verification: result.verification,
           notes: result.notes,
           extractedAt: new Date().toISOString(),
-          tokenUsage: result.tokenUsage,
         },
       })
       .where(inArray(documents.id, documentIds));
@@ -287,7 +262,7 @@ async function runJob(job: JobRow) {
       })
       .where(eq(takeoffJobs.id, job.id));
 
-    console.log(`[takeoff-worker] Agentic extraction complete for bid ${bidId}: ${result.entries.length} items`);
+    console.log(`[takeoff-worker] Estimator takeoff complete for bid ${bidId}: ${result.items.length} items`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
 
@@ -318,7 +293,7 @@ async function main() {
   console.log(`[takeoff-worker] starting workerId=${WORKER_ID}`);
 
   // Sanity: DB should be reachable
-  // and inference configured (runExtractionLoop will use INFERENCE_* envs).
+  // and inference configured (OpenClaw env vars required).
 
   // eslint-disable-next-line no-constant-condition
   while (true) {

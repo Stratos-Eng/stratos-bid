@@ -30,5 +30,28 @@ jobs:
         env:
           DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
           DROPLET_USER: ${{ secrets.DROPLET_USER }}
+
+          # Worker secrets (write to /home/openclaw/stratos-bid/.env.worker)
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DO_SPACES_BUCKET: ${{ secrets.DO_SPACES_BUCKET }}
+          DO_SPACES_REGION: ${{ secrets.DO_SPACES_REGION }}
+          DO_SPACES_ENDPOINT: ${{ secrets.DO_SPACES_ENDPOINT }}
+          DO_SPACES_KEY: ${{ secrets.DO_SPACES_KEY }}
+          DO_SPACES_SECRET: ${{ secrets.DO_SPACES_SECRET }}
+
+          OPENCLAW_INFERENCE_URL: ${{ secrets.OPENCLAW_INFERENCE_URL }}
+          OPENCLAW_API_KEY: ${{ secrets.OPENCLAW_API_KEY }}
+          OPENCLAW_AGENT_MODEL: ${{ secrets.OPENCLAW_AGENT_MODEL }}
         run: |
-          ssh "${DROPLET_USER}@${DROPLET_HOST}" 'bash -s' < ./scripts/deploy-droplet.sh
+          # Forward env vars over SSH so deploy script can write the worker env file.
+          ssh "${DROPLET_USER}@${DROPLET_HOST}" \
+            "DATABASE_URL='${DATABASE_URL}' \
+             DO_SPACES_BUCKET='${DO_SPACES_BUCKET}' \
+             DO_SPACES_REGION='${DO_SPACES_REGION}' \
+             DO_SPACES_ENDPOINT='${DO_SPACES_ENDPOINT}' \
+             DO_SPACES_KEY='${DO_SPACES_KEY}' \
+             DO_SPACES_SECRET='${DO_SPACES_SECRET}' \
+             OPENCLAW_INFERENCE_URL='${OPENCLAW_INFERENCE_URL}' \
+             OPENCLAW_API_KEY='${OPENCLAW_API_KEY}' \
+             OPENCLAW_AGENT_MODEL='${OPENCLAW_AGENT_MODEL}' \
+             bash -s" < ./scripts/deploy-droplet.sh
