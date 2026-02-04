@@ -76,9 +76,17 @@ export function useChunkedUpload(options: UploadOptions) {
         xhr.onload = () => {
           if (xhr.status >= 200 && xhr.status < 300) {
             resolve();
-          } else {
-            reject(new Error(`Upload failed with status ${xhr.status}`));
+            return;
           }
+
+          // When the browser blocks the request due to CORS, XHR often reports status 0.
+          // Treat that as a likely CORS failure so we can fall back to server-side upload.
+          if (xhr.status === 0) {
+            reject(new Error('CORS'));
+            return;
+          }
+
+          reject(new Error(`Upload failed with status ${xhr.status}`));
         };
 
         xhr.onerror = () => reject(new Error('Failed to fetch'));
@@ -113,10 +121,42 @@ export function useChunkedUpload(options: UploadOptions) {
 
         const { uploadUrl, key, publicUrl } = await presignRes.json();
 
-        // Step 2: PUT file directly to DO Spaces via presigned URL
-        await uploadToStorage(uploadUrl, file, filename);
+        // Step 2: Try direct browser->Spaces upload via presigned URL (fast path)
+        try {
+          await uploadToStorage(uploadUrl, file, filename);
+          return { url: publicUrl, pathname: key };
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          const isCors =
+            msg.toLowerCase().includes('cors') ||
+            msg.toLowerCase().includes('status 0') ||
+            msg.toLowerCase().includes('err_failed') ||
+            msg.toLowerCase().includes('failed to fetch');
 
-        return { url: publicUrl, pathname: key };
+          // Fallback: server-side upload (avoids CORS)
+          if (isCors) {
+            console.warn('[upload] Direct upload failed (likely CORS). Falling back to server upload.');
+            const fd = new FormData();
+            fd.append('bidId', effectiveBidId);
+            fd.append('filename', filename);
+            fd.append('file', file);
+
+            const directRes = await fetch('/api/upload/direct', {
+              method: 'POST',
+              body: fd,
+            });
+
+            if (!directRes.ok) {
+              const errText = await directRes.text().catch(() => '');
+              throw new Error(errText || 'Server upload failed');
+            }
+
+            const uploaded = await directRes.json();
+            return { url: uploaded.url, pathname: uploaded.pathname };
+          }
+
+          throw e;
+        }
       } catch (error) {
         const isNetworkError =
           error instanceof Error &&
