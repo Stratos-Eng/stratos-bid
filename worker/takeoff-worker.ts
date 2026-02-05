@@ -7,7 +7,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { db } from '@/db';
-import { documents, lineItems, takeoffJobs, takeoffJobDocuments } from '@/db/schema';
+import { documents, lineItems, takeoffJobs, takeoffJobDocuments, takeoffRuns, takeoffFindings, takeoffItems, takeoffItemEvidence } from '@/db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { downloadFile } from '@/lib/storage';
 import { scoreAllDocuments, formatScoresForLog, getTopDocument } from '@/extraction/scoring';
@@ -116,6 +116,21 @@ async function runJob(job: JobRow) {
   const docs = await getJobDocuments(job.id);
   const documentIds = docs.map((d) => d.id);
 
+  // Create a takeoff run (v2 workspace)
+  const runId = randomUUID();
+  await db.insert(takeoffRuns).values({
+    id: runId,
+    jobId: job.id,
+    bidId,
+    userId: job.userId,
+    status: 'running',
+    workerId: WORKER_ID,
+    extractorVersion: process.env.GIT_SHA || null,
+    model: 'openclaw:Stratos-bid',
+    startedAt: new Date(),
+    updatedAt: new Date(),
+  } as any);
+
   // Update doc statuses to extracting
   await db
     .update(documents)
@@ -167,7 +182,34 @@ async function runJob(job: JobRow) {
               updatedAt: new Date(),
             }));
 
-            if (values.length > 0) await db.insert(lineItems).values(values);
+            if (values.length > 0) {
+              await db.insert(lineItems).values(values);
+
+              // Also write v2 takeoff items (best-effort)
+              const itemRows = fp.entries.map((entry) => {
+                const code = entry.signTypeCode || entry.identifier;
+                const itemKey = `division_10:${code}:${String(entry.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_')}`;
+                return {
+                  id: randomUUID(),
+                  runId,
+                  bidId,
+                  userId: job.userId,
+                  tradeCode: 'division_10',
+                  itemKey,
+                  code,
+                  category: entry.name,
+                  description: `${entry.name}${entry.roomNumber ? ` (${entry.roomNumber})` : ''}`,
+                  qtyNumber: entry.quantity,
+                  qtyText: null,
+                  unit: 'EA',
+                  confidence: entry.confidence,
+                  status: entry.confidence >= 0.8 ? 'draft' : 'needs_review',
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                };
+              });
+              if (itemRows.length > 0) await db.insert(takeoffItems).values(itemRows as any);
+            }
 
             await db
               .update(documents)
@@ -250,6 +292,103 @@ async function runJob(job: JobRow) {
 
     if (values.length > 0) await db.insert(lineItems).values(values);
 
+    // v2 workspace: write findings + items + evidence links
+    const findingRows: any[] = [];
+    const findingIdByKey = new Map<string, string>();
+
+    // Evidence snippets (pass2) as findings
+    for (const snip of evidence.slice(0, 500)) {
+      const fid = randomUUID();
+      const key = `${snip.filename}|${snip.page}|${snip.text}`;
+      findingIdByKey.set(key, fid);
+      findingRows.push({
+        id: fid,
+        runId,
+        bidId,
+        documentId: documentIds[0],
+        pageNumber: snip.page,
+        type: 'snippet',
+        confidence: null,
+        data: { kind: snip.kind },
+        evidenceText: snip.text,
+        evidence: { filename: snip.filename, page: snip.page },
+        createdAt: new Date(),
+      });
+    }
+
+    // Sources cited by items as findings (deduped)
+    for (const it of result.items) {
+      for (const s of (it.sources || []).slice(0, 20)) {
+        const key = `${s.filename}|${s.page}|${s.evidence}`;
+        if (findingIdByKey.has(key)) continue;
+        const fid = randomUUID();
+        findingIdByKey.set(key, fid);
+        findingRows.push({
+          id: fid,
+          runId,
+          bidId,
+          documentId: documentIds[0],
+          pageNumber: s.page,
+          type: 'source',
+          confidence: it.confidence ?? null,
+          data: { whyAuthoritative: s.whyAuthoritative, sheetRef: s.sheetRef },
+          evidenceText: s.evidence,
+          evidence: { filename: s.filename, page: s.page, sheetRef: s.sheetRef },
+          createdAt: new Date(),
+        });
+      }
+    }
+
+    if (findingRows.length > 0) {
+      await db.insert(takeoffFindings).values(findingRows as any);
+    }
+
+    const itemRows: any[] = [];
+    const evidenceLinks: any[] = [];
+
+    for (const it of result.items) {
+      const codeMatch = (it.description || '').match(/\b([A-Z]{1,3}\s?-?\d{1,2})\b/);
+      const code = codeMatch ? codeMatch[1].replace(/\s+/g, '').toUpperCase() : null;
+      const itemKey = `division_10:${code || 'NA'}:${String(it.description || '').toLowerCase().replace(/[^a-z0-9]+/g, '_')}`.slice(0, 220);
+      const itemId = randomUUID();
+
+      itemRows.push({
+        id: itemId,
+        runId,
+        bidId,
+        userId: job.userId,
+        tradeCode: 'division_10',
+        itemKey,
+        code,
+        category: it.category || 'Uncategorized',
+        description: it.description || '',
+        qtyNumber: null,
+        qtyText: it.qty,
+        unit: 'EA',
+        confidence: it.confidence ?? null,
+        status: (it.confidence ?? 0) >= 0.8 ? 'draft' : 'needs_review',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      for (const s of (it.sources || []).slice(0, 10)) {
+        const key = `${s.filename}|${s.page}|${s.evidence}`;
+        const fid = findingIdByKey.get(key);
+        if (!fid) continue;
+        evidenceLinks.push({
+          id: randomUUID(),
+          itemId,
+          findingId: fid,
+          weight: null,
+          note: null,
+          createdAt: new Date(),
+        });
+      }
+    }
+
+    if (itemRows.length > 0) await db.insert(takeoffItems).values(itemRows as any);
+    if (evidenceLinks.length > 0) await db.insert(takeoffItemEvidence).values(evidenceLinks as any);
+
     await db
       .update(documents)
       .set({
@@ -278,6 +417,11 @@ async function runJob(job: JobRow) {
       })
       .where(eq(takeoffJobs.id, job.id));
 
+    await db
+      .update(takeoffRuns)
+      .set({ status: 'succeeded', updatedAt: new Date(), finishedAt: new Date() } as any)
+      .where(eq(takeoffRuns.id, runId));
+
     console.log(`[takeoff-worker] Estimator takeoff complete for bid ${bidId}: ${result.items.length} items`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -296,6 +440,11 @@ async function runJob(job: JobRow) {
         finishedAt: new Date(),
       })
       .where(eq(takeoffJobs.id, job.id));
+
+    await db
+      .update(takeoffRuns)
+      .set({ status: 'failed', lastError: msg, updatedAt: new Date(), finishedAt: new Date() } as any)
+      .where(eq(takeoffRuns.id, runId));
 
     console.error('[takeoff-worker] Job failed:', msg);
   } finally {

@@ -144,6 +144,112 @@ export const lineItems = pgTable('line_items', {
 }));
 
 // User preferences for trades and settings
+// Takeoff run workspace (v2)
+export const takeoffRuns = pgTable('takeoff_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  jobId: uuid('job_id').notNull(),
+  bidId: uuid('bid_id').notNull().references(() => bids.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull(),
+  status: text('status').notNull().default('running'),
+  workerId: text('worker_id'),
+  extractorVersion: text('extractor_version'),
+  model: text('model'),
+  startedAt: timestamp('started_at').defaultNow().notNull(),
+  finishedAt: timestamp('finished_at'),
+  summary: jsonb('summary'),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  jobIdx: index('takeoff_runs_job_idx').on(table.jobId),
+  bidIdx: index('takeoff_runs_bid_idx').on(table.bidId),
+  userIdx: index('takeoff_runs_user_idx').on(table.userId),
+  statusIdx: index('takeoff_runs_status_idx').on(table.status),
+}));
+
+export const takeoffArtifacts = pgTable('takeoff_artifacts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  runId: uuid('run_id').notNull().references(() => takeoffRuns.id, { onDelete: 'cascade' }),
+  bidId: uuid('bid_id').notNull().references(() => bids.id, { onDelete: 'cascade' }),
+  documentId: uuid('document_id').notNull().references(() => documents.id, { onDelete: 'cascade' }),
+  pageNumber: integer('page_number'),
+  method: text('method'),
+  rawText: text('raw_text'),
+  meta: jsonb('meta'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  runIdx: index('takeoff_artifacts_run_idx').on(table.runId),
+  docIdx: index('takeoff_artifacts_doc_idx').on(table.documentId),
+}));
+
+export const takeoffFindings = pgTable('takeoff_findings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  runId: uuid('run_id').notNull().references(() => takeoffRuns.id, { onDelete: 'cascade' }),
+  bidId: uuid('bid_id').notNull().references(() => bids.id, { onDelete: 'cascade' }),
+  documentId: uuid('document_id').notNull().references(() => documents.id, { onDelete: 'cascade' }),
+  pageNumber: integer('page_number'),
+  type: text('type').notNull(),
+  confidence: real('confidence'),
+  data: jsonb('data'),
+  evidenceText: text('evidence_text'),
+  evidence: jsonb('evidence'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  runIdx: index('takeoff_findings_run_idx').on(table.runId),
+  docPageIdx: index('takeoff_findings_doc_page_idx').on(table.documentId, table.pageNumber),
+  typeIdx: index('takeoff_findings_type_idx').on(table.type),
+}));
+
+export const takeoffItems = pgTable('takeoff_items', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  runId: uuid('run_id').notNull().references(() => takeoffRuns.id, { onDelete: 'cascade' }),
+  bidId: uuid('bid_id').notNull().references(() => bids.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull(),
+  tradeCode: text('trade_code').notNull(),
+  itemKey: text('item_key').notNull(),
+  code: text('code'),
+  category: text('category').notNull(),
+  description: text('description').notNull(),
+  qtyNumber: real('qty_number'),
+  qtyText: text('qty_text'),
+  unit: text('unit'),
+  confidence: real('confidence'),
+  status: text('status').notNull().default('draft'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  runIdx: index('takeoff_items_run_idx').on(table.runId),
+  bidIdx: index('takeoff_items_bid_idx').on(table.bidId),
+  userIdx: index('takeoff_items_user_idx').on(table.userId),
+  tradeIdx: index('takeoff_items_trade_idx').on(table.tradeCode),
+  runKeyUnique: uniqueIndex('takeoff_items_run_key_unique').on(table.runId, table.itemKey),
+}));
+
+export const takeoffItemEvidence = pgTable('takeoff_item_evidence', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  itemId: uuid('item_id').notNull().references(() => takeoffItems.id, { onDelete: 'cascade' }),
+  findingId: uuid('finding_id').notNull().references(() => takeoffFindings.id, { onDelete: 'cascade' }),
+  weight: real('weight'),
+  note: text('note'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  unique: uniqueIndex('takeoff_item_evidence_unique').on(table.itemId, table.findingId),
+  itemIdx: index('takeoff_item_evidence_item_idx').on(table.itemId),
+  findingIdx: index('takeoff_item_evidence_finding_idx').on(table.findingId),
+}));
+
+export const takeoffItemEdits = pgTable('takeoff_item_edits', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  itemId: uuid('item_id').notNull().references(() => takeoffItems.id, { onDelete: 'cascade' }),
+  editedBy: text('edited_by').notNull(),
+  editType: text('edit_type').notNull(),
+  before: jsonb('before'),
+  after: jsonb('after'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  itemIdx: index('takeoff_item_edits_item_idx').on(table.itemId),
+}));
+
 export const userSettings = pgTable('user_settings', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: text('user_id').notNull().unique(), // Clerk user ID
