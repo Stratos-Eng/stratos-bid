@@ -3,12 +3,13 @@
 
 import { randomUUID } from 'crypto';
 import { deriveFindingsFromText } from './finding-utils';
+import { extractPageTextWithFallback, getPdfPageCount } from './pdf-artifacts';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { db } from '@/db';
-import { documents, lineItems, takeoffJobs, takeoffJobDocuments, takeoffRuns, takeoffFindings, takeoffItems, takeoffItemEvidence } from '@/db/schema';
+import { documents, lineItems, takeoffJobs, takeoffJobDocuments, takeoffRuns, takeoffArtifacts, takeoffFindings, takeoffItems, takeoffItemEvidence } from '@/db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { downloadFile } from '@/lib/storage';
 import { scoreAllDocuments, formatScoresForLog, getTopDocument } from '@/extraction/scoring';
@@ -260,6 +261,39 @@ async function runJob(job: JobRow) {
     const localPdfPaths = scoredDocs
       .slice(0, 5)
       .map((d) => ({ filename: d.filename, path: d.path }));
+
+    // STEP 3a: page-level extraction coverage + OCR escalation (artifacts)
+    try {
+      const artifactRows: any[] = [];
+      for (const pdf of localPdfPaths) {
+        const documentId = docIdBySafeName.get(pdf.filename) ?? documentIds[0];
+        const pageCount = getPdfPageCount(pdf.path);
+        const scanPages = pageCount > 0 ? Math.min(pageCount, 60) : 60;
+
+        for (let p = 1; p <= scanPages; p++) {
+          const extracted = extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: 30 });
+          artifactRows.push({
+            runId,
+            bidId,
+            documentId,
+            pageNumber: p,
+            method: extracted.method,
+            rawText: extracted.text ? extracted.text.slice(0, 10_000) : null,
+            meta: extracted.meta,
+            createdAt: new Date(),
+          });
+        }
+      }
+
+      // insert in chunks to avoid giant single statement
+      const chunkSize = 200;
+      for (let i = 0; i < artifactRows.length; i += chunkSize) {
+        const chunk = artifactRows.slice(i, i + chunkSize);
+        if (chunk.length > 0) await db.insert(takeoffArtifacts).values(chunk as any);
+      }
+    } catch (err) {
+      console.warn('[takeoff-worker] artifacts write failed (non-fatal):', err);
+    }
 
     const { result, evidence } = await estimatorTakeoffFromLocalPdfs({
       localPdfPaths,
