@@ -28,7 +28,7 @@ const sql = neon(DATABASE_URL);
 console.log(`[migration] applying ${migrationPath}`);
 for (const [i, stmt] of statements.entries()) {
   try {
-    await sql(stmt);
+    await sql.query(stmt);
   } catch (err) {
     console.error(`\n[migration] statement ${i + 1}/${statements.length} failed:`);
     console.error(stmt);
