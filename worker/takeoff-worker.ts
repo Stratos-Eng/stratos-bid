@@ -2,6 +2,7 @@
 /* eslint-disable no-console */
 
 import { randomUUID } from 'crypto';
+import { deriveFindingsFromText } from './finding-utils';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -349,12 +350,78 @@ async function runJob(job: JobRow) {
         }
       }
 
+      // Derived findings from evidence snippets/sources (header/schedule/callout/code_hit)
+      const derivedRows: any[] = [];
+      for (const fr of findingRows) {
+        const t = String(fr.evidenceText || '');
+        if (!t) continue;
+        for (const d of deriveFindingsFromText(t)) {
+          derivedRows.push({
+            id: randomUUID(),
+            runId,
+            bidId,
+            documentId: fr.documentId,
+            pageNumber: fr.pageNumber,
+            type: d.type,
+            confidence: fr.confidence,
+            data: d.data,
+            evidenceText: fr.evidenceText,
+            evidence: fr.evidence,
+            createdAt: new Date(),
+          });
+        }
+      }
+
       if (findingRows.length > 0) {
         await tx.insert(takeoffFindings).values(findingRows as any);
+      }
+      if (derivedRows.length > 0) {
+        await tx.insert(takeoffFindings).values(derivedRows as any);
       }
 
       const itemRows: any[] = [];
       const evidenceLinks: any[] = [];
+
+      // Also compile items from derived schedule_row findings when they include explicit qty
+      for (const dr of derivedRows) {
+        if (dr.type !== 'schedule_row') continue;
+        const code = dr.data?.code ? String(dr.data.code) : null;
+        const desc = dr.data?.description ? String(dr.data.description) : '';
+        const qty = typeof dr.data?.qty === 'number' ? dr.data.qty : null;
+        if (!code || !desc || qty == null) continue;
+
+        const itemKey = `division_10:${code}:${desc.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`.slice(0, 220);
+        const itemId = randomUUID();
+
+        itemRows.push({
+          id: itemId,
+          runId,
+          bidId,
+          userId: job.userId,
+          tradeCode: 'division_10',
+          itemKey,
+          code,
+          category: 'Schedule',
+          description: desc,
+          qtyNumber: qty,
+          qtyText: null,
+          unit: 'EA',
+          confidence: dr.confidence ?? null,
+          status: 'draft',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+        // link evidence to the source finding (best-effort)
+        evidenceLinks.push({
+          id: randomUUID(),
+          itemId,
+          findingId: dr.id,
+          weight: null,
+          note: 'derived from schedule_row',
+          createdAt: new Date(),
+        });
+      }
 
       for (const it of result.items) {
         const codeMatch = (it.description || '').match(/\b([A-Z]{1,3}\s?-?\d{1,2})\b/);
