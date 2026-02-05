@@ -37,6 +37,8 @@ export type EstimatorTakeoffResult = {
   };
 };
 
+import { ensurePdfReadableInPlace } from './pdf-utils';
+
 const KEYWORD_SETS: Array<{ kind: EvidenceSnippet['kind']; keywords: RegExp }> = [
   { kind: 'schedule', keywords: /sign(\s|-)schedule|signage\s+schedule|sign\s+type|type\s+schedule|schedule\s+of\s+sign/i },
   { kind: 'legend', keywords: /legend|sign\s+legend/i },
@@ -55,6 +57,7 @@ function detectKind(text: string): EvidenceSnippet['kind'] {
 
 function pdftotextPage(pdfPath: string, page: number): string {
   try {
+    ensurePdfReadableInPlace(pdfPath);
     return execSync(`pdftotext -layout -f ${page} -l ${page} "${pdfPath}" -`, {
       encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024,
@@ -66,6 +69,7 @@ function pdftotextPage(pdfPath: string, page: number): string {
 
 function getPdfPageCount(pdfPath: string): number | null {
   try {
+    ensurePdfReadableInPlace(pdfPath);
     const out = execSync(`pdfinfo "${pdfPath}"`, { encoding: 'utf-8', maxBuffer: 1024 * 1024 });
     const m = out.match(/Pages:\s+(\d+)/i);
     return m ? Number(m[1]) : null;

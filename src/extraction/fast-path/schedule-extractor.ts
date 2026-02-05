@@ -9,6 +9,7 @@
  */
 
 import { execSync } from 'child_process';
+import { ensurePdfReadableInPlace } from '../pdf-utils';
 import type { SignageEntry } from '../signage/types';
 import {
   SIGNAGE_PATTERNS,
@@ -48,6 +49,9 @@ export async function extractPdfText(
   endPage?: number
 ): Promise<string> {
   try {
+    // Repair/normalize PDFs that break poppler
+    ensurePdfReadableInPlace(pdfPath);
+
     let pageArg = '';
     if (startPage && endPage) {
       pageArg = `-f ${startPage} -l ${endPage}`;
