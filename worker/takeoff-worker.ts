@@ -160,7 +160,8 @@ async function runJob(job: JobRow) {
                 isGrouped: entry.isGrouped,
                 signTypeCode: entry.signTypeCode,
               },
-              reviewStatus: entry.confidence >= 0.8 ? 'pending' : 'needs_review',
+              // UI expects: pending|approved|rejected|modified. Keep pending and encode review needs in notes/flags.
+              reviewStatus: 'pending',
               extractedAt: new Date(),
               createdAt: new Date(),
               updatedAt: new Date(),
@@ -223,8 +224,9 @@ async function runJob(job: JobRow) {
       estimatedQty: item.qty,
       unit: 'EA',
       notes: [
+        ...(item.confidence < 0.8 ? ['LOW_CONFIDENCE: review recommended'] : []),
         ...((item.reviewFlags || []).map((f) => `FLAG: ${f}`)),
-        ...item.sources.slice(0, 3).map((s) => `Source: ${s.filename} p${s.page} — ${s.whyAuthoritative} — ${s.evidence}`),
+        ...item.sources.slice(0, 3).map((s) => `Source: ${s.filename} p${s.page} — ${s.whyAuthoritative}`),
       ].join(' | '),
       pageNumber: item.sources?.[0]?.page,
       pageReference: item.sources?.[0]?.sheetRef,
@@ -239,7 +241,8 @@ async function runJob(job: JobRow) {
         verification: result.verification,
         evidenceSample: evidence.slice(0, 120),
       },
-      reviewStatus: item.confidence >= 0.8 ? 'pending' : 'needs_review',
+      // UI expects: pending|approved|rejected|modified. Keep pending and encode review needs in flags.
+      reviewStatus: 'pending',
       extractedAt: new Date(),
       createdAt: new Date(),
       updatedAt: new Date(),
