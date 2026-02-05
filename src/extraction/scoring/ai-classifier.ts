@@ -12,7 +12,13 @@
 
 import { getAnthropicClient } from '@/lib/anthropic';
 
-const anthropic = getAnthropicClient();
+function tryGetClient() {
+  try {
+    return getAnthropicClient();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Classification result for a single file
@@ -89,6 +95,21 @@ export async function classifyFilenames(
   tradeCode: string
 ): Promise<ClassificationResult> {
   const tradePrompt = TRADE_PROMPTS[tradeCode] || TRADE_PROMPTS.division_10;
+
+  const anthropic = tryGetClient();
+  if (!anthropic) {
+    return {
+      classifications: filePaths.map((p) => ({
+        path: p,
+        relevance: 'low',
+        confidence: 0,
+        reason: 'AI classifier unavailable (no inference credentials configured)',
+      })),
+      highRelevance: [],
+      mediumRelevance: [],
+      tokenUsage: { inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 },
+    };
+  }
 
   // Format file list for the prompt
   const fileList = filePaths

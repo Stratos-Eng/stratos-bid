@@ -112,7 +112,7 @@ async function runJob(job: JobRow) {
 
   try {
     // STEP 1: score docs
-    const scoredDocs = await scoreAllDocuments(localBidFolder, 'division_10');
+    const scoredDocs = await scoreAllDocuments(localBidFolder, 'division_10', false);
     console.log(`[takeoff-worker] Document scores:\n${formatScoresForLog(scoredDocs)}`);
 
     // STEP 2: fast-path
