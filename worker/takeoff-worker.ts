@@ -50,7 +50,21 @@ async function claimNextJob(): Promise<JobRow | null> {
         updated_at = ${now},
         started_at = COALESCE(started_at, ${now})
     WHERE id IN (SELECT id FROM candidate)
-    RETURNING *;
+    RETURNING
+      id,
+      bid_id as "bidId",
+      user_id as "userId",
+      status,
+      requested_document_ids as "requestedDocumentIds",
+      bid_folder as "bidFolder",
+      lock_id as "lockId",
+      locked_at as "lockedAt",
+      attempts,
+      last_error as "lastError",
+      created_at as "createdAt",
+      updated_at as "updatedAt",
+      started_at as "startedAt",
+      finished_at as "finishedAt";
   `);
 
   const rows = (result as any)?.rows ? (result as any).rows as JobRow[] : (result as any as JobRow[]);
