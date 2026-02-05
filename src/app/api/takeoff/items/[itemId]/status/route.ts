@@ -15,11 +15,18 @@ export async function POST(
   const { itemId } = await ctx.params;
   const body = await req.json().catch(() => ({}));
   const status = String(body.status || 'draft');
+  const allowed = new Set(['draft', 'needs_review', 'approved', 'rejected', 'modified']);
+  if (!allowed.has(status)) {
+    return NextResponse.json({ error: 'Invalid status' }, { status: 400 });
+  }
 
   const before = await db.select().from(takeoffItems).where(and(eq(takeoffItems.id, itemId), eq(takeoffItems.userId, userId)));
   if (!before[0]) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  await db.update(takeoffItems).set({ status, updatedAt: new Date() } as any).where(eq(takeoffItems.id, itemId));
+  await db
+    .update(takeoffItems)
+    .set({ status, updatedAt: new Date() } as any)
+    .where(and(eq(takeoffItems.id, itemId), eq(takeoffItems.userId, userId)));
 
   await db.insert(takeoffItemEdits).values({
     id: randomUUID(),

@@ -84,8 +84,11 @@ async function getJobDocuments(jobId: string) {
   return rows.map((r) => r.doc);
 }
 
-async function downloadBidPdfsToTemp(bidId: string): Promise<string> {
+async function downloadBidPdfsToTemp(
+  bidId: string
+): Promise<{ tempDir: string; docIdBySafeName: Map<string, string> }> {
   const tempDir = await mkdtemp(join(tmpdir(), `stratos-bid-${bidId}-`));
+  const docIdBySafeName = new Map<string, string>();
 
   const bidDocs = await db
     .select({ id: documents.id, filename: documents.filename, storagePath: documents.storagePath })
@@ -99,6 +102,7 @@ async function downloadBidPdfsToTemp(bidId: string): Promise<string> {
       const buffer = await downloadFile(doc.storagePath);
       const safeName = doc.filename.replace(/[^a-zA-Z0-9._()-]/g, '_');
       await writeFile(join(tempDir, safeName), buffer);
+      docIdBySafeName.set(safeName, doc.id);
       downloaded++;
     } catch (err) {
       console.warn(`[takeoff-worker] Failed to download ${doc.filename}:`, err instanceof Error ? err.message : err);
@@ -106,7 +110,7 @@ async function downloadBidPdfsToTemp(bidId: string): Promise<string> {
   }
 
   console.log(`[takeoff-worker] Downloaded ${downloaded}/${bidDocs.length} PDFs to ${tempDir}`);
-  return tempDir;
+  return { tempDir, docIdBySafeName };
 }
 
 async function runJob(job: JobRow) {
@@ -137,7 +141,7 @@ async function runJob(job: JobRow) {
     .set({ extractionStatus: 'extracting' })
     .where(inArray(documents.id, documentIds));
 
-  const localBidFolder = await downloadBidPdfsToTemp(bidId);
+  const { tempDir: localBidFolder, docIdBySafeName } = await downloadBidPdfsToTemp(bidId);
 
   try {
     // STEP 1: score docs
@@ -239,6 +243,11 @@ async function runJob(job: JobRow) {
               })
               .where(eq(takeoffJobs.id, job.id));
 
+            await db
+              .update(takeoffRuns)
+              .set({ status: 'succeeded', updatedAt: new Date(), finishedAt: new Date() } as any)
+              .where(eq(takeoffRuns.id, runId));
+
             console.log(`[takeoff-worker] Fast-path complete for bid ${bidId}: ${fp.entries.length} items`);
             return;
           }
@@ -305,7 +314,7 @@ async function runJob(job: JobRow) {
         id: fid,
         runId,
         bidId,
-        documentId: documentIds[0],
+        documentId: docIdBySafeName.get(snip.filename) ?? documentIds[0],
         pageNumber: snip.page,
         type: 'snippet',
         confidence: null,
@@ -327,7 +336,7 @@ async function runJob(job: JobRow) {
           id: fid,
           runId,
           bidId,
-          documentId: documentIds[0],
+          documentId: docIdBySafeName.get(s.filename) ?? documentIds[0],
           pageNumber: s.page,
           type: 'source',
           confidence: it.confidence ?? null,

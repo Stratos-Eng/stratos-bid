@@ -147,7 +147,7 @@ export const lineItems = pgTable('line_items', {
 // Takeoff run workspace (v2)
 export const takeoffRuns = pgTable('takeoff_runs', {
   id: uuid('id').primaryKey().defaultRandom(),
-  jobId: uuid('job_id').notNull(),
+  jobId: uuid('job_id').notNull().references(() => takeoffJobs.id, { onDelete: 'cascade' }),
   bidId: uuid('bid_id').notNull().references(() => bids.id, { onDelete: 'cascade' }),
   userId: text('user_id').notNull(),
   status: text('status').notNull().default('running'),
