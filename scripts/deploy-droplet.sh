@@ -85,12 +85,23 @@ UNIT_SRC="${APP_DIR}/worker/stratos-takeoff-worker.service"
 UNIT_DST="/etc/systemd/system/stratos-takeoff-worker.service"
 
 maybe_sudo() {
-  # If running as root, run directly. Otherwise require passwordless sudo.
+  # If running as root, run directly.
   if [[ "$(id -u)" -eq 0 ]]; then
     "$@"
-  else
-    sudo -n "$@"
+    return
   fi
+
+  # Prefer going through the restricted clawops sudo path if available.
+  # This avoids requiring the deploy SSH user to have full passwordless sudo.
+  if command -v sudo >/dev/null 2>&1; then
+    if sudo -n -u clawops true >/dev/null 2>&1; then
+      sudo -n -u clawops "$@"
+      return
+    fi
+  fi
+
+  # Fall back to direct passwordless sudo for the current user.
+  sudo -n "$@"
 }
 
 if [[ -f "${UNIT_SRC}" ]]; then
