@@ -15,23 +15,18 @@ import { tmpdir } from 'os';
  * 2) qpdf --repair --stream-data=uncompress (in-place via temp file)
  * 3) ghostscript pdfwrite re-distill (fallback)
  */
+const repaired = new Set<string>();
+
 export function ensurePdfReadableInPlace(pdfPath: string): void {
-  // Quick check. If qpdf isn't installed or check fails, we try to repair.
-  try {
-    execSync(`qpdf --check --no-warn "${pdfPath}"`, {
-      stdio: 'ignore',
-      timeout: 30_000,
-    });
-    return;
-  } catch {
-    // continue to repair
-  }
+  // Avoid repeatedly rewriting the same file in a single run.
+  if (repaired.has(pdfPath)) return;
+  repaired.add(pdfPath);
 
   const tempDir = mkdtempSync(join(tmpdir(), 'stratos-pdf-repair-'));
   const repairedQpdf = join(tempDir, 'repaired-qpdf.pdf');
   const repairedGs = join(tempDir, 'repaired-gs.pdf');
 
-  // 1) qpdf repair
+  // Try qpdf repair first (fast, often fixes poppler stream issues)
   try {
     execSync(
       `qpdf --repair --stream-data=uncompress "${pdfPath}" "${repairedQpdf}"`,
@@ -40,10 +35,10 @@ export function ensurePdfReadableInPlace(pdfPath: string): void {
     execSync(`mv -f "${repairedQpdf}" "${pdfPath}"`, { stdio: 'ignore' });
     return;
   } catch {
-    // continue to ghostscript
+    // continue
   }
 
-  // 2) ghostscript re-distill
+  // Fallback: ghostscript re-distill
   try {
     execSync(
       `gs -o "${repairedGs}" -sDEVICE=pdfwrite -dPDFSETTINGS=/prepress "${pdfPath}"`,
