@@ -395,8 +395,20 @@ async function runJob(job: JobRow) {
       }
     }
 
-    if (itemRows.length > 0) await db.insert(takeoffItems).values(itemRows as any);
-    if (evidenceLinks.length > 0) await db.insert(takeoffItemEvidence).values(evidenceLinks as any);
+    // Write items + evidence links with best-effort idempotency
+    if (itemRows.length > 0) {
+      await db
+        .insert(takeoffItems)
+        .values(itemRows as any)
+        .onConflictDoNothing({ target: [takeoffItems.runId, takeoffItems.itemKey] } as any);
+    }
+
+    if (evidenceLinks.length > 0) {
+      await db
+        .insert(takeoffItemEvidence)
+        .values(evidenceLinks as any)
+        .onConflictDoNothing({ target: [takeoffItemEvidence.itemId, takeoffItemEvidence.findingId] } as any);
+    }
 
     await db
       .update(documents)
