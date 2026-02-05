@@ -30,10 +30,7 @@ const REQUIRED_VARS = [
  * Optional but recommended environment variables
  */
 const RECOMMENDED_VARS = [
-  // Either direct Anthropic or an inference gateway key should be set.
-  // (We can't express "one of" in this simple validator, so we check manually below.)
-  'ANTHROPIC_API_KEY',
-  'INFERENCE_API_KEY',
+  // Add non-secret quality-of-life vars here if needed.
 ] as const;
 
 /**
@@ -64,9 +61,29 @@ export function validateEnv(): EnvValidationResult {
     }
   }
 
-  // Special case: we require at least one inference key
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.INFERENCE_API_KEY) {
-    warnings.push('Missing inference credentials: set ANTHROPIC_API_KEY or INFERENCE_API_KEY');
+  // Special case: we require at least one inference credential set.
+  // Supported options today:
+  // - OpenClaw (preferred for Stratos): OPENCLAW_INFERENCE_URL + OPENCLAW_API_KEY
+  // - Direct Anthropic: ANTHROPIC_API_KEY
+  // - Legacy gateway mode: INFERENCE_API_KEY (+ INFERENCE_BASE_URL)
+  const hasOpenClaw = Boolean(process.env.OPENCLAW_API_KEY);
+  const hasAnthropic = Boolean(process.env.ANTHROPIC_API_KEY);
+  const hasLegacyGateway = Boolean(process.env.INFERENCE_API_KEY);
+
+  if (!hasOpenClaw && !hasAnthropic && !hasLegacyGateway) {
+    warnings.push(
+      'Missing inference credentials: set OPENCLAW_API_KEY (preferred) or ANTHROPIC_API_KEY or INFERENCE_API_KEY'
+    );
+  }
+
+  // If OpenClaw is configured, Anthropic/legacy gateway keys are not expected.
+  if (hasOpenClaw) {
+    // Remove noisy warnings that don't apply when using OpenClaw.
+    for (let i = warnings.length - 1; i >= 0; i--) {
+      if (warnings[i].includes('ANTHROPIC_API_KEY') || warnings[i].includes('INFERENCE_API_KEY')) {
+        warnings.splice(i, 1);
+      }
+    }
   }
 
   return {
