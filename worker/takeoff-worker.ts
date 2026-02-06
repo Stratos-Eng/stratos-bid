@@ -336,8 +336,9 @@ async function runJob(job: JobRow) {
 
     if (values.length > 0) await db.insert(lineItems).values(values);
 
-    // v2 workspace: write findings + items + evidence links (transactional)
-    await db.transaction(async (tx) => {
+    // v2 workspace: write findings + items + evidence links
+    // NOTE: Neon HTTP driver does not support transactions. We rely on idempotent inserts + ordering.
+    {
       const findingRows: any[] = [];
       const findingIdByKey = new Map<string, string>();
 
@@ -407,10 +408,10 @@ async function runJob(job: JobRow) {
       }
 
       if (findingRows.length > 0) {
-        await tx.insert(takeoffFindings).values(findingRows as any);
+        await db.insert(takeoffFindings).values(findingRows as any);
       }
       if (derivedRows.length > 0) {
-        await tx.insert(takeoffFindings).values(derivedRows as any);
+        await db.insert(takeoffFindings).values(derivedRows as any);
       }
 
       const itemRows: any[] = [];
@@ -499,19 +500,19 @@ async function runJob(job: JobRow) {
 
       // Write items + evidence links with best-effort idempotency
       if (itemRows.length > 0) {
-        await tx
+        await db
           .insert(takeoffItems)
           .values(itemRows as any)
           .onConflictDoNothing({ target: [takeoffItems.runId, takeoffItems.itemKey] } as any);
       }
 
       if (evidenceLinks.length > 0) {
-        await tx
+        await db
           .insert(takeoffItemEvidence)
           .values(evidenceLinks as any)
           .onConflictDoNothing({ target: [takeoffItemEvidence.itemId, takeoffItemEvidence.findingId] } as any);
       }
-    });
+    }
 
     await db
       .update(documents)
