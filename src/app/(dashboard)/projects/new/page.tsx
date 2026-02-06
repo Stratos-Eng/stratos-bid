@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from "react"
 import { useRouter } from "next/navigation"
+import Link from 'next/link'
 import { useDropzone } from "react-dropzone"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -22,6 +23,12 @@ interface UploadState {
   projectId?: string
 }
 
+type EnqueueState =
+  | { status: 'idle' }
+  | { status: 'enqueuing'; docCount: number }
+  | { status: 'queued'; docCount: number }
+  | { status: 'error'; error: string };
+
 export default function NewProjectPage() {
   const router = useRouter()
   const { addToast } = useToast()
@@ -35,6 +42,9 @@ export default function NewProjectPage() {
   const [fileProgress, setFileProgress] = useState<UploadProgress[]>([])
   const [lastBidId, setLastBidId] = useState<string | null>(null)
   const [lastUploadBatch, setLastUploadBatch] = useState<Array<{ file: File; relativePath?: string; bidId: string }>>([])
+  const [autoEnqueue, setAutoEnqueue] = useState(true)
+  const [enqueueState, setEnqueueState] = useState<EnqueueState>({ status: 'idle' })
+  const [foundRunId, setFoundRunId] = useState<string | null>(null)
 
   // Set up chunked upload hook (will be configured with bidId when project is created)
   const [currentBidId, setCurrentBidId] = useState<string | null>(null)
@@ -136,10 +146,13 @@ export default function NewProjectPage() {
     if (list.length === 0) return
 
     addIncomingFiles(
-      list.map((file: any) => ({
-        file,
-        relativePath: file.webkitRelativePath || undefined,
-      }))
+      list.map((file) => {
+        const rf = file as File & { webkitRelativePath?: string }
+        return {
+          file,
+          relativePath: rf.webkitRelativePath || undefined,
+        }
+      })
     )
 
     // allow re-picking the same folder
@@ -162,14 +175,53 @@ export default function NewProjectPage() {
     const { results } = await chunkedUpload.uploadFiles(subset)
 
     const documentIds = results.map(r => r.documentId).filter((id): id is string => !!id)
-    if (documentIds.length > 0) {
-      await fetch('/api/takeoff/enqueue', {
+    await enqueueTakeoff(lastBidId, documentIds)
+  }, [addToast, chunkedUpload, enqueueTakeoff, fileProgress, lastBidId, lastUploadBatch])
+
+  const enqueueTakeoff = useCallback(async (bidId: string, documentIds: string[]) => {
+    if (!autoEnqueue) return
+    if (documentIds.length === 0) return
+
+    setEnqueueState({ status: 'enqueuing', docCount: documentIds.length })
+
+    try {
+      const res = await fetch('/api/takeoff/enqueue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bidId: lastBidId, documentIds }),
+        body: JSON.stringify({ bidId, documentIds }),
       })
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data?.error || 'Failed to enqueue')
+      }
+
+      setEnqueueState({ status: 'queued', docCount: documentIds.length })
+
+      // Poll runs list to find the newest run and jump the user straight into review
+      const startedAt = Date.now()
+      const poll = async () => {
+        if (Date.now() - startedAt > 60_000) return // 60s max
+        const r = await fetch(`/api/takeoff/bids/${bidId}/runs`, { cache: 'no-store' })
+        if (r.ok) {
+          const data = await r.json().catch(() => ({}))
+          const runs = data?.runs || []
+          const latest = runs[0]
+          if (latest?.id) {
+            setFoundRunId(latest.id)
+            router.push(`/projects/${bidId}/takeoff/${latest.id}`)
+            return
+          }
+        }
+        setTimeout(poll, 2000)
+      }
+      poll()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to enqueue'
+      setEnqueueState({ status: 'error', error: msg })
+      addToast({ type: 'error', message: `Failed to enqueue takeoff: ${msg}` })
     }
-  }, [addToast, chunkedUpload, fileProgress, lastBidId, lastUploadBatch])
+  }, [addToast, autoEnqueue, router])
 
   const handleUpload = async () => {
     if (!projectName.trim() || files.length === 0) return
@@ -234,13 +286,7 @@ export default function NewProjectPage() {
         .map((r) => r.documentId)
         .filter((id): id is string => !!id)
 
-      if (documentIds.length > 0) {
-        await fetch('/api/takeoff/enqueue', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bidId, documentIds }),
-        })
-      }
+      await enqueueTakeoff(bidId, documentIds)
 
       // Note: Don't set complete here - the useExtractionStatus hook
       // will poll for completion and trigger the redirect
@@ -292,23 +338,35 @@ export default function NewProjectPage() {
         )}
       </div>
 
-      <div className="mt-3 flex items-center gap-3">
-        <label className={cn("inline-flex", isUploading && "pointer-events-none opacity-50")}>
-          <input
-            type="file"
-            multiple
-            // @ts-ignore - webkitdirectory is non-standard but supported in Chromium
-            webkitdirectory="true"
-            className="hidden"
-            onChange={handleFolderPick}
-          />
-          <span className="px-4 py-2 text-sm border border-border rounded-lg hover:bg-secondary cursor-pointer">
-            Select folder
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <label className={cn("inline-flex", isUploading && "pointer-events-none opacity-50")}>
+            <input
+              type="file"
+              multiple
+              // @ts-expect-error - webkitdirectory is non-standard but supported in Chromium
+              webkitdirectory="true"
+              className="hidden"
+              onChange={handleFolderPick}
+            />
+            <span className="px-4 py-2 text-sm border border-border rounded-lg hover:bg-secondary cursor-pointer">
+              Select folder
+            </span>
+          </label>
+          <span className="text-xs text-muted-foreground">
+            For large plan sets, folder upload is the fastest way.
           </span>
+        </div>
+
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={autoEnqueue}
+            onChange={(e) => setAutoEnqueue(e.target.checked)}
+            disabled={isUploading}
+          />
+          Auto-start takeoff review
         </label>
-        <span className="text-xs text-muted-foreground">
-          For large plan sets, folder upload is the fastest way.
-        </span>
       </div>
 
       {/* File List */}
@@ -371,6 +429,37 @@ export default function NewProjectPage() {
               onCancelOne={chunkedUpload.cancel}
             />
           )}
+        </div>
+      )}
+
+      {/* Enqueue banner */}
+      {lastBidId && enqueueState.status !== 'idle' && (
+        <div className={cn(
+          'mt-6 border rounded-lg p-3',
+          enqueueState.status === 'error' ? 'border-red-200 bg-red-50' : 'border-blue-200 bg-blue-50'
+        )}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm">
+              {enqueueState.status === 'enqueuing' && (
+                <span>Starting takeoff review for <b>{enqueueState.docCount}</b> document(s)…</span>
+              )}
+              {enqueueState.status === 'queued' && (
+                <span>Takeoff started for <b>{enqueueState.docCount}</b> document(s). Opening review…</span>
+              )}
+              {enqueueState.status === 'error' && (
+                <span>Couldn’t start takeoff: {enqueueState.error}</span>
+              )}
+              <div className="text-xs text-muted-foreground mt-1">
+                You can keep uploading/retrying; we’ll keep the queue running.
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Link className="underline text-sm" href={`/projects/${lastBidId}/takeoff`}>Runs</Link>
+              {foundRunId && (
+                <Link className="underline text-sm" href={`/projects/${lastBidId}/takeoff/${foundRunId}`}>Open review</Link>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

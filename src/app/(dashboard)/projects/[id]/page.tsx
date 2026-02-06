@@ -408,6 +408,14 @@ export default function ProjectPage() {
         </div>
 
         <div className="flex items-center gap-4">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => router.push(`/projects/${projectId}/takeoff`)}
+          >
+            Takeoff Review
+          </Button>
+
           {/* Extraction Status */}
           {extractionStatus === "extracting" && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
