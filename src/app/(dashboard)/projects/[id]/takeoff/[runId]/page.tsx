@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { TakeoffRunClient } from '@/components/takeoff/takeoff-run-client';
+import { TakeoffRunSeamlessClient } from '@/components/takeoff/takeoff-run-seamless-client';
 
 export default async function TakeoffRunPage({
   params,
@@ -9,18 +9,18 @@ export default async function TakeoffRunPage({
   const { id: bidId, runId } = await params;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Takeoff Run</h1>
-          <div className="text-sm text-muted-foreground">Bid: {bidId} · Run: {runId}</div>
+          <h1 className="text-2xl font-semibold">Takeoff</h1>
+          <div className="text-sm text-muted-foreground">Bid: {bidId}</div>
         </div>
         <div className="flex gap-3">
           <Link className="underline" href={`/projects/${bidId}`}>Back to project</Link>
         </div>
       </div>
 
-      <TakeoffRunClient bidId={bidId} runId={runId} />
+      <TakeoffRunSeamlessClient bidId={bidId} runId={runId} />
     </div>
   );
 }
