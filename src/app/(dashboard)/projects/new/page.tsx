@@ -25,7 +25,7 @@ export default function NewProjectPage() {
   const router = useRouter()
   const { addToast } = useToast()
   const [projectName, setProjectName] = useState("")
-  const [files, setFiles] = useState<File[]>([])
+  const [files, setFiles] = useState<Array<{ file: File; relativePath?: string }>>([])
   const [uploadState, setUploadState] = useState<UploadState>({
     status: "idle",
     progress: 0,
@@ -85,17 +85,18 @@ export default function NewProjectPage() {
     },
   })
 
-  const onDrop = useCallback((acceptedFiles: File[]) => {
+  const addIncomingFiles = useCallback((incoming: Array<{ file: File; relativePath?: string }>) => {
     // Filter for PDFs only and validate file size
-    const pdfFiles: File[] = []
+    const pdfFiles: Array<{ file: File; relativePath?: string }> = []
     const rejectedFiles: string[] = []
 
-    for (const f of acceptedFiles) {
-      const isPdf = f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf")
+    for (const f of incoming) {
+      const file = f.file
+      const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
       if (!isPdf) continue
 
-      if (f.size > MAX_FILE_SIZE) {
-        rejectedFiles.push(`${f.name} (${(f.size / 1024 / 1024).toFixed(0)}MB)`)
+      if (file.size > MAX_FILE_SIZE) {
+        rejectedFiles.push(`${file.name} (${(file.size / 1024 / 1024).toFixed(0)}MB)`)
       } else {
         pdfFiles.push(f)
       }
@@ -112,16 +113,35 @@ export default function NewProjectPage() {
 
     // Auto-set project name from first file if empty
     if (!projectName && pdfFiles.length > 0) {
-      const name = pdfFiles[0].name.replace(/\.pdf$/i, "")
+      const name = pdfFiles[0].file.name.replace(/\.pdf$/i, "")
       setProjectName(name)
     }
   }, [projectName, addToast])
+
+  const onDrop = useCallback((acceptedFiles: File[]) => {
+    addIncomingFiles(acceptedFiles.map((file) => ({ file })))
+  }, [addIncomingFiles])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: { "application/pdf": [".pdf"] },
     multiple: true,
   })
+
+  const handleFolderPick = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const list = Array.from(e.target.files || [])
+    if (list.length === 0) return
+
+    addIncomingFiles(
+      list.map((file: any) => ({
+        file,
+        relativePath: file.webkitRelativePath || undefined,
+      }))
+    )
+
+    // allow re-picking the same folder
+    e.target.value = ""
+  }, [addIncomingFiles])
 
   const removeFile = (index: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== index))
@@ -148,7 +168,7 @@ export default function NewProjectPage() {
       setCurrentBidId(bidId)
 
       // Check if any files are large (need chunked upload)
-      const hasLargeFiles = files.some(f => f.size > LARGE_FILE_THRESHOLD)
+      const hasLargeFiles = files.some(f => f.file.size > LARGE_FILE_THRESHOLD)
       if (hasLargeFiles) {
         addToast({
           type: 'info',
@@ -157,8 +177,9 @@ export default function NewProjectPage() {
       }
 
       // 2. Upload files using chunked upload hook (handles large files automatically)
-      const filesToUpload = files.map(file => ({
-        file,
+      const filesToUpload = files.map((f) => ({
+        file: f.file,
+        relativePath: f.relativePath,
         bidId, // Pass bidId for each file since hook might not be updated yet
       }))
 
@@ -191,7 +212,7 @@ export default function NewProjectPage() {
         await fetch('/api/takeoff/enqueue', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bidId: projectId, documentIds }),
+          body: JSON.stringify({ bidId, documentIds }),
         })
       }
 
@@ -239,25 +260,46 @@ export default function NewProjectPage() {
           <p className="text-primary font-medium">Drop PDFs here...</p>
         ) : (
           <>
-            <p className="font-medium mb-1">Drop PDF files here</p>
-            <p className="text-sm text-muted-foreground">or click to browse</p>
+            <p className="font-medium mb-1">Drop PDFs or a folder of PDFs</p>
+            <p className="text-sm text-muted-foreground">click to browse files, or use the folder picker below</p>
           </>
         )}
+      </div>
+
+      <div className="mt-3 flex items-center gap-3">
+        <label className={cn("inline-flex", isUploading && "pointer-events-none opacity-50")}>
+          <input
+            type="file"
+            multiple
+            // @ts-ignore - webkitdirectory is non-standard but supported in Chromium
+            webkitdirectory="true"
+            className="hidden"
+            onChange={handleFolderPick}
+          />
+          <span className="px-4 py-2 text-sm border border-border rounded-lg hover:bg-secondary cursor-pointer">
+            Select folder
+          </span>
+        </label>
+        <span className="text-xs text-muted-foreground">
+          For large plan sets, folder upload is the fastest way.
+        </span>
       </div>
 
       {/* File List */}
       {files.length > 0 && (
         <div className="mt-6 space-y-2">
           <p className="text-sm font-medium">{files.length} file(s) selected</p>
-          {files.map((file, i) => {
+          {files.map(({ file, relativePath }, i) => {
             const isLargeFile = file.size > LARGE_FILE_THRESHOLD
             const progress = fileProgress.find(p => p.filename === file.name)
             return (
               <div
-                key={`${file.name}-${i}`}
+                key={`${relativePath || file.name}-${i}`}
                 className="flex items-center justify-between bg-secondary/50 rounded px-3 py-2"
               >
-                <span className="text-sm truncate flex-1">{file.name}</span>
+                <span className="text-sm truncate flex-1" title={relativePath || file.name}>
+                  {relativePath || file.name}
+                </span>
                 <div className="flex items-center gap-2">
                   {isLargeFile && (
                     <span className="text-xs bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded">
