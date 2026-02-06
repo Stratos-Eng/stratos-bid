@@ -43,6 +43,7 @@ export default function NewProjectPage() {
   const [lastBidId, setLastBidId] = useState<string | null>(null)
   const [lastUploadBatch, setLastUploadBatch] = useState<Array<{ file: File; relativePath?: string; bidId: string }>>([])
   const [autoEnqueue, setAutoEnqueue] = useState(true)
+  const [smartSelection, setSmartSelection] = useState(true)
   const [enqueueState, setEnqueueState] = useState<EnqueueState>({ status: 'idle' })
   const [foundRunId, setFoundRunId] = useState<string | null>(null)
 
@@ -182,13 +183,35 @@ export default function NewProjectPage() {
     if (!autoEnqueue) return
     if (documentIds.length === 0) return
 
-    setEnqueueState({ status: 'enqueuing', docCount: documentIds.length })
+    let selectedIds = documentIds
+
+    // For very large folders, enqueueing everything is slow + expensive.
+    // Use server-side triage (filename/docType heuristics) to pick likely-relevant docs.
+    if (smartSelection && documentIds.length > 25) {
+      try {
+        const triageRes = await fetch('/api/takeoff/triage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bidId, documentIds }),
+        })
+        if (triageRes.ok) {
+          const triage = await triageRes.json().catch(() => ({}))
+          if (Array.isArray(triage.selectedDocumentIds) && triage.selectedDocumentIds.length > 0) {
+            selectedIds = triage.selectedDocumentIds
+          }
+        }
+      } catch {
+        // ignore, fall back to all docs
+      }
+    }
+
+    setEnqueueState({ status: 'enqueuing', docCount: selectedIds.length })
 
     try {
       const res = await fetch('/api/takeoff/enqueue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bidId, documentIds }),
+        body: JSON.stringify({ bidId, documentIds: selectedIds }),
       })
 
       if (!res.ok) {
@@ -359,15 +382,27 @@ export default function NewProjectPage() {
           </span>
         </div>
 
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={autoEnqueue}
-            onChange={(e) => setAutoEnqueue(e.target.checked)}
-            disabled={isUploading}
-          />
-          Auto-start takeoff review
-        </label>
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={autoEnqueue}
+              onChange={(e) => setAutoEnqueue(e.target.checked)}
+              disabled={isUploading}
+            />
+            Auto-start takeoff review
+          </label>
+
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={smartSelection}
+              onChange={(e) => setSmartSelection(e.target.checked)}
+              disabled={isUploading}
+            />
+            Smart doc selection for large folders
+          </label>
+        </div>
       </div>
 
       {/* File List */}
