@@ -11,8 +11,6 @@ type RunRow = {
   jobId: string;
   userId: string;
   status: string;
-  model: string | null;
-  workerId: string | null;
   startedAt: string;
   finishedAt: string | null;
   itemCount: number;
@@ -130,7 +128,16 @@ export function TakeoffRunsClient({ bidId }: { bidId: string }) {
                     />
                   </td>
                   <td className="px-3 py-3 whitespace-nowrap">{new Date(r.startedAt).toLocaleString()}</td>
-                  <td className="px-3 py-3">{r.status}{isPublished ? ' (published)' : ''}</td>
+                  <td className="px-3 py-3">
+                    {r.status === 'running'
+                      ? 'In progress'
+                      : r.status === 'succeeded'
+                        ? 'Ready'
+                        : r.status === 'failed'
+                          ? 'Needs attention'
+                          : '—'}
+                    {isPublished ? ' (published)' : ''}
+                  </td>
                   <td className="px-3 py-3">{r.itemCount}</td>
                   <td className="px-3 py-3 text-xs text-muted-foreground">{r.itemCount > 0 ? 'Auto takeoff' : 'Review only'}</td>
                   <td className="px-3 py-3">
