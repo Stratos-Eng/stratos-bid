@@ -226,9 +226,9 @@ export default function NewProjectPage() {
       }
       poll()
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Failed to enqueue'
+      const msg = e instanceof Error ? e.message : 'Failed to start'
       setEnqueueState({ status: 'error', error: msg })
-      addToast({ type: 'error', message: `Failed to enqueue takeoff: ${msg}` })
+      addToast({ type: 'error', message: 'Couldn’t start takeoff. Please try again.' })
     }
   }, [addToast, autoEnqueue, router, smartSelection])
 

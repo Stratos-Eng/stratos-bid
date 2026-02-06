@@ -379,7 +379,7 @@ export default function ProjectPage() {
   const approvedCount = items.filter((i) => i.status === "approved").length
   const selectedItem = items.find((i) => i.id === selectedItemId)
 
-  // Compute overall extraction status
+  // Compute overall takeoff status
   // "queued" means waiting for background job - only show "extracting" if actively processing
   const extractionStatus = (() => {
     if (documents.length === 0) return "no_documents"
@@ -416,7 +416,7 @@ export default function ProjectPage() {
             Takeoff Review
           </Button>
 
-          {/* Extraction Status */}
+          {/* Takeoff Status */}
           {extractionStatus === "extracting" && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />

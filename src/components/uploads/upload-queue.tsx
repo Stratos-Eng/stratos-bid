@@ -41,7 +41,7 @@ export function UploadQueue({
     <div className="mt-6 border rounded-lg bg-white overflow-hidden">
       <div className="p-3 border-b flex items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-medium">Upload queue</div>
+          <div className="text-sm font-medium">Uploads</div>
           <div className="text-xs text-muted-foreground">
             {counts.completed}/{counts.total} done · {counts.uploading} uploading · {counts.retrying} retrying · {counts.error} failed
           </div>
