@@ -277,7 +277,23 @@ async function runJob(job: JobRow) {
         const scanPages = pageCount > 0 ? Math.min(pageCount, 60) : 60;
 
         for (let p = 1; p <= scanPages; p++) {
-          const extracted = extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: 30 });
+          // Smart OCR: always possible, but avoid OCRing every thin page blindly.
+          // Heuristic: OCR thin pages only if early/late in set OR page looks schedule-ish.
+          const extracted0 = extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: Number.POSITIVE_INFINITY });
+          const t0 = (extracted0.text || '').trim();
+
+          const looksScheduley = /schedule|legend|sign\s+type|type\s+code|qty|quantity|signage/i.test(t0);
+          const isEarly = p <= 15;
+          const isLate = pageCount > 0 ? p >= Math.max(1, scanPages - 9) : false;
+
+          const doOcr = process.env.TAKEOFF_OCR_MODE === 'full'
+            ? t0.length < 30
+            : t0.length < 30 && (looksScheduley || isEarly || isLate);
+
+          const extracted = doOcr
+            ? extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: 30 })
+            : { method: 'pdftotext' as const, text: t0, meta: { textLength: t0.length } };
+
           artifactRows.push({
             runId,
             bidId,
@@ -285,7 +301,7 @@ async function runJob(job: JobRow) {
             pageNumber: p,
             method: extracted.method,
             rawText: extracted.text ? extracted.text.slice(0, 10_000) : null,
-            meta: extracted.meta,
+            meta: { ...extracted.meta, ocrMode: process.env.TAKEOFF_OCR_MODE || 'smart' },
             createdAt: new Date(),
           });
         }
@@ -413,11 +429,18 @@ async function runJob(job: JobRow) {
         }
       }
 
+      const insertChunked = async (rows: any[], chunkSize: number) => {
+        for (let i = 0; i < rows.length; i += chunkSize) {
+          const chunk = rows.slice(i, i + chunkSize);
+          if (chunk.length > 0) await db.insert(takeoffFindings).values(chunk as any);
+        }
+      };
+
       if (findingRows.length > 0) {
-        await db.insert(takeoffFindings).values(findingRows as any);
+        await insertChunked(findingRows, 200);
       }
       if (derivedRows.length > 0) {
-        await db.insert(takeoffFindings).values(derivedRows as any);
+        await insertChunked(derivedRows, 200);
       }
 
       const itemRows: any[] = [];
@@ -513,10 +536,23 @@ async function runJob(job: JobRow) {
       }
 
       if (evidenceLinks.length > 0) {
-        await db
-          .insert(takeoffItemEvidence)
-          .values(evidenceLinks as any)
-          .onConflictDoNothing({ target: [takeoffItemEvidence.itemId, takeoffItemEvidence.findingId] } as any);
+        // De-dupe in-memory + insert in chunks to avoid large statement failures.
+        const seen = new Set<string>();
+        const deduped = evidenceLinks.filter((r) => {
+          const k = `${r.itemId}|${r.findingId}`;
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
+
+        const chunkSize = 100;
+        for (let i = 0; i < deduped.length; i += chunkSize) {
+          const chunk = deduped.slice(i, i + chunkSize);
+          await db
+            .insert(takeoffItemEvidence)
+            .values(chunk as any)
+            .onConflictDoNothing({ target: [takeoffItemEvidence.itemId, takeoffItemEvidence.findingId] } as any);
+        }
       }
     }
 
