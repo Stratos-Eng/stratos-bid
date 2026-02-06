@@ -477,16 +477,16 @@ export default function NewProjectPage() {
           <div className="flex items-center justify-between gap-3">
             <div className="text-sm">
               {enqueueState.status === 'enqueuing' && (
-                <span>Starting takeoff review for <b>{enqueueState.docCount}</b> document(s)…</span>
+                <span>Starting takeoff for <b>{enqueueState.docCount}</b> file(s)…</span>
               )}
               {enqueueState.status === 'queued' && (
-                <span>Takeoff started for <b>{enqueueState.docCount}</b> document(s). Opening review…</span>
+                <span>Takeoff started for <b>{enqueueState.docCount}</b> file(s). Opening review…</span>
               )}
               {enqueueState.status === 'error' && (
-                <span>Couldn’t start takeoff: {enqueueState.error}</span>
+                <span>Couldn’t start takeoff. Please try again.</span>
               )}
               <div className="text-xs text-muted-foreground mt-1">
-                You can keep uploading/retrying; we’ll keep the queue running.
+                You can keep uploading or retrying failed files while this runs.
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -508,8 +508,8 @@ export default function NewProjectPage() {
               {uploadState.status === "processing" && "Processing PDF..."}
               {uploadState.status === "extracting" && (
                 extractionStatus.isProcessing
-                  ? `Extracting signage items... (${extractionStatus.progress.completed}/${extractionStatus.progress.total} docs)`
-                  : "Starting extraction..."
+                  ? `Preparing takeoff review... (${extractionStatus.progress.completed}/${extractionStatus.progress.total} files)`
+                  : "Preparing takeoff review..."
               )}
               {uploadState.status === "complete" && "Complete!"}
               {uploadState.status === "error" && "Error"}

@@ -441,7 +441,7 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
       </div>
 
       <div className="mt-2 text-xs text-muted-foreground">
-        Tip: Select an item → click evidence chips to jump around the drawings. No tab switching.
+        Tip: Select an item, then click a source to jump to the exact page.
       </div>
     </div>
   );
