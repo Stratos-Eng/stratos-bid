@@ -548,7 +548,13 @@ export default function NewProjectPage() {
                     doc.extractionStatus === "not_started" && "bg-gray-400"
                   )} />
                   <span className="text-muted-foreground truncate flex-1">{doc.filename}</span>
-                  <span className="text-muted-foreground capitalize">{doc.extractionStatus}</span>
+                  <span className="text-muted-foreground">
+                    {doc.extractionStatus === 'completed' ? 'Ready' :
+                      doc.extractionStatus === 'extracting' ? 'Working…' :
+                      doc.extractionStatus === 'queued' ? 'Starting…' :
+                      doc.extractionStatus === 'failed' ? 'Needs attention' :
+                      'Waiting'}
+                  </span>
                 </div>
               ))}
             </div>

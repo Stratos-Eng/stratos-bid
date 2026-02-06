@@ -203,7 +203,11 @@ export default async function BidDetailPage({
                     <span
                       className={`text-xs px-2 py-0.5 rounded ${extractionStatusColors[doc.extractionStatus || 'not_started']}`}
                     >
-                      {doc.extractionStatus || 'not_started'}
+                      {doc.extractionStatus === 'completed' ? 'Ready' :
+                        doc.extractionStatus === 'extracting' ? 'Working…' :
+                        doc.extractionStatus === 'queued' ? 'Starting…' :
+                        doc.extractionStatus === 'failed' ? 'Needs attention' :
+                        'Waiting'}
                     </span>
                     {doc.lineItemCount !== null && doc.lineItemCount > 0 && (
                       <span className="text-xs text-green-600">

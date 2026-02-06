@@ -74,7 +74,7 @@ export function TakeoffRunsClient({ bidId }: { bidId: string }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <div className="text-sm text-muted-foreground">Recent runs</div>
+        <div className="text-sm text-muted-foreground">Recent takeoffs</div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={load} disabled={loading}>Refresh</Button>
           <Link
@@ -97,7 +97,7 @@ export function TakeoffRunsClient({ bidId }: { bidId: string }) {
               <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Started</th>
               <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
               <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Items</th>
-              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Model</th>
+              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
               <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Open</th>
               <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Publish</th>
             </tr>
@@ -132,7 +132,7 @@ export function TakeoffRunsClient({ bidId }: { bidId: string }) {
                   <td className="px-3 py-3 whitespace-nowrap">{new Date(r.startedAt).toLocaleString()}</td>
                   <td className="px-3 py-3">{r.status}{isPublished ? ' (published)' : ''}</td>
                   <td className="px-3 py-3">{r.itemCount}</td>
-                  <td className="px-3 py-3 font-mono text-xs">{r.model || '—'}</td>
+                  <td className="px-3 py-3 text-xs text-muted-foreground">{r.itemCount > 0 ? 'Auto takeoff' : 'Review only'}</td>
                   <td className="px-3 py-3">
                     <Link className="underline" href={`/projects/${bidId}/takeoff/${r.id}`}>Open</Link>
                   </td>
@@ -153,7 +153,7 @@ export function TakeoffRunsClient({ bidId }: { bidId: string }) {
       </div>
 
       <div className="text-xs text-muted-foreground">
-        Tip: once you enqueue a takeoff, refresh this page and open the latest run.
+        Tip: open the most recent takeoff to start reviewing.
       </div>
     </div>
   );
