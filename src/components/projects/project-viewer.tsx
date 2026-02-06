@@ -615,19 +615,32 @@ export function ProjectViewer({
 
     const fetchAndHighlight = async () => {
       try {
-        // Fetch text positions for this page
-        const res = await fetch(`/api/documents/${documentId}/page/${pageNumber}/text`)
-        if (!res.ok) return
+        if (!pdfDocRef.current) return
 
-        const data = await res.json()
-        const textPositions: TextPosition[] = data.textPositions || []
-        const pdfPageHeight = data.pageHeight || 792
-        const pdfPageWidth = data.pageWidth || 612
+        // Extract text positions directly from the loaded PDF.js page
+        const page = await pdfDocRef.current.getPage(pageNumber)
+        const viewport = page.getViewport({ scale: 1.0 })
+
+        // Update page size if needed
+        const pdfPageWidth = viewport.width
+        const pdfPageHeight = viewport.height
 
         // Check if dimensions match - if not, skip this render and wait for pageSize to update
         if (Math.abs(pageSize.width - pdfPageWidth) > 1 || Math.abs(pageSize.height - pdfPageHeight) > 1) {
           return
         }
+
+        const textContent = await page.getTextContent()
+        const textPositions: TextPosition[] = (textContent.items as any[])
+          .filter((it) => typeof it?.str === 'string')
+          .map((it) => {
+            const t = it.transform || [1, 0, 0, 1, 0, 0]
+            const x = t[4] || 0
+            const y = t[5] || 0
+            const width = it.width || 0
+            const height = it.height || Math.abs(t[3] || 0) || 10
+            return { text: it.str as string, x, y, width, height }
+          })
 
         // Find matching positions
         const matches = findMatchingPositions(textPositions, highlightTerms)
@@ -645,8 +658,6 @@ export function ProjectViewer({
             dpi
           )
 
-          // Create polygon for highlight rectangle
-          // Rectangle extends UP from baseline (y) to (y + height)
           const feature = new Feature({
             geometry: new Polygon([[
               [rect.x, rect.y],
@@ -660,7 +671,7 @@ export function ProjectViewer({
           highlightSourceRef.current?.addFeature(feature)
         }
       } catch (err) {
-        console.error("Failed to fetch text positions:", err)
+        console.error("Failed to compute highlights:", err)
       }
     }
 

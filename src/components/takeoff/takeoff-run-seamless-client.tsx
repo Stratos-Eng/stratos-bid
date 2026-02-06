@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/components/ui/toast';
+import { ProjectViewer } from '@/components/projects/project-viewer';
+import type { SignageItem } from '@/lib/stores/project-store';
 
 type TakeoffItem = {
   id: string;
@@ -146,12 +148,27 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
     });
   }, [items, filter]);
 
-  const pdfSrc = useMemo(() => {
-    if (!docId) return null;
-    const safePage = Number.isFinite(page) && page > 0 ? page : 1;
-    // Browser PDF viewers generally support #page=N
-    return `/api/documents/${docId}/view#page=${safePage}`;
-  }, [docId, page]);
+  const highlightTerms = useMemo(() => {
+    const terms: string[] = [];
+    if (selectedItem?.code) terms.push(selectedItem.code);
+
+    const t = (selectedEvidence?.finding.evidenceText || '').trim();
+    if (t) {
+      // pick a handful of meaningful tokens (avoid super-common words)
+      const tokens = t
+        .replace(/[^a-zA-Z0-9\s-]+/g, ' ')
+        .split(/\s+/)
+        .map((x) => x.trim())
+        .filter((x) => x.length >= 4)
+        .filter((x) => !/^(this|that|with|from|sheet|page|signs|sign|type|qty|each|provide|install)$/i.test(x));
+
+      for (const tok of tokens.slice(0, 6)) {
+        if (!terms.includes(tok)) terms.push(tok);
+      }
+    }
+
+    return terms.slice(0, 8);
+  }, [selectedItem?.code, selectedEvidence?.finding.evidenceText]);
 
   return (
     <div className="relative">
@@ -179,8 +196,19 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
 
       {/* Main drawing canvas */}
       <div className="relative rounded-lg border bg-white overflow-hidden" style={{ height: '78vh' }}>
-        {pdfSrc ? (
-          <iframe key={pdfSrc} src={pdfSrc} className="w-full h-full" />
+        {docId ? (
+          <ProjectViewer
+            documentId={docId}
+            pageNumber={page}
+            totalPages={1}
+            items={[] as SignageItem[]}
+            selectedItemId={null}
+            onSelectItem={() => {}}
+            quickAddMode={false}
+            onQuickAddClick={() => {}}
+            extractionStatus={undefined}
+            highlightTerms={highlightTerms}
+          />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-sm text-muted-foreground">
             Select an item to open drawings.
