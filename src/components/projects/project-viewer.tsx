@@ -728,16 +728,16 @@ export function ProjectViewer({
         </div>
       )}
 
-      {/* Extraction in progress indicator - prominent pulsing banner */}
+      {/* Takeoff in progress indicator */}
       {extractionStatus === "extracting" && (
         <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-20">
           <div className="bg-blue-600 text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-3 animate-pulse">
-            <div className="flex gap-1">
+            <div className="flex gap-1" aria-hidden>
               <div className="w-2 h-2 bg-white rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
               <div className="w-2 h-2 bg-white rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
               <div className="w-2 h-2 bg-white rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
             </div>
-            <span className="font-medium">AI is extracting signage items...</span>
+            <span className="font-medium">Preparing takeoff review…</span>
           </div>
         </div>
       )}

@@ -132,12 +132,12 @@ export async function POST(request: NextRequest) {
       jobs.push({ id: job.id, bidId: bid.bidId, documentIds: bid.documentIds });
     }
 
-    console.log(`[extraction-v3] Enqueued takeoff: ${queuedIds.length} document(s) across ${jobs.length} bid(s)`);
+    console.log(`[extraction-v3] Started takeoff: ${queuedIds.length} file(s) across ${jobs.length} project(s)`);
 
     return NextResponse.json(
       {
         success: true,
-        message: `Takeoff queued for ${queuedIds.length} document(s) across ${jobs.length} bid(s)`,
+        message: `Takeoff started for ${queuedIds.length} file(s)`,
         jobs,
         queued: queuedIds,
         skipped,
