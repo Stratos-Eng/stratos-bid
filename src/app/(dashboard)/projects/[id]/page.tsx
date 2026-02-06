@@ -334,7 +334,7 @@ export default function ProjectPage() {
         mutate()
         addToast({
           type: 'success',
-          message: `Extraction queued for ${result.queued?.length || 0} document(s)`
+          message: `Takeoff started for ${result.queued?.length || 0} file(s).`
         })
       } else {
         const err = await res.json()
@@ -420,33 +420,33 @@ export default function ProjectPage() {
           {extractionStatus === "extracting" && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-              <span>Extracting items...</span>
+              <span>Preparing takeoff review…</span>
             </div>
           )}
           {extractionStatus === "queued" && (
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 bg-amber-500 rounded-full" />
-              <span className="text-sm text-amber-600">Queued</span>
+              <span className="text-sm text-amber-700">Starting…</span>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={handleExtract}
                 disabled={extracting}
               >
-                {extracting ? "Starting..." : "Retry"}
+                {extracting ? "Starting…" : "Start again"}
               </Button>
             </div>
           )}
           {extractionStatus === "failed" && (
             <div className="flex items-center gap-2">
-              <span className="text-sm text-destructive">Extraction failed</span>
+              <span className="text-sm text-destructive">Couldn’t start takeoff</span>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={handleExtract}
                 disabled={extracting}
               >
-                {extracting ? "Retrying..." : "Retry"}
+                {extracting ? "Trying again…" : "Try again"}
               </Button>
             </div>
           )}

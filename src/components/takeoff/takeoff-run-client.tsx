@@ -134,7 +134,7 @@ export function TakeoffRunClient({ bidId, runId }: { bidId: string; runId: strin
         <div className="flex items-center justify-between gap-4">
           <div>
             <div className="text-sm text-muted-foreground">Run</div>
-            <div className="font-mono text-xs break-all">{runId}</div>
+            <div className="text-xs text-muted-foreground">Auto takeoff</div>
           </div>
           <div className="flex items-center gap-2">
             <Input
@@ -285,9 +285,9 @@ export function TakeoffRunClient({ bidId, runId }: { bidId: string; runId: strin
 
             <div className="pt-2 border-t">
               <div className="text-sm font-medium mb-2">Evidence</div>
-              {evidenceLoading && <div className="text-sm text-muted-foreground">Loading evidence…</div>}
+              {evidenceLoading && <div className="text-sm text-muted-foreground">Loading sources…</div>}
               {!evidenceLoading && evidence && evidence.length === 0 && (
-                <div className="text-sm text-muted-foreground">No evidence linked.</div>
+                <div className="text-sm text-muted-foreground">No sources yet (needs review).</div>
               )}
               {!evidenceLoading && evidence && evidence.length > 0 && (
                 <div className="space-y-2 max-h-[420px] overflow-auto">
