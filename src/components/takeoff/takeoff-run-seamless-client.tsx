@@ -70,6 +70,8 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
   const [filter, setFilter] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(true);
 
+  const [escalating, setEscalating] = useState(false);
+
   type CoverageResponse = {
     items: { total: number; needsReview: number; noEvidence: number };
     index: { docsIndexed: number; sampledPages: number; maxScore: number };
@@ -105,7 +107,27 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
     }
   }
 
-  async function loadItems() {
+  async function escalateSearch() {
+    if (escalating) return;
+    setEscalating(true);
+    try {
+      const res = await fetch(`/api/takeoff/runs/${runId}/escalate`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Escalation failed');
+
+      const newRunId = data?.runId as string | undefined;
+      if (!newRunId) throw new Error('Escalation did not return a runId');
+
+      // Navigate to the new run
+      window.location.href = `/projects/${bidId}/takeoff/${newRunId}`;
+    } catch (err) {
+      addToast({ type: 'error', message: err instanceof Error ? err.message : 'Escalation failed' });
+    } finally {
+      setEscalating(false);
+    }
+  }
+
+  async function loadItems() { 
     setLoadingItems(true);
     try {
       const res = await fetch(`/api/takeoff/runs/${runId}/items`, { cache: 'no-store' });
@@ -325,8 +347,18 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
                     </div>
                   </div>
                   {(coverage.items?.needsReview ?? 0) > 0 || (coverage.items?.noEvidence ?? 0) > 0 ? (
-                    <div className="mt-2 text-[11px] text-muted-foreground">
-                      If “No evidence” is high, the takeoff may be missing schedules/legends or evidence linking.
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <div className="text-[11px] text-muted-foreground">
+                        If “No evidence” is high, the takeoff may be missing schedules/legends or evidence linking.
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={escalateSearch}
+                        disabled={escalating}
+                      >
+                        {escalating ? 'Expanding…' : 'Search more docs'}
+                      </Button>
                     </div>
                   ) : null}
                 </div>
