@@ -70,6 +70,16 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
   const [filter, setFilter] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(true);
 
+  type CoverageResponse = {
+    items: { total: number; needsReview: number; noEvidence: number };
+    index: { docsIndexed: number; sampledPages: number; maxScore: number };
+    deep: { docsProcessed: number; pagesProcessed: number };
+    topCandidates: Array<{ documentId: string; filename: string; score: number; bestPage: number; sampledPages: number }>;
+  };
+
+  const [coverage, setCoverage] = useState<CoverageResponse | null>(null);
+  const [loadingCoverage, setLoadingCoverage] = useState(false);
+
   const selectedItem = useMemo(() => items.find((i) => i.id === selectedItemId) || null, [items, selectedItemId]);
   const selectedEvidence = useMemo(
     () => evidence.find((e) => e.finding.id === selectedEvidenceId) || null,
@@ -79,6 +89,21 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
   // Current drawing target
   const [docId, setDocId] = useState<string | null>(null);
   const [page, setPage] = useState<number>(1);
+
+  async function loadCoverage() {
+    setLoadingCoverage(true);
+    try {
+      const res = await fetch(`/api/takeoff/runs/${runId}/coverage`, { cache: 'no-store' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to load coverage');
+      setCoverage(data as CoverageResponse);
+    } catch (err) {
+      // coverage is helpful but non-fatal
+      addToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to load coverage' });
+    } finally {
+      setLoadingCoverage(false);
+    }
+  }
 
   async function loadItems() {
     setLoadingItems(true);
@@ -130,6 +155,7 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
 
   useEffect(() => {
     loadItems();
+    loadCoverage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
 
@@ -182,7 +208,7 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
           <Button variant="outline" onClick={() => setDrawerOpen((v) => !v)}>
             {drawerOpen ? 'Hide items' : 'Show items'}
           </Button>
-          <Button variant="outline" onClick={loadItems} disabled={loadingItems}>
+          <Button variant="outline" onClick={() => { loadItems(); loadCoverage(); }} disabled={loadingItems || loadingCoverage}>
             Refresh
           </Button>
           <Link
@@ -275,8 +301,61 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
               </div>
               <Button variant="ghost" onClick={() => setDrawerOpen(false)}>Close</Button>
             </div>
-            <div className="p-3 border-b">
-              <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter…" />
+            <div className="p-3 border-b space-y-2">
+              {coverage && (
+                <div className="rounded border bg-gray-50 p-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-medium">Completeness</div>
+                    <div className="text-muted-foreground">
+                      Indexed {coverage.index?.docsIndexed ?? 0} docs · Deep {coverage.deep?.docsProcessed ?? 0} docs
+                    </div>
+                  </div>
+                  <div className="mt-1 grid grid-cols-3 gap-2">
+                    <div>
+                      <div className="text-muted-foreground">Items</div>
+                      <div className="font-mono">{coverage.items?.total ?? 0}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">Needs review</div>
+                      <div className="font-mono">{coverage.items?.needsReview ?? 0}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">No evidence</div>
+                      <div className="font-mono">{coverage.items?.noEvidence ?? 0}</div>
+                    </div>
+                  </div>
+                  {(coverage.items?.needsReview ?? 0) > 0 || (coverage.items?.noEvidence ?? 0) > 0 ? (
+                    <div className="mt-2 text-[11px] text-muted-foreground">
+                      If “No evidence” is high, the takeoff may be missing schedules/legends or evidence linking.
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
+              {coverage?.topCandidates?.length ? (
+                <div className="rounded border p-2">
+                  <div className="text-xs font-medium mb-1">Top schedule candidates</div>
+                  <div className="flex gap-2 overflow-auto pb-1">
+                    {coverage.topCandidates.slice(0, 8).map((c) => (
+                      <button
+                        key={c.documentId}
+                        className="min-w-[240px] max-w-[320px] text-left border rounded px-2 py-1 text-xs hover:bg-gray-50"
+                        onClick={() => {
+                          setDocId(c.documentId);
+                          setPage(c.bestPage || 1);
+                          setDrawerOpen(false);
+                        }}
+                        title={c.filename}
+                      >
+                        <div className="font-mono truncate">{String(c.filename).split('/').slice(-1)[0]}</div>
+                        <div className="truncate text-muted-foreground">score {c.score} · p{c.bestPage}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter items…" />
             </div>
             <div className="flex-1 overflow-auto">
               {loadingItems && (
