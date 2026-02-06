@@ -286,20 +286,99 @@ async function runJob(job: JobRow) {
     }
 
     // STEP 3: estimator-grade takeoff (OpenClaw) + second-pass verification
-    // For large folders, take care: the best schedule may not be in the top 5 by filename score alone.
-    // Pick a small, diverse set of likely-relevant PDFs.
-    const preferred = scoredDocs.filter((d) => /schedule|legend|signage|exhibit/i.test(d.filename));
-    const top = scoredDocs.slice(0, 12);
-    const seen = new Set<string>();
-    const chosen: Array<{ filename: string; path: string }> = [];
-    for (const d of [...preferred, ...top]) {
-      if (chosen.length >= 8) break;
-      if (seen.has(d.filename)) continue;
-      seen.add(d.filename);
-      chosen.push({ filename: d.filename, path: d.path });
+    // Accuracy strategy (not sycophancy):
+    // - A fixed cutoff (top 5 / top 8) WILL miss schedules in 1000+ doc folders.
+    // - But we also can't OCR+AI everything.
+    // Best practice: cheap index across *all job docs*, then deep-pass only on the best candidates,
+    // and expand if mismatches are detected.
+
+    const scorePageForSignage = (text: string) => {
+      const t = (text || '').toLowerCase();
+      let s = 0;
+      if (/(signage\s*schedule|sign\s*schedule|type\s*schedule|schedule\s*of\s*sign)/.test(t)) s += 60;
+      if (/(legend|sign\s*legend)/.test(t)) s += 40;
+      if (/(type\s*code|sign\s*type|room\s*id|pictogram)/.test(t)) s += 25;
+      if (/(qty|quantity|count|ea\b|each\b)/.test(t)) s += 15;
+      if (/(ada|tactile|braille)/.test(t)) s += 10;
+      if (/\bexhibit\b/.test(t)) s += 10;
+      return s;
+    };
+
+    const pickIndexPages = (pageCount: number) => {
+      const pages = new Set<number>();
+      const pc = pageCount > 0 ? pageCount : 1;
+      // first/second
+      pages.add(1);
+      if (pc >= 2) pages.add(2);
+      // last/second-last
+      pages.add(pc);
+      if (pc >= 2) pages.add(pc - 1);
+      // periodic sample (every 25 pages) to catch schedules buried in the middle
+      const step = 25;
+      for (let p = 1; p <= pc; p += step) pages.add(p);
+      return [...pages].filter((p) => p >= 1 && p <= pc).sort((a, b) => a - b);
+    };
+
+    // PASS 1: cheap index over all job PDFs (sample pages; OCR only when needed)
+    const indexRows: any[] = [];
+    const docAgg = new Map<string, { filename: string; path: string; docScore: number }>();
+
+    for (const pdf of scoredDocs) {
+      const documentId = docIdBySafeName.get(pdf.filename) ?? documentIds[0];
+      const pageCount = getPdfPageCount(pdf.path);
+      const pages = pickIndexPages(pageCount);
+
+      let docScore = 0;
+      for (const p of pages) {
+        const extracted0 = extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: Number.POSITIVE_INFINITY });
+        const t0 = (extracted0.text || '').trim();
+        const baseScore = scorePageForSignage(t0);
+
+        // OCR is always available; in index pass we only OCR sampled pages when text is thin.
+        const needsOcr = t0.length < 30;
+        const extracted = needsOcr
+          ? extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: 30 })
+          : { method: 'pdftotext' as const, text: t0, meta: { textLength: t0.length } };
+
+        const score = baseScore + (/(schedule|legend|signage)/i.test(extracted.text || '') ? 10 : 0);
+        docScore = Math.max(docScore, score);
+
+        indexRows.push({
+          runId,
+          bidId,
+          documentId,
+          pageNumber: p,
+          method: extracted.method,
+          rawText: extracted.text ? extracted.text.slice(0, 4000) : null,
+          meta: { phase: 'index', score, ocrMode: process.env.TAKEOFF_OCR_MODE || 'smart' },
+          createdAt: new Date(),
+        });
+      }
+
+      // filename boost (cheap signal)
+      if (/schedule|legend|signage|exhibit/i.test(pdf.filename)) docScore += 20;
+      docAgg.set(pdf.filename, { filename: pdf.filename, path: pdf.path, docScore });
     }
 
-    const localPdfPaths = chosen.length > 0 ? chosen : scoredDocs.slice(0, 5).map((d) => ({ filename: d.filename, path: d.path }));
+    // Persist index artifacts (sample pages only)
+    try {
+      const chunkSize = 200;
+      for (let i = 0; i < indexRows.length; i += chunkSize) {
+        const chunk = indexRows.slice(i, i + chunkSize);
+        if (chunk.length > 0) await db.insert(takeoffArtifacts).values(chunk as any);
+      }
+    } catch (err) {
+      console.warn('[takeoff-worker] index artifacts write failed (non-fatal):', err);
+    }
+
+    const rankedDocs = [...docAgg.values()].sort((a, b) => b.docScore - a.docScore);
+    const nDocs = rankedDocs.length;
+    const deepCap = Math.min(20, Math.max(8, Math.ceil(nDocs * 0.12))); // dynamic cap
+    let localPdfPaths = rankedDocs.slice(0, deepCap).map((d) => ({ filename: d.filename, path: d.path }));
+
+    if (localPdfPaths.length === 0) {
+      localPdfPaths = scoredDocs.slice(0, 5).map((d) => ({ filename: d.filename, path: d.path }));
+    }
 
     // STEP 3a: page-level extraction coverage + OCR escalation (artifacts)
     try {
