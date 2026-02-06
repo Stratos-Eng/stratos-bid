@@ -586,7 +586,7 @@ export default function NewProjectPage() {
             ? "Uploads running… auto-starting takeoff"
             : isUploading
             ? "Processing..."
-            : "Create Project & Extract"}
+            : "Create Project & Start Takeoff"}
         </Button>
       </div>
     </div>

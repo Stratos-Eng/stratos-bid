@@ -81,7 +81,7 @@ export function TakeoffRunsClient({ bidId }: { bidId: string }) {
             className={`underline text-sm ${canCompare ? '' : 'pointer-events-none opacity-50'}`}
             href={canCompare ? `/projects/${bidId}/takeoff/compare?runA=${encodeURIComponent(runA)}&runB=${encodeURIComponent(runB)}` : '#'}
           >
-            Compare (2)
+            Compare two takeoffs
           </Link>
           <Button variant="ghost" onClick={() => setSelected(new Set())} disabled={selected.size === 0}>
             Clear
