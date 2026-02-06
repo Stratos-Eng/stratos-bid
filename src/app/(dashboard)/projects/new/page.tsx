@@ -85,7 +85,7 @@ export default function NewProjectPage() {
       }))
       addToast({
         type: 'success',
-        message: 'Extraction complete! Redirecting to project...'
+        message: 'Takeoff is ready. Opening your project…'
       })
       setTimeout(() => {
         router.push(`/projects/${uploadState.projectId}`)
@@ -94,7 +94,7 @@ export default function NewProjectPage() {
     onError: (error) => {
       addToast({
         type: 'error',
-        message: `Extraction error: ${error.message}`
+        message: 'We hit a problem starting your takeoff. Please try again.'
       })
     },
   })

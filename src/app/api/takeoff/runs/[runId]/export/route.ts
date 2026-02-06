@@ -73,7 +73,8 @@ export async function GET(
     status: 200,
     headers: {
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'Content-Disposition': `attachment; filename="takeoff-${runId}.xlsx"`,
+      'Content-Disposition': `attachment; filename="takeoff-${new Date().toISOString().slice(0, 10)}.xlsx"`,
+      // Note: intentionally omit internal ids from the filename for estimator-friendly UX.
     },
   });
 }

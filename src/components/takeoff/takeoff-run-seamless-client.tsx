@@ -117,7 +117,7 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
       if (!res.ok) throw new Error(data?.error || 'Escalation failed');
 
       const newRunId = data?.runId as string | undefined;
-      if (!newRunId) throw new Error('Escalation did not return a runId');
+      if (!newRunId) throw new Error('Could not start a deeper search. Please try again.');
 
       // Navigate to the new run
       window.location.href = `/projects/${bidId}/takeoff/${newRunId}`;

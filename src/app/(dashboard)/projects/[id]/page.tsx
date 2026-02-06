@@ -321,7 +321,7 @@ export default function ProjectPage() {
       const docs = data?.documents || []
       const documentIds = docs.map((d: { id: string }) => d.id)
       if (documentIds.length === 0) {
-        addToast({ type: 'error', message: 'No documents to extract' })
+        addToast({ type: 'error', message: 'No files found in this project yet.' })
         return
       }
       const res = await fetch('/api/takeoff/enqueue', {
