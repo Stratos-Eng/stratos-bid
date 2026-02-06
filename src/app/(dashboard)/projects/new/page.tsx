@@ -200,6 +200,7 @@ export default function NewProjectPage() {
 
       // Poll runs list to find the newest run and jump the user straight into review
       const startedAt = Date.now()
+      const pollEveryMs = 3500
       const poll = async () => {
         if (Date.now() - startedAt > 60_000) return // 60s max
         const r = await fetch(`/api/takeoff/bids/${bidId}/runs`, { cache: 'no-store' })
@@ -213,7 +214,7 @@ export default function NewProjectPage() {
             return
           }
         }
-        setTimeout(poll, 2000)
+        setTimeout(poll, pollEveryMs)
       }
       poll()
     } catch (e) {
@@ -537,10 +538,14 @@ export default function NewProjectPage() {
         </Button>
         <Button
           onClick={handleUpload}
-          disabled={!projectName.trim() || files.length === 0 || isUploading}
+          disabled={!projectName.trim() || files.length === 0 || isUploading || chunkedUpload.isUploading}
           className="flex-1"
         >
-          {isUploading ? "Processing..." : "Create Project & Extract"}
+          {chunkedUpload.isUploading
+            ? "Uploads running… auto-starting takeoff"
+            : isUploading
+            ? "Processing..."
+            : "Create Project & Extract"}
         </Button>
       </div>
     </div>
