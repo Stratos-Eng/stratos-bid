@@ -380,6 +380,68 @@ async function runJob(job: JobRow) {
       localPdfPaths = scoredDocs.slice(0, 5).map((d) => ({ filename: d.filename, path: d.path }));
     }
 
+    // Guardrail: do not hallucinate a schedule-based takeoff when we can't even find schedule/legend signals.
+    // If we proceed, the model will "guess" quantities.
+    const maxDocScore = rankedDocs[0]?.docScore ?? 0;
+    const strongSignalCount = indexRows.filter((r) => (r?.meta?.score ?? 0) >= 60).length;
+
+    if (maxDocScore < 40 && strongSignalCount === 0) {
+      await db.insert(takeoffFindings).values({
+        runId,
+        bidId,
+        documentId: documentIds[0],
+        pageNumber: null,
+        type: 'missing_schedule',
+        confidence: 1,
+        data: {
+          reason: 'No schedule/legend detected in index pass; skipping estimator to avoid guessing.',
+          maxDocScore,
+          strongSignalCount,
+          docsIndexed: nDocs,
+        },
+        evidenceText: 'No signage schedule/legend was detected in the uploaded document(s). Upload a signage schedule/legend/specs or use “Search more docs” on a larger folder to expand scope.',
+        evidence: null,
+        createdAt: new Date(),
+      } as any);
+
+      await db
+        .update(documents)
+        .set({
+          extractionStatus: 'completed',
+          lineItemCount: 0,
+          signageLegend: {
+            estimatorTakeoff: true,
+            confidence: 0,
+            totalCount: 0,
+            discrepancyCount: 0,
+            missingItems: ['NO_SCHEDULE_FOUND'],
+            reviewFlags: ['NO_SCHEDULE_FOUND'],
+            verification: { ok: false, reason: 'no_schedule_found' },
+            notes: ['No schedule/legend detected; skipped estimator pass to avoid guessing.'],
+            extractedAt: new Date().toISOString(),
+          },
+        })
+        .where(inArray(documents.id, documentIds));
+
+      await db
+        .update(takeoffJobs)
+        .set({ status: 'succeeded', updatedAt: new Date(), finishedAt: new Date() })
+        .where(eq(takeoffJobs.id, job.id));
+
+      await db
+        .update(takeoffRuns)
+        .set({
+          status: 'succeeded',
+          summary: { noScheduleFound: true, maxDocScore, docsIndexed: nDocs },
+          updatedAt: new Date(),
+          finishedAt: new Date(),
+        } as any)
+        .where(eq(takeoffRuns.id, runId));
+
+      console.log(`[takeoff-worker] No schedule detected for bid ${bidId}; skipping estimator to avoid guessing.`);
+      return;
+    }
+
     // STEP 3a: page-level extraction coverage + OCR escalation (artifacts)
     try {
       const artifactRows: any[] = [];
