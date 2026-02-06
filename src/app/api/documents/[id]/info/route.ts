@@ -43,10 +43,28 @@ export async function GET(
       return NextResponse.json({ error: 'Document not found' }, { status: 404 });
     }
 
+    const light = request.nextUrl.searchParams.get('light') === '1';
+
     // Get page count and dimensions from PDF
+    // NOTE: For very large folders, we must avoid downloading/parsing PDFs unless explicitly requested.
     let pageCount = doc.document.pageCount || 1;
     const pages: PageInfo[] = [];
     const storagePath = doc.document.storagePath;
+
+    if (light) {
+      // Lightweight response: do not download/parse PDF
+      return NextResponse.json({
+        id: doc.document.id,
+        filename: doc.document.filename,
+        pageCount,
+        pages: [],
+        pdfUrl: `/api/documents/${id}/view`,
+        bidId: doc.bid.id,
+        bidTitle: doc.bid.title,
+        docType: doc.document.docType,
+        downloadedAt: doc.document.downloadedAt,
+      });
+    }
 
     if (storagePath) {
       try {
@@ -67,19 +85,16 @@ export async function GET(
           data = new Uint8Array(fs.readFileSync(resolvedPath));
         }
 
-        // Use unpdf which works in serverless environments
         const pdfDocument = await getDocumentProxy(data);
         pageCount = pdfDocument.numPages;
 
-        // Try to get page labels (e.g., "A1.1", "S-101")
         let pageLabels: string[] | null = null;
         try {
           pageLabels = await pdfDocument.getPageLabels();
         } catch {
-          // Page labels not available
+          // ignore
         }
 
-        // Get dimensions for each page
         for (let i = 1; i <= pageCount; i++) {
           const page = await pdfDocument.getPage(i);
           const viewport = page.getViewport({ scale: 1.0 });
@@ -91,22 +106,16 @@ export async function GET(
           });
         }
 
-        // Update page count in database if needed
         if (doc.document.pageCount !== pageCount) {
-          await db
-            .update(documents)
-            .set({ pageCount })
-            .where(eq(documents.id, id));
+          await db.update(documents).set({ pageCount }).where(eq(documents.id, id));
         }
       } catch (e) {
         console.error('Failed to get PDF info:', e);
-        // Use defaults for page dimensions
         for (let i = 0; i < pageCount; i++) {
           pages.push({ width: 612, height: 792, rotation: 0 });
         }
       }
     } else {
-      // No storage path - use defaults
       for (let i = 0; i < pageCount; i++) {
         pages.push({ width: 612, height: 792, rotation: 0 });
       }

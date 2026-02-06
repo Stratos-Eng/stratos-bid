@@ -92,16 +92,17 @@ async function getJobDocuments(jobId: string) {
   return rows.map((r) => r.doc);
 }
 
-async function downloadBidPdfsToTemp(
-  bidId: string
-): Promise<{ tempDir: string; docIdBySafeName: Map<string, string> }> {
+async function downloadBidPdfsToTemp(input: {
+  bidId: string;
+  docs: Array<{ id: string; filename: string; storagePath: string | null; pageCount: number | null }>;
+}): Promise<{ tempDir: string; docIdBySafeName: Map<string, string> }> {
+  const { bidId, docs } = input;
   const tempDir = await mkdtemp(join(tmpdir(), `stratos-bid-${bidId}-`));
   const docIdBySafeName = new Map<string, string>();
 
-  const bidDocs = await db
-    .select({ id: documents.id, filename: documents.filename, storagePath: documents.storagePath, pageCount: documents.pageCount })
-    .from(documents)
-    .where(eq(documents.bidId, bidId));
+  // IMPORTANT: only download the documents requested by the takeoff job.
+  // Large folders may have hundreds/thousands of PDFs.
+  const bidDocs = docs;
 
   let downloaded = 0;
   for (const doc of bidDocs) {
@@ -162,7 +163,15 @@ async function runJob(job: JobRow) {
     .set({ extractionStatus: 'extracting' })
     .where(inArray(documents.id, documentIds));
 
-  const { tempDir: localBidFolder, docIdBySafeName } = await downloadBidPdfsToTemp(bidId);
+  const { tempDir: localBidFolder, docIdBySafeName } = await downloadBidPdfsToTemp({
+    bidId,
+    docs: docs.map((d) => ({
+      id: d.id,
+      filename: d.filename,
+      storagePath: d.storagePath,
+      pageCount: d.pageCount,
+    })),
+  });
 
   try {
     // STEP 1: score docs
@@ -277,9 +286,20 @@ async function runJob(job: JobRow) {
     }
 
     // STEP 3: estimator-grade takeoff (OpenClaw) + second-pass verification
-    const localPdfPaths = scoredDocs
-      .slice(0, 5)
-      .map((d) => ({ filename: d.filename, path: d.path }));
+    // For large folders, take care: the best schedule may not be in the top 5 by filename score alone.
+    // Pick a small, diverse set of likely-relevant PDFs.
+    const preferred = scoredDocs.filter((d) => /schedule|legend|signage|exhibit/i.test(d.filename));
+    const top = scoredDocs.slice(0, 12);
+    const seen = new Set<string>();
+    const chosen: Array<{ filename: string; path: string }> = [];
+    for (const d of [...preferred, ...top]) {
+      if (chosen.length >= 8) break;
+      if (seen.has(d.filename)) continue;
+      seen.add(d.filename);
+      chosen.push({ filename: d.filename, path: d.path });
+    }
+
+    const localPdfPaths = chosen.length > 0 ? chosen : scoredDocs.slice(0, 5).map((d) => ({ filename: d.filename, path: d.path }));
 
     // STEP 3a: page-level extraction coverage + OCR escalation (artifacts)
     try {
