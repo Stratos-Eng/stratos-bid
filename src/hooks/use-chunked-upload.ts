@@ -55,6 +55,10 @@ export function useChunkedUpload(options: UploadOptions) {
     [onProgress]
   );
 
+  const getFileKey = useCallback((fileInfo: FileToUpload) => {
+    return fileInfo.relativePath || fileInfo.file.name;
+  }, []);
+
   // Helper function to delay execution
   const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -195,18 +199,19 @@ export function useChunkedUpload(options: UploadOptions) {
         throw new Error('bidId is required');
       }
 
+      const fileKey = getFileKey(fileInfo);
       const fileSizeMB = (file.size / 1024 / 1024).toFixed(1);
-      console.log(`[upload] Starting upload for: ${file.name} (${fileSizeMB}MB)`);
+      console.log(`[upload] Starting upload for: ${fileKey} (${fileSizeMB}MB)`);
 
       // Create abort controller for this upload
       const abortController = new AbortController();
-      abortControllersRef.current.set(file.name, abortController);
+      abortControllersRef.current.set(fileKey, abortController);
 
       try {
-        updateUpload(file.name, { status: 'uploading', progress: 0 });
+        updateUpload(fileKey, { status: 'uploading', progress: 0 });
 
-        // Upload via presigned URL
-        const blob = await uploadWithRetry(file, effectiveBidId, file.name);
+        // Upload via presigned URL (use fileKey so folder structure is preserved in filename)
+        const blob = await uploadWithRetry(file, effectiveBidId, fileKey);
 
         console.log('[upload] Upload complete:', blob.url);
 
@@ -215,7 +220,7 @@ export function useChunkedUpload(options: UploadOptions) {
           throw new Error('Upload cancelled');
         }
 
-        updateUpload(file.name, { status: 'processing', progress: 100 });
+        updateUpload(fileKey, { status: 'processing', progress: 100 });
 
         // Call complete-blob to process the uploaded file
         const completeRes = await fetch('/api/upload/complete-blob', {
@@ -224,7 +229,7 @@ export function useChunkedUpload(options: UploadOptions) {
           body: JSON.stringify({
             blobUrl: blob.url,
             pathname: blob.pathname,
-            filename: file.name,
+            filename: fileKey,
             bidId: effectiveBidId,
             folderName,
             relativePath,
@@ -240,22 +245,22 @@ export function useChunkedUpload(options: UploadOptions) {
         const result = await completeRes.json();
         console.log('[upload] Processing complete:', result);
 
-        updateUpload(file.name, { status: 'completed' });
-        abortControllersRef.current.delete(file.name);
+        updateUpload(fileKey, { status: 'completed' });
+        abortControllersRef.current.delete(fileKey);
 
         const uploadResult = {
-          filename: file.name,
+          filename: fileKey,
           documentId: result.documentId,
         };
 
         onFileComplete?.(uploadResult);
         return uploadResult;
       } catch (error) {
-        abortControllersRef.current.delete(file.name);
+        abortControllersRef.current.delete(fileKey);
         throw error;
       }
     },
-    [bidId, updateUpload, onFileComplete, uploadWithRetry]
+    [bidId, getFileKey, updateUpload, onFileComplete, uploadWithRetry]
   );
 
   const uploadFiles = useCallback(
@@ -268,7 +273,7 @@ export function useChunkedUpload(options: UploadOptions) {
       // Initialize progress state for all files
       setUploads(
         files.map((f) => ({
-          filename: f.file.name,
+          filename: f.relativePath || f.file.name,
           fileSize: f.file.size,
           progress: 0,
           status: 'pending' as const,
@@ -293,14 +298,16 @@ export function useChunkedUpload(options: UploadOptions) {
 
             // Don't report cancelled uploads as errors
             if (errorMessage !== 'Upload cancelled') {
+              const k = fileInfo.relativePath || fileInfo.file.name;
               errors.push({
-                filename: fileInfo.file.name,
+                filename: k,
                 error: errorMessage,
               });
-              onError?.(fileInfo.file.name, errorMessage);
+              onError?.(k, errorMessage);
             }
 
-            updateUpload(fileInfo.file.name, {
+            const k2 = fileInfo.relativePath || fileInfo.file.name;
+            updateUpload(k2, {
               status: errorMessage === 'Upload cancelled' ? 'cancelled' : 'error',
               error: errorMessage === 'Upload cancelled' ? undefined : errorMessage,
             });

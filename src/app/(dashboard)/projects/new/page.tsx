@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils"
 import { useExtractionStatus } from "@/hooks/use-extraction-status"
 import { useToast } from "@/components/ui/toast"
 import { useChunkedUpload, type UploadProgress } from "@/hooks/use-chunked-upload"
+import { UploadQueue } from '@/components/uploads/upload-queue'
 
 const LARGE_FILE_THRESHOLD = 50 * 1024 * 1024 // 50MB - uses chunked upload above this
 const MAX_FILE_SIZE = 500 * 1024 * 1024 // 500MB - hard limit for uploads
@@ -32,6 +33,8 @@ export default function NewProjectPage() {
     currentFile: "",
   })
   const [fileProgress, setFileProgress] = useState<UploadProgress[]>([])
+  const [lastBidId, setLastBidId] = useState<string | null>(null)
+  const [lastUploadBatch, setLastUploadBatch] = useState<Array<{ file: File; relativePath?: string; bidId: string }>>([])
 
   // Set up chunked upload hook (will be configured with bidId when project is created)
   const [currentBidId, setCurrentBidId] = useState<string | null>(null)
@@ -147,6 +150,27 @@ export default function NewProjectPage() {
     setFiles((prev) => prev.filter((_, i) => i !== index))
   }
 
+  const retryFailedUploads = useCallback(async () => {
+    if (!lastBidId || lastUploadBatch.length === 0) return
+
+    const failedNames = new Set(fileProgress.filter(p => p.status === 'error').map(p => p.filename))
+    const subset = lastUploadBatch.filter(f => failedNames.has(f.relativePath || f.file.name))
+
+    if (subset.length === 0) return
+
+    addToast({ type: 'info', message: `Retrying ${subset.length} failed upload(s)...` })
+    const { results } = await chunkedUpload.uploadFiles(subset)
+
+    const documentIds = results.map(r => r.documentId).filter((id): id is string => !!id)
+    if (documentIds.length > 0) {
+      await fetch('/api/takeoff/enqueue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bidId: lastBidId, documentIds }),
+      })
+    }
+  }, [addToast, chunkedUpload, fileProgress, lastBidId, lastUploadBatch])
+
   const handleUpload = async () => {
     if (!projectName.trim() || files.length === 0) return
 
@@ -166,6 +190,7 @@ export default function NewProjectPage() {
 
       const { projectId, bidId } = await createRes.json()
       setCurrentBidId(bidId)
+      setLastBidId(bidId)
 
       // Check if any files are large (need chunked upload)
       const hasLargeFiles = files.some(f => f.file.size > LARGE_FILE_THRESHOLD)
@@ -182,6 +207,7 @@ export default function NewProjectPage() {
         relativePath: f.relativePath,
         bidId, // Pass bidId for each file since hook might not be updated yet
       }))
+      setLastUploadBatch(filesToUpload)
 
       const { results, errors } = await chunkedUpload.uploadFiles(filesToUpload)
 
@@ -291,14 +317,15 @@ export default function NewProjectPage() {
           <p className="text-sm font-medium">{files.length} file(s) selected</p>
           {files.map(({ file, relativePath }, i) => {
             const isLargeFile = file.size > LARGE_FILE_THRESHOLD
-            const progress = fileProgress.find(p => p.filename === file.name)
+            const key = relativePath || file.name
+            const progress = fileProgress.find(p => p.filename === key)
             return (
               <div
-                key={`${relativePath || file.name}-${i}`}
+                key={`${key}-${i}`}
                 className="flex items-center justify-between bg-secondary/50 rounded px-3 py-2"
               >
-                <span className="text-sm truncate flex-1" title={relativePath || file.name}>
-                  {relativePath || file.name}
+                <span className="text-sm truncate flex-1" title={key}>
+                  {key}
                 </span>
                 <div className="flex items-center gap-2">
                   {isLargeFile && (
@@ -333,6 +360,17 @@ export default function NewProjectPage() {
               </div>
             )
           })}
+
+          {/* Proper queue view once uploading starts */}
+          {fileProgress.length > 0 && (
+            <UploadQueue
+              uploads={fileProgress}
+              isUploading={chunkedUpload.isUploading}
+              onCancelAll={chunkedUpload.cancelAll}
+              onRetryFailed={retryFailedUploads}
+              onCancelOne={chunkedUpload.cancel}
+            />
+          )}
         </div>
       )}
 
