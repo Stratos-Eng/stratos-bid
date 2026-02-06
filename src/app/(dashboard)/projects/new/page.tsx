@@ -164,21 +164,6 @@ export default function NewProjectPage() {
     setFiles((prev) => prev.filter((_, i) => i !== index))
   }
 
-  const retryFailedUploads = useCallback(async () => {
-    if (!lastBidId || lastUploadBatch.length === 0) return
-
-    const failedNames = new Set(fileProgress.filter(p => p.status === 'error').map(p => p.filename))
-    const subset = lastUploadBatch.filter(f => failedNames.has(f.relativePath || f.file.name))
-
-    if (subset.length === 0) return
-
-    addToast({ type: 'info', message: `Retrying ${subset.length} failed upload(s)...` })
-    const { results } = await chunkedUpload.uploadFiles(subset)
-
-    const documentIds = results.map(r => r.documentId).filter((id): id is string => !!id)
-    await enqueueTakeoff(lastBidId, documentIds)
-  }, [addToast, chunkedUpload, enqueueTakeoff, fileProgress, lastBidId, lastUploadBatch])
-
   const enqueueTakeoff = useCallback(async (bidId: string, documentIds: string[]) => {
     if (!autoEnqueue) return
     if (documentIds.length === 0) return
@@ -245,7 +230,22 @@ export default function NewProjectPage() {
       setEnqueueState({ status: 'error', error: msg })
       addToast({ type: 'error', message: `Failed to enqueue takeoff: ${msg}` })
     }
-  }, [addToast, autoEnqueue, router])
+  }, [addToast, autoEnqueue, router, smartSelection])
+
+  const retryFailedUploads = useCallback(async () => {
+    if (!lastBidId || lastUploadBatch.length === 0) return
+
+    const failedNames = new Set(fileProgress.filter(p => p.status === 'error').map(p => p.filename))
+    const subset = lastUploadBatch.filter(f => failedNames.has(f.relativePath || f.file.name))
+
+    if (subset.length === 0) return
+
+    addToast({ type: 'info', message: `Retrying ${subset.length} failed upload(s)...` })
+    const { results } = await chunkedUpload.uploadFiles(subset)
+
+    const documentIds = results.map(r => r.documentId).filter((id): id is string => !!id)
+    await enqueueTakeoff(lastBidId, documentIds)
+  }, [addToast, chunkedUpload, enqueueTakeoff, fileProgress, lastBidId, lastUploadBatch])
 
   const handleUpload = async () => {
     if (!projectName.trim() || files.length === 0) return
