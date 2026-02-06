@@ -39,14 +39,22 @@ export async function GET(
       )
     );
 
+  // Count items with no linked evidence. Use NOT EXISTS to avoid GROUP BY/HAVING pitfalls.
   const [{ itemsNoEvidence }] = await db
     .select({
       itemsNoEvidence: sql<number>`count(*)`,
     })
     .from(takeoffItems)
-    .leftJoin(takeoffItemEvidence, eq(takeoffItemEvidence.itemId, takeoffItems.id))
-    .where(and(eq(takeoffItems.runId, runId), eq(takeoffItems.userId, userId)))
-    .having(sql`count(${takeoffItemEvidence.id}) = 0`);
+    .where(
+      and(
+        eq(takeoffItems.runId, runId),
+        eq(takeoffItems.userId, userId),
+        sql`not exists (
+          select 1 from ${takeoffItemEvidence} tie
+          where tie.item_id = ${takeoffItems}.id
+        )`
+      )
+    );
 
   type Row = Record<string, unknown>;
 
