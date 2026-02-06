@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
 
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
+
+function stableUuid(input: string): string {
+  const hex = createHash('sha256').update(input).digest('hex').slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
 import { deriveFindingsFromText } from './finding-utils';
 import { extractPageTextWithFallback, getPdfPageCount } from './pdf-artifacts';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
@@ -426,7 +432,7 @@ async function runJob(job: JobRow) {
         if (!code || !desc || qty == null) continue;
 
         const itemKey = `division_10:${code}:${desc.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`.slice(0, 220);
-        const itemId = randomUUID();
+        const itemId = stableUuid(`${runId}|${itemKey}`);
 
         itemRows.push({
           id: itemId,
@@ -462,7 +468,7 @@ async function runJob(job: JobRow) {
         const codeMatch = (it.description || '').match(/\b([A-Z]{1,3}\s?-?\d{1,2})\b/);
         const code = codeMatch ? codeMatch[1].replace(/\s+/g, '').toUpperCase() : null;
         const itemKey = `division_10:${code || 'NA'}:${String(it.description || '').toLowerCase().replace(/[^a-z0-9]+/g, '_')}`.slice(0, 220);
-        const itemId = randomUUID();
+        const itemId = stableUuid(`${runId}|${itemKey}`);
 
         itemRows.push({
           id: itemId,
