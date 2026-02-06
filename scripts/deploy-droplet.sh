@@ -102,7 +102,14 @@ maybe_sudo() {
   fi
 
   # Fall back to direct passwordless sudo for the current user.
-  sudo -n "$@"
+  if sudo -n true >/dev/null 2>&1; then
+    sudo -n "$@"
+    return
+  fi
+
+  echo "[deploy] ERROR: no passwordless sudo path available for user=$(whoami)." >&2
+  echo "[deploy] Expected to SSH as openclaw (recommended) or root." >&2
+  exit 1
 }
 
 if [[ -f "${UNIT_SRC}" ]]; then
