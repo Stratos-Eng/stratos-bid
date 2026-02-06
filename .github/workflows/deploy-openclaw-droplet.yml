@@ -29,9 +29,8 @@ jobs:
       - name: Deploy (pull/build/restart)
         env:
           DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
-          # Force deploy SSH user to openclaw to match droplet sudoers delegation.
-          # (Prevents intermittent failures when the secret is wrong.)
-          DROPLET_USER: openclaw
+          # Set to root (recommended) OR openclaw if passwordless sudo is configured for restarts.
+          DROPLET_USER: ${{ secrets.DROPLET_USER }}
 
           # Worker secrets (write to /home/openclaw/stratos-bid/.env.worker)
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
