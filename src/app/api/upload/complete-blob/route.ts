@@ -3,9 +3,7 @@ import { auth } from '@/lib/auth';
 import { db } from '@/db';
 import { documents, bids } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { PDFDocument } from 'pdf-lib';
-import { deleteFile, downloadFile } from '@/lib/storage';
-import { getPdfMetadataFromBuffer } from '@/extraction/pdf-parser';
+import { deleteFile } from '@/lib/storage';
 import { inngest } from '@/inngest/client';
 
 interface BlobCompleteRequest {
@@ -61,24 +59,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
 
-    // Download PDF for metadata extraction only
-    console.log('[blob-complete] Downloading PDF for metadata:', blobUrl);
-
-    const pdfBuffer = await downloadFile(blobUrl);
-
-    let pageCount = 0;
-
-    try {
-      const metadata = await getPdfMetadataFromBuffer(pdfBuffer);
-      pageCount = metadata.pageCount;
-    } catch (metadataError) {
-      console.error('[blob-complete] Failed to get metadata via unpdf, trying pdf-lib:', metadataError);
-
-      const pdfDoc = await PDFDocument.load(pdfBuffer);
-      pageCount = pdfDoc.getPageCount();
-    }
-
-    console.log('[blob-complete] PDF metadata:', { pageCount });
+    // IMPORTANT: avoid downloading the entire PDF here.
+    // Users may upload huge folders (hundreds of GB). Upload completion must be O(1) memory.
+    // We defer page count + text extraction to the worker pipeline.
 
     // Create document record
     const [doc] = await db
@@ -88,14 +71,14 @@ export async function POST(request: NextRequest) {
         filename,
         docType: 'plans',
         storagePath: blobUrl,
-        pageCount,
+        pageCount: null,
         downloadedAt: new Date(),
         extractionStatus: 'not_started',
         textExtractionStatus: 'not_started',
       })
       .returning();
 
-    // Fire background job for text extraction (non-blocking)
+    // Best-effort background extraction (may be disabled/unavailable)
     try {
       await inngest.send({
         name: 'extraction/text-extract',
@@ -104,16 +87,15 @@ export async function POST(request: NextRequest) {
           blobUrl,
         },
       });
-      console.log(`[blob-complete] Text extraction queued for document ${doc.id} (${pageCount} pages)`);
+      console.log(`[blob-complete] Text extraction queued for document ${doc.id}`);
     } catch (inngestError) {
       console.warn('[blob-complete] Failed to queue text extraction (Inngest unavailable):', inngestError instanceof Error ? inngestError.message : inngestError);
-      // Don't fail the upload — text extraction is secondary
     }
 
     return NextResponse.json({
       success: true,
       filename,
-      pageCount,
+      pageCount: null,
       documentId: doc.id,
     });
   } catch (error) {
