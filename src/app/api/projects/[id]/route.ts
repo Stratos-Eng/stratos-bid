@@ -50,7 +50,8 @@ export async function GET(
       documents: docs.map((d) => ({
         id: d.id,
         filename: d.filename,
-        pageCount: d.pageCount,
+        // pageCount may be null at upload time (we defer metadata for huge folders)
+        pageCount: d.pageCount ?? 1,
         extractionStatus: d.extractionStatus,
       })),
       items: items.map((i) => ({

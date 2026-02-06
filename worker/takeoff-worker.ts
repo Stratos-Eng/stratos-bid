@@ -99,7 +99,7 @@ async function downloadBidPdfsToTemp(
   const docIdBySafeName = new Map<string, string>();
 
   const bidDocs = await db
-    .select({ id: documents.id, filename: documents.filename, storagePath: documents.storagePath })
+    .select({ id: documents.id, filename: documents.filename, storagePath: documents.storagePath, pageCount: documents.pageCount })
     .from(documents)
     .where(eq(documents.bidId, bidId));
 
@@ -109,9 +109,22 @@ async function downloadBidPdfsToTemp(
     try {
       const buffer = await downloadFile(doc.storagePath);
       const safeName = doc.filename.replace(/[^a-zA-Z0-9._()-]/g, '_');
-      await writeFile(join(tempDir, safeName), buffer);
+      const localPath = join(tempDir, safeName);
+      await writeFile(localPath, buffer);
       docIdBySafeName.set(safeName, doc.id);
       downloaded++;
+
+      // If pageCount was deferred at upload time, fill it in now (cheap) using local pdfinfo.
+      if (doc.pageCount == null) {
+        const pc = getPdfPageCount(localPath);
+        if (pc > 0) {
+          try {
+            await db.update(documents).set({ pageCount: pc }).where(eq(documents.id, doc.id));
+          } catch (e) {
+            console.warn(`[takeoff-worker] Failed to update pageCount for ${doc.filename}:`, e instanceof Error ? e.message : e);
+          }
+        }
+      }
     } catch (err) {
       console.warn(`[takeoff-worker] Failed to download ${doc.filename}:`, err instanceof Error ? err.message : err);
     }
