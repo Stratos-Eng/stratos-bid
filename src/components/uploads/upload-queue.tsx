@@ -94,7 +94,7 @@ export function UploadQueue({
       </div>
 
       <div className="p-3 border-t text-xs text-muted-foreground">
-        Tip: you can keep working—auto-enqueue will run as soon as uploads finish.
+        Tip: you can keep working—takeoff review will start automatically when uploads finish.
       </div>
     </div>
   );

@@ -390,7 +390,7 @@ export default function NewProjectPage() {
               onChange={(e) => setAutoEnqueue(e.target.checked)}
               disabled={isUploading}
             />
-            Auto-start takeoff review
+            Start takeoff review automatically
           </label>
 
           <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -400,7 +400,7 @@ export default function NewProjectPage() {
               onChange={(e) => setSmartSelection(e.target.checked)}
               disabled={isUploading}
             />
-            Smart doc selection for large folders
+            Focus on schedules & signage docs (recommended for large folders)
           </label>
         </div>
       </div>
@@ -490,7 +490,7 @@ export default function NewProjectPage() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <Link className="underline text-sm" href={`/projects/${lastBidId}/takeoff`}>Runs</Link>
+              <Link className="underline text-sm" href={`/projects/${lastBidId}/takeoff`}>All takeoffs</Link>
               {foundRunId && (
                 <Link className="underline text-sm" href={`/projects/${lastBidId}/takeoff/${foundRunId}`}>Open review</Link>
               )}

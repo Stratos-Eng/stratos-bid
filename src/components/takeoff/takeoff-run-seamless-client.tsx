@@ -224,8 +224,8 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
       {/* Top bar */}
       <div className="flex items-center justify-between gap-3 mb-3">
         <div className="text-sm text-muted-foreground">
-          <span className="font-medium text-foreground">Takeoff review</span>{' '}
-          <span className="font-mono text-xs">{runId}</span>
+          <span className="font-medium text-foreground">Takeoff Review</span>
+          <span className="ml-2 text-xs text-muted-foreground">(auto)</span>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => setDrawerOpen((v) => !v)}>
@@ -234,11 +234,8 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
           <Button variant="outline" onClick={() => { loadItems(); loadCoverage(); }} disabled={loadingItems || loadingCoverage}>
             Refresh
           </Button>
-          <Link
-            className="underline text-sm"
-            href={`/projects/${bidId}/takeoff`}
-          >
-            Runs
+          <Link className="underline text-sm" href={`/projects/${bidId}/takeoff`}>
+            All takeoffs
           </Link>
         </div>
       </div>
@@ -278,13 +275,13 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
               )}
             </div>
             <div className="text-xs text-muted-foreground">
-              {loadingEvidence ? 'Loading evidence…' : `${evidence.length} evidence`}
+              {loadingEvidence ? 'Loading sources…' : `${evidence.length} sources`}
             </div>
           </div>
 
           <div className="flex gap-2 overflow-auto pb-1">
             {evidence.length === 0 && !loadingEvidence && (
-              <div className="text-sm text-muted-foreground">No evidence linked.</div>
+              <div className="text-sm text-muted-foreground">No sources yet (needs review).</div>
             )}
             {evidence.map((row) => {
               const ev = row.finding.evidence || {};
@@ -383,7 +380,8 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
 
               {coverage?.topCandidates?.length ? (
                 <div className="rounded border p-2">
-                  <div className="text-xs font-medium mb-1">Top schedule candidates</div>
+                  <div className="text-xs font-medium mb-1">Best matching pages</div>
+                  <div className="text-[11px] text-muted-foreground mb-1">Click to jump to likely schedules / legends / signage notes.</div>
                   <div className="flex gap-2 overflow-auto pb-1">
                     {coverage.topCandidates.slice(0, 8).map((c) => (
                       <button
