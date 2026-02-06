@@ -201,7 +201,7 @@ export default function NewProjectPage() {
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
-        throw new Error(data?.error || 'Failed to enqueue')
+        throw new Error(data?.error || 'Could not start takeoff')
       }
 
       setEnqueueState({ status: 'queued', docCount: documentIds.length })
