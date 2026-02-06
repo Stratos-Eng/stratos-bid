@@ -10,6 +10,7 @@ export async function GET(
   _req: Request,
   ctx: { params: Promise<{ runId: string }> }
 ) {
+  try {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -57,8 +58,15 @@ export async function GET(
     );
 
   type Row = Record<string, unknown>;
+  type ExecuteResult = Row[] | { rows?: Row[] };
 
-  const idxRows = (await db.execute(sql`
+  const rowsOf = (r: ExecuteResult): Row[] => {
+    if (Array.isArray(r)) return r;
+    if (r && Array.isArray((r as any).rows)) return (r as any).rows;
+    return [];
+  };
+
+  const idxExec = (await db.execute(sql`
     with idx as (
       select document_id, page_number, (meta->>'score')::int as score
       from ${takeoffArtifacts}
@@ -70,23 +78,25 @@ export async function GET(
       count(distinct document_id)::int as docs_indexed,
       coalesce(max(score),0)::int as max_score
     from idx;
-  `)) as Row[];
+  `)) as ExecuteResult;
 
+  const idxRows = rowsOf(idxExec);
   const idxSummary = idxRows[0] || {};
 
-  const deepRows = (await db.execute(sql`
+  const deepExec = (await db.execute(sql`
     select
       count(*)::int as deep_pages,
       count(distinct document_id)::int as deep_docs
     from ${takeoffArtifacts}
     where run_id = ${runId}::uuid
       and (meta is null or meta->>'phase' is null);
-  `)) as Row[];
+  `)) as ExecuteResult;
 
+  const deepRows = rowsOf(deepExec);
   const deepSummary = deepRows[0] || {};
 
   // Top candidates = docs with highest index score + their best page
-  const top = (await db.execute(sql`
+  const topExec = (await db.execute(sql`
     with idx as (
       select document_id, page_number, (meta->>'score')::int as score
       from ${takeoffArtifacts}
@@ -118,7 +128,9 @@ export async function GET(
     join ${documents} d on d.id = a.document_id
     order by a.score desc, a.sampled_pages desc
     limit 50;
-  `)) as Row[];
+  `)) as ExecuteResult;
+
+  const top = rowsOf(topExec);
 
   const num = (v: unknown, fallback = 0) => {
     const n = typeof v === 'number' ? v : Number(v);
@@ -150,4 +162,9 @@ export async function GET(
       sampledPages: num(r['sampled_pages'], 0),
     })),
   });
+  } catch (err) {
+    console.error('[coverage] failed', err);
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    return NextResponse.json({ error: 'Coverage failed', message }, { status: 500 });
+  }
 }
