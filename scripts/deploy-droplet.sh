@@ -95,7 +95,8 @@ maybe_sudo() {
   # This avoids requiring the deploy SSH user to have full passwordless sudo.
   if command -v sudo >/dev/null 2>&1; then
     if sudo -n -u clawops true >/dev/null 2>&1; then
-      sudo -n -u clawops "$@"
+      # Run the allowlisted command via clawops' passwordless sudo rules.
+      sudo -n -u clawops sudo -n "$@"
       return
     fi
   fi
