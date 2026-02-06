@@ -51,7 +51,7 @@ export async function GET(
         eq(takeoffItems.userId, userId),
         sql`not exists (
           select 1 from ${takeoffItemEvidence} tie
-          where tie.item_id = ${takeoffItems}.id
+          where tie.item_id = ${takeoffItems.id}
         )`
       )
     );
