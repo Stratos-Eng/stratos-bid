@@ -9,6 +9,7 @@ function stableUuid(input: string): string {
 }
 
 import { deriveFindingsFromText } from './finding-utils';
+import { mineSignageEvidence, hashText } from './signage-evidence-miner';
 import { extractPageTextWithFallback, getPdfPageCount } from './pdf-artifacts';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -386,6 +387,153 @@ async function runJob(job: JobRow) {
     const strongSignalCount = indexRows.filter((r) => (r?.meta?.score ?? 0) >= 60).length;
 
     if (maxDocScore < 40 && strongSignalCount === 0) {
+      // If there are signage mentions in notes/callouts, we can still produce useful *requirements* without guessing quantities.
+      const anySignageMentions = indexRows.some((r) => {
+        const txt = String(r?.rawText || '').toLowerCase();
+        return /(\bsign\b|signage|ada|tactile|braille|wayfinding|exit|egress|fire)/.test(txt);
+      });
+
+      if (anySignageMentions) {
+        const findingRows: any[] = [];
+        const itemAgg = new Map<string, { category: string; description: string; findingIds: string[] }>();
+
+        for (const r of indexRows) {
+          const raw = String(r?.rawText || '').trim();
+          if (!raw) continue;
+          const hits = mineSignageEvidence(raw);
+          if (hits.length === 0) continue;
+
+          for (const hit of hits) {
+            const findingId = stableUuid(`${runId}|finding|evidence_mining|${r.documentId}|${r.pageNumber}|${hashText(hit.excerpt)}`);
+            findingRows.push({
+              id: findingId,
+              runId,
+              bidId,
+              documentId: r.documentId,
+              pageNumber: r.pageNumber,
+              type: 'signage_requirement',
+              confidence: 0.55,
+              data: { mode: 'evidence_mining', category: hit.category, kind: hit.kind, score: hit.score },
+              evidenceText: hit.excerpt,
+              evidence: { page: r.pageNumber, method: r.method, phase: 'index' },
+              createdAt: new Date(),
+            });
+
+            const key = `REQ|${hit.category}|${hit.excerpt}`;
+            const existing = itemAgg.get(key);
+            if (existing) {
+              existing.findingIds.push(findingId);
+            } else {
+              itemAgg.set(key, {
+                category: hit.category,
+                description: hit.excerpt,
+                findingIds: [findingId],
+              });
+            }
+          }
+        }
+
+        // Persist findings
+        if (findingRows.length > 0) {
+          const chunkSize = 200;
+          for (let i = 0; i < findingRows.length; i += chunkSize) {
+            const chunk = findingRows.slice(i, i + chunkSize);
+            await db.insert(takeoffFindings).values(chunk as any).onConflictDoNothing();
+          }
+        }
+
+        // Compile requirement items (qty unknown)
+        const itemRows: any[] = [];
+        const linkRows: any[] = [];
+        for (const [key, v] of itemAgg) {
+          const itemKey = `evidence_mining|${v.category}|${hashText(v.description)}`;
+          const itemId = stableUuid(`${runId}|${itemKey}`);
+          itemRows.push({
+            id: itemId,
+            runId,
+            bidId,
+            userId: job.userId,
+            tradeCode: 'division_10',
+            itemKey,
+            code: null,
+            category: `Requirement (${v.category})`,
+            description: v.description,
+            qtyNumber: null,
+            qtyText: 'PER PLAN / PER SPEC',
+            unit: null,
+            confidence: 0.55,
+            status: 'needs_review',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+
+          for (const fid of v.findingIds.slice(0, 5)) {
+            linkRows.push({
+              id: stableUuid(`${itemId}|${fid}`),
+              itemId,
+              findingId: fid,
+              weight: 1,
+              note: 'Evidence mining (no schedule)',
+              createdAt: new Date(),
+            });
+          }
+        }
+
+        if (itemRows.length > 0) {
+          const chunkSize = 100;
+          for (let i = 0; i < itemRows.length; i += chunkSize) {
+            const chunk = itemRows.slice(i, i + chunkSize);
+            await db.insert(takeoffItems).values(chunk as any).onConflictDoNothing({ target: [takeoffItems.runId, takeoffItems.itemKey] } as any);
+          }
+        }
+
+        if (linkRows.length > 0) {
+          const chunkSize = 200;
+          for (let i = 0; i < linkRows.length; i += chunkSize) {
+            const chunk = linkRows.slice(i, i + chunkSize);
+            await db.insert(takeoffItemEvidence).values(chunk as any).onConflictDoNothing({ target: [takeoffItemEvidence.itemId, takeoffItemEvidence.findingId] } as any);
+          }
+        }
+
+        await db
+          .update(documents)
+          .set({
+            extractionStatus: 'completed',
+            lineItemCount: itemRows.length,
+            signageLegend: {
+              estimatorTakeoff: false,
+              confidence: 0.55,
+              totalCount: itemRows.length,
+              discrepancyCount: 0,
+              missingItems: ['NO_SCHEDULE_FOUND'],
+              reviewFlags: ['NO_SCHEDULE_FOUND', 'EVIDENCE_MINING_MODE'],
+              verification: { ok: false, reason: 'no_schedule_evidence_mining' },
+              notes: ['No schedule/legend detected; extracted signage requirements from notes/callouts without guessing quantities.'],
+              extractedAt: new Date().toISOString(),
+            },
+          })
+          .where(inArray(documents.id, documentIds));
+
+        await db
+          .update(takeoffJobs)
+          .set({ status: 'succeeded', updatedAt: new Date(), finishedAt: new Date() })
+          .where(eq(takeoffJobs.id, job.id));
+
+        await db
+          .update(takeoffRuns)
+          .set({
+            status: 'succeeded',
+            summary: { mode: 'evidence_mining', noScheduleFound: true, maxDocScore, docsIndexed: nDocs, items: itemRows.length },
+            updatedAt: new Date(),
+            finishedAt: new Date(),
+          } as any)
+          .where(eq(takeoffRuns.id, runId));
+
+        console.log(`[takeoff-worker] No schedule detected for bid ${bidId}; ran evidence mining mode (${itemRows.length} items).`);
+        return;
+      }
+
+      // No schedule + no signage mentions: return explicit missing-schedule finding, no items.
       await db.insert(takeoffFindings).values({
         runId,
         bidId,

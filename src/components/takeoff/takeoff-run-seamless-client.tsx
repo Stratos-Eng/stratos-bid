@@ -73,6 +73,7 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
   const [escalating, setEscalating] = useState(false);
 
   type CoverageResponse = {
+    flags?: { missingSchedule?: boolean; evidenceMiningMode?: boolean };
     items: { total: number; needsReview: number; noEvidence: number };
     index: { docsIndexed: number; sampledPages: number; maxScore: number };
     deep: { docsProcessed: number; pagesProcessed: number };
@@ -326,6 +327,22 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
             <div className="p-3 border-b space-y-2">
               {coverage && (
                 <div className="rounded border bg-gray-50 p-2 text-xs">
+                  {coverage.flags?.evidenceMiningMode ? (
+                    <div className="mb-2 rounded border border-yellow-200 bg-yellow-50 px-2 py-1 text-[11px]">
+                      <div className="font-medium">No schedule detected</div>
+                      <div className="text-muted-foreground">
+                        Extracted signage requirements from notes/callouts/specs (qty may be unspecified). Review required.
+                      </div>
+                    </div>
+                  ) : null}
+                  {coverage.flags?.missingSchedule && !coverage.flags?.evidenceMiningMode ? (
+                    <div className="mb-2 rounded border border-yellow-200 bg-yellow-50 px-2 py-1 text-[11px]">
+                      <div className="font-medium">No schedule/legend found</div>
+                      <div className="text-muted-foreground">
+                        Upload a signage schedule/legend/specs or use “Search more docs” to expand scope.
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="flex items-center justify-between gap-2">
                     <div className="font-medium">Completeness</div>
                     <div className="text-muted-foreground">

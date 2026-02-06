@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { db } from '@/db';
-import { documents, takeoffArtifacts, takeoffItems, takeoffItemEvidence, takeoffRuns } from '@/db/schema';
+import { documents, takeoffArtifacts, takeoffFindings, takeoffItems, takeoffItemEvidence, takeoffRuns } from '@/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 
 // GET /api/takeoff/runs/:runId/coverage
@@ -137,9 +137,23 @@ export async function GET(
     return Number.isFinite(n) ? n : fallback;
   };
 
+  const [{ missingScheduleCount }] = await db
+    .select({ missingScheduleCount: sql<number>`count(*)` })
+    .from(takeoffFindings)
+    .where(and(eq(takeoffFindings.runId, runId), eq(takeoffFindings.type, 'missing_schedule')));
+
+  const [{ evidenceMiningCount }] = await db
+    .select({ evidenceMiningCount: sql<number>`count(*)` })
+    .from(takeoffFindings)
+    .where(and(eq(takeoffFindings.runId, runId), eq(takeoffFindings.type, 'signage_requirement')));
+
   return NextResponse.json({
     runId,
     bidId: run.bidId,
+    flags: {
+      missingSchedule: num(missingScheduleCount, 0) > 0,
+      evidenceMiningMode: num(evidenceMiningCount, 0) > 0,
+    },
     items: {
       total: num(totalItems, 0),
       needsReview: num(needsReviewItems, 0),
