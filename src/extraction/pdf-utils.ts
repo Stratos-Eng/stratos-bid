@@ -30,7 +30,7 @@ export function ensurePdfReadableInPlace(pdfPath: string): void {
   try {
     execSync(
       `qpdf --repair --stream-data=uncompress "${pdfPath}" "${repairedQpdf}"`,
-      { stdio: 'ignore', timeout: 120_000 }
+      { stdio: 'ignore', timeout: 30_000 }
     );
     execSync(`mv -f "${repairedQpdf}" "${pdfPath}"`, { stdio: 'ignore' });
     return;
@@ -42,7 +42,7 @@ export function ensurePdfReadableInPlace(pdfPath: string): void {
   try {
     execSync(
       `gs -o "${repairedGs}" -sDEVICE=pdfwrite -dPDFSETTINGS=/prepress "${pdfPath}"`,
-      { stdio: 'ignore', timeout: 180_000 }
+      { stdio: 'ignore', timeout: 60_000 }
     );
     execSync(`mv -f "${repairedGs}" "${pdfPath}"`, { stdio: 'ignore' });
     return;
