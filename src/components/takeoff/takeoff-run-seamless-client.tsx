@@ -220,7 +220,7 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
   }, [selectedItem?.code, selectedEvidence?.finding.evidenceText]);
 
   return (
-    <div className="relative">
+    <div className="relative h-full">
       {/* Top bar */}
       <div className="flex items-center justify-between gap-3 mb-3">
         <div className="text-sm text-muted-foreground">
@@ -241,7 +241,7 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
       </div>
 
       {/* Main drawing canvas */}
-      <div className="relative border bg-white overflow-hidden" style={{ height: '88vh' }}>
+      <div className="relative border bg-white overflow-hidden h-full">
         {docId ? (
           <ProjectViewer
             documentId={docId}
