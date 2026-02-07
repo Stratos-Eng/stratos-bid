@@ -250,6 +250,53 @@ export const takeoffItemEdits = pgTable('takeoff_item_edits', {
   itemIdx: index('takeoff_item_edits_item_idx').on(table.itemId),
 }));
 
+// Placement instances (count every physical sign)
+export const takeoffDedupeGroups = pgTable('takeoff_dedupe_groups', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  runId: uuid('run_id').notNull().references(() => takeoffRuns.id, { onDelete: 'cascade' }),
+  bidId: uuid('bid_id').notNull().references(() => bids.id, { onDelete: 'cascade' }),
+  canonicalInstanceId: uuid('canonical_instance_id'),
+  reason: text('reason'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  runIdx: index('takeoff_dedupe_groups_run_idx').on(table.runId),
+}));
+
+export const takeoffInstances = pgTable('takeoff_instances', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  runId: uuid('run_id').notNull().references(() => takeoffRuns.id, { onDelete: 'cascade' }),
+  bidId: uuid('bid_id').notNull().references(() => bids.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull(),
+  typeItemId: uuid('type_item_id').references(() => takeoffItems.id, { onDelete: 'set null' }),
+  sourceKind: text('source_kind').notNull().default('evidence'), // evidence | inferred
+  status: text('status').notNull().default('needs_review'), // counted | needs_review | excluded | duplicate
+  confidence: real('confidence'),
+  dedupeGroupId: uuid('dedupe_group_id').references(() => takeoffDedupeGroups.id, { onDelete: 'set null' }),
+  dedupeRole: text('dedupe_role'), // canonical | supporting | duplicate_candidate
+  meta: jsonb('meta'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  runIdx: index('takeoff_instances_run_idx').on(table.runId),
+  typeIdx: index('takeoff_instances_type_idx').on(table.typeItemId),
+  statusIdx: index('takeoff_instances_status_idx').on(table.status),
+  sourceKindIdx: index('takeoff_instances_source_kind_idx').on(table.sourceKind),
+}));
+
+export const takeoffInstanceEvidence = pgTable('takeoff_instance_evidence', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  instanceId: uuid('instance_id').notNull().references(() => takeoffInstances.id, { onDelete: 'cascade' }),
+  documentId: uuid('document_id').notNull().references(() => documents.id, { onDelete: 'cascade' }),
+  pageNumber: integer('page_number'),
+  evidenceText: text('evidence_text'),
+  evidence: jsonb('evidence'),
+  weight: real('weight'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  instanceIdx: index('takeoff_instance_evidence_instance_idx').on(table.instanceId),
+  docPageIdx: index('takeoff_instance_evidence_doc_page_idx').on(table.documentId, table.pageNumber),
+}));
+
 export const userSettings = pgTable('user_settings', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: text('user_id').notNull().unique(), // Clerk user ID
