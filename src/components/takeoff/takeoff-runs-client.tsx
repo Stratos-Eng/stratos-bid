@@ -92,11 +92,11 @@ export function TakeoffRunsClient({ bidId }: { bidId: string }) {
           <thead className="bg-gray-50 border-b">
             <tr>
               <th className="w-10 px-3 py-3"></th>
-              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Started</th>
-              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Items</th>
-              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Open</th>
+              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">State</th>
+              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Items found</th>
+              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Kind</th>
+              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Review</th>
               <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Publish</th>
             </tr>
           </thead>
@@ -139,9 +139,9 @@ export function TakeoffRunsClient({ bidId }: { bidId: string }) {
                     {isPublished ? ' (published)' : ''}
                   </td>
                   <td className="px-3 py-3">{r.itemCount}</td>
-                  <td className="px-3 py-3 text-xs text-muted-foreground">{r.itemCount > 0 ? 'Auto takeoff' : 'Review only'}</td>
+                  <td className="px-3 py-3 text-xs text-muted-foreground">{r.itemCount > 0 ? 'Automatic' : 'Manual review'}</td>
                   <td className="px-3 py-3">
-                    <Link className="underline" href={`/projects/${bidId}/takeoff/${r.id}`}>Open</Link>
+                    <Link className="underline" href={`/projects/${bidId}/takeoff/${r.id}`}>Review</Link>
                   </td>
                   <td className="px-3 py-3">
                     <Button
