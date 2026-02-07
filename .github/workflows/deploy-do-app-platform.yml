@@ -58,8 +58,20 @@ jobs:
               exit 0
             fi
             if [ "$phase" = "ERROR" ] || [ "$phase" = "FAILED" ] || [ "$phase" = "CANCELED" ]; then
-              echo "Deployment failed. Payload:" >&2
-              echo "$d" >&2
+              echo "Deployment failed." >&2
+              echo "$d" | python3 - <<'PY'
+import json,sys
+j=json.load(sys.stdin)
+d=j.get('deployment',{})
+# Print a minimal, non-secret summary
+print('phase:', d.get('phase'))
+for s in (d.get('progress',{}) or {}).get('summary_steps',[]) or []:
+  name=s.get('name')
+  status=s.get('status')
+  reason=(s.get('reason') or {}).get('message')
+  comp=s.get('component_name')
+  print(f"- {name} [{status}] ({comp}): {reason}")
+PY
               exit 1
             fi
 

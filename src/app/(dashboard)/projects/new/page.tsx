@@ -519,23 +519,12 @@ export default function NewProjectPage() {
                 )}
               </div>
             )
-          ))}
+          })}
 
           {!showSelectedFiles && files.length > 30 && (
             <div className="text-xs text-muted-foreground">
               List hidden to keep things fast.
             </div>
-          )}
-
-          {/* Proper queue view once uploading starts */}
-          {fileProgress.length > 0 && (
-            <UploadQueue
-              uploads={fileProgress}
-              isUploading={chunkedUpload.isUploading}
-              onCancelAll={chunkedUpload.cancelAll}
-              onRetryFailed={retryFailedUploads}
-              onCancelOne={chunkedUpload.cancel}
-            />
           )}
         </div>
       )}
