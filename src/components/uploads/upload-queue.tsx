@@ -3,6 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { UploadProgress } from '@/hooks/use-chunked-upload';
+import { uploadStatusLabel } from './upload-status-label';
 
 export function UploadQueue({
   uploads,
@@ -65,9 +66,13 @@ export function UploadQueue({
                   {u.filename}
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  {(u.fileSize / 1024 / 1024).toFixed(1)} MB · {u.status}
+                  {(u.fileSize / 1024 / 1024).toFixed(1)} MB · {uploadStatusLabel(u.status)}
                   {u.retryCount ? ` · retry ${u.retryCount}` : ''}
-                  {u.error ? ` · ${u.error}` : ''}
+                  {u.status === 'error' ? (
+                    <span className="text-destructive" title={u.error || ''}>
+                      {' '}· Upload failed
+                    </span>
+                  ) : null}
                 </div>
               </div>
 

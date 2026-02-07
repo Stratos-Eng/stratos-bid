@@ -460,7 +460,7 @@ export default function NewProjectPage() {
       )}
 
       {/* File List */}
-      {files.length > 0 && (
+      {files.length > 0 && fileProgress.length === 0 && (
         <div className="mt-6 space-y-2">
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm font-medium">{files.length} file(s) selected</p>
@@ -540,6 +540,17 @@ export default function NewProjectPage() {
         </div>
       )}
 
+      {/* Uploads queue (once started) */}
+      {fileProgress.length > 0 && (
+        <UploadQueue
+          uploads={fileProgress}
+          isUploading={chunkedUpload.isUploading}
+          onCancelAll={chunkedUpload.cancelAll}
+          onRetryFailed={retryFailedUploads}
+          onCancelOne={chunkedUpload.cancel}
+        />
+      )}
+
       {/* Enqueue banner */}
       {lastBidId && enqueueState.status !== 'idle' && (
         <div className={cn(
@@ -572,7 +583,7 @@ export default function NewProjectPage() {
       )}
 
       {/* Progress */}
-      {uploadState.status !== "idle" && (
+      {uploadState.status !== "idle" && fileProgress.length === 0 && (
         <div className="mt-6">
           <div className="flex justify-between text-sm mb-2">
             <span>

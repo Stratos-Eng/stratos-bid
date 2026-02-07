@@ -151,8 +151,16 @@ export function useChunkedUpload(options: UploadOptions) {
             });
 
             if (!directRes.ok) {
-              const errText = await directRes.text().catch(() => '');
-              throw new Error(errText || 'Server upload failed');
+              // Prefer a clean error string for the UI (avoid dumping raw JSON bodies).
+              let msg = 'Server upload failed';
+              try {
+                const data = await directRes.json();
+                if (data?.error) msg = String(data.error);
+              } catch {
+                const errText = await directRes.text().catch(() => '');
+                if (errText) msg = errText;
+              }
+              throw new Error(msg);
             }
 
             const uploaded = await directRes.json();
