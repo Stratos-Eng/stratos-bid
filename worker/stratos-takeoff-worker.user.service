@@ -8,7 +8,7 @@ Type=simple
 WorkingDirectory=%h/stratos-bid
 Environment=NODE_ENV=production
 EnvironmentFile=%h/stratos-bid/.env.worker
-ExecStart=%h/.linuxbrew/bin/npm run worker
+ExecStart=/home/linuxbrew/.linuxbrew/bin/npm run worker
 Restart=always
 RestartSec=2
 

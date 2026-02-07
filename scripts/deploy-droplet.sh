@@ -96,6 +96,10 @@ fi
 
 echo "[deploy] restart worker (user service)"
 if command -v systemctl >/dev/null 2>&1; then
+  # systemctl --user requires a user bus; over SSH this is often missing unless we set it explicitly.
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+
   systemctl --user daemon-reload || true
   systemctl --user enable stratos-takeoff-worker || true
   systemctl --user restart stratos-takeoff-worker
@@ -105,5 +109,3 @@ else
 fi
 
 echo "[deploy] done"
-
-echo "[deploy] NOTE: For user services to run after SSH logout, run once as root: loginctl enable-linger openclaw"
