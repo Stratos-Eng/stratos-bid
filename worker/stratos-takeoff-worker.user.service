@@ -1,0 +1,16 @@
+[Unit]
+Description=Stratos Takeoff Worker (user)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/stratos-bid
+Environment=NODE_ENV=production
+EnvironmentFile=%h/stratos-bid/.env.worker
+ExecStart=%h/.linuxbrew/bin/npm run worker
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
