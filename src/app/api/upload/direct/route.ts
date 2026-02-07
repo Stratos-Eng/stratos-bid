@@ -4,7 +4,8 @@ import { db } from '@/db';
 import { bids } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { uploadFileStream } from '@/lib/storage';
-import { Readable } from 'node:stream';
+import Busboy from 'busboy';
+import { Readable, PassThrough } from 'node:stream';
 
 export const runtime = 'nodejs';
 
@@ -22,62 +23,108 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const form = await request.formData();
-    const bidId = String(form.get('bidId') || '');
-    const file = form.get('file');
-
-    if (!bidId || !file || typeof file === 'string') {
-      return NextResponse.json(
-        { error: 'Missing required fields: bidId, file' },
-        { status: 400 }
-      );
+    const contentType = request.headers.get('content-type') || '';
+    if (!contentType.toLowerCase().includes('multipart/form-data')) {
+      return NextResponse.json({ error: 'Expected multipart/form-data' }, { status: 400 });
     }
 
-    // Validate bid ownership
-    const [bid] = await db
-      .select()
-      .from(bids)
-      .where(and(eq(bids.id, bidId), eq(bids.userId, session.user.id)))
-      .limit(1);
-
-    if (!bid) {
-      return NextResponse.json(
-        { error: 'Project not found or access denied' },
-        { status: 403 }
-      );
+    if (!request.body) {
+      return NextResponse.json({ error: 'Missing request body' }, { status: 400 });
     }
 
-    const filename = String(form.get('filename') || (file as File).name || 'upload.pdf');
+    // Stream-parse multipart using busboy (NextRequest.formData() can fail on some platforms/large bodies)
+    const bb = Busboy({ headers: { 'content-type': contentType } });
 
-    const timestamp = Date.now();
-    const sanitizedFilename = filename.replace(/[^a-zA-Z0-9.-]/g, '_');
-    const key = `projects/${bidId}/${timestamp}-${sanitizedFilename}`;
+    let bidId = '';
+    let filename = '';
+    let bidValidated = false;
 
-    const f = file as File;
+    const finish = new Promise<NextResponse>((resolve, reject) => {
+      let fileHandled = false;
 
-    // Stream to Spaces to avoid buffering large PDFs in memory.
-    // Note: AWS SDK expects a Node.js stream; convert from Web ReadableStream.
-    const body = Readable.fromWeb(f.stream() as any);
+      bb.on('field', async (name, val) => {
+        if (name === 'bidId') bidId = String(val || '');
+        if (name === 'filename') filename = String(val || '');
 
-    const uploaded = await uploadFileStream(body, key, {
-      contentType: f.type || 'application/pdf',
-      contentLength: f.size,
+        // Validate bid ownership as soon as we have bidId.
+        if (name === 'bidId' && bidId && !bidValidated) {
+          try {
+            const [bid] = await db
+              .select()
+              .from(bids)
+              .where(and(eq(bids.id, bidId), eq(bids.userId, session.user.id)))
+              .limit(1);
+
+            if (!bid) {
+              reject(new Error('Project not found or access denied'));
+              return;
+            }
+
+            bidValidated = true;
+          } catch (e) {
+            reject(e);
+          }
+        }
+      });
+
+      bb.on('file', async (_name, file, info) => {
+        try {
+          fileHandled = true;
+
+          if (!bidId) throw new Error('Missing required field: bidId');
+          if (!bidValidated) {
+            // In practice bidId arrives before file (we append it first in FormData).
+            throw new Error('Upload not authorized (bid not validated)');
+          }
+
+          const effectiveName = filename || info.filename || 'upload.pdf';
+          const timestamp = Date.now();
+          const sanitizedFilename = String(effectiveName).replace(/[^a-zA-Z0-9.-]/g, '_');
+          const key = `projects/${bidId}/${timestamp}-${sanitizedFilename}`;
+
+          // Stream to Spaces. Use PassThrough so we can hand a clean stream to the SDK.
+          const pass = new PassThrough();
+          file.pipe(pass);
+
+          const uploaded = await uploadFileStream(pass, key, {
+            contentType: info.mimeType || 'application/pdf',
+          });
+
+          resolve(
+            NextResponse.json({
+              url: uploaded.url,
+              pathname: uploaded.pathname,
+            })
+          );
+        } catch (e) {
+          reject(e);
+        }
+      });
+
+      bb.on('error', (err) => reject(err));
+
+      bb.on('finish', () => {
+        if (!fileHandled) {
+          reject(new Error('Missing required field: file'));
+        }
+      });
     });
 
-    return NextResponse.json({
-      url: uploaded.url,
-      pathname: uploaded.pathname,
-    });
+    // Pipe web stream -> node stream -> busboy
+    Readable.fromWeb(request.body as any).pipe(bb);
+
+    return await finish;
   } catch (error) {
+    const msg =
+      error instanceof Error
+        ? error.message
+        : 'Failed to upload file';
+
     console.error('[upload/direct] Error:', error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : 'Failed to upload file',
-      },
-      { status: 500 }
-    );
+
+    // Preserve previous contract: return JSON error body
+    // so the client can display something meaningful.
+    const status = msg.includes('access denied') ? 403 : 500;
+    return NextResponse.json({ error: msg }, { status });
   }
 }
