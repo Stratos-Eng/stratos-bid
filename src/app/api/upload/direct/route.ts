@@ -3,7 +3,10 @@ import { auth } from '@/lib/auth';
 import { db } from '@/db';
 import { bids } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { uploadFile } from '@/lib/storage';
+import { uploadFileStream } from '@/lib/storage';
+import { Readable } from 'node:stream';
+
+export const runtime = 'nodejs';
 
 /**
  * POST /api/upload/direct
@@ -50,10 +53,16 @@ export async function POST(request: NextRequest) {
     const sanitizedFilename = filename.replace(/[^a-zA-Z0-9.-]/g, '_');
     const key = `projects/${bidId}/${timestamp}-${sanitizedFilename}`;
 
-    const arrayBuffer = await (file as File).arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    const f = file as File;
 
-    const uploaded = await uploadFile(buffer, key, { contentType: 'application/pdf' });
+    // Stream to Spaces to avoid buffering large PDFs in memory.
+    // Note: AWS SDK expects a Node.js stream; convert from Web ReadableStream.
+    const body = Readable.fromWeb(f.stream() as any);
+
+    const uploaded = await uploadFileStream(body, key, {
+      contentType: f.type || 'application/pdf',
+      contentLength: f.size,
+    });
 
     return NextResponse.json({
       url: uploaded.url,

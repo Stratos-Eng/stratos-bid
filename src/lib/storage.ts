@@ -116,6 +116,30 @@ export async function uploadFile(
 }
 
 /**
+ * Upload a file stream to DigitalOcean Spaces (S3-compatible)
+ * Avoids buffering large PDFs in memory.
+ */
+export async function uploadFileStream(
+  body: any,
+  pathname: string,
+  options?: { contentType?: string; contentLength?: number; allowOverwrite?: boolean }
+): Promise<UploadResult> {
+  await getS3Client().send(
+    new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: pathname,
+      Body: body,
+      ContentType: options?.contentType || 'application/octet-stream',
+      ContentLength: options?.contentLength,
+      ACL: 'public-read',
+    })
+  );
+
+  const url = `${PUBLIC_BASE_URL}/${pathname}`;
+  return { url, pathname };
+}
+
+/**
  * Download a file from storage
  * Uses authenticated S3 GetObject for DO Spaces URLs,
  * falls back to public HTTP fetch for legacy Vercel Blob URLs.
