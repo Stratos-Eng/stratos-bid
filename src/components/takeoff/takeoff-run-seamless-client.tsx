@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -58,6 +58,31 @@ function confClass(conf: number | null) {
 
 export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runId: string }) {
   const { addToast } = useToast();
+
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const onFs = () => {
+      const fs = !!document.fullscreenElement;
+      setIsFullscreen(fs);
+    };
+    document.addEventListener('fullscreenchange', onFs);
+    onFs();
+    return () => document.removeEventListener('fullscreenchange', onFs);
+  }, []);
+
+  async function toggleFullscreen() {
+    try {
+      if (!document.fullscreenElement) {
+        await containerRef.current?.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   const [items, setItems] = useState<TakeoffItem[]>([]);
   const [loadingItems, setLoadingItems] = useState(true);
@@ -220,7 +245,10 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
   }, [selectedItem?.code, selectedEvidence?.finding.evidenceText]);
 
   return (
-    <div className="relative h-full">
+    <div
+      ref={containerRef}
+      className={`relative h-full ${isFullscreen ? 'bg-background p-2' : ''}`}
+    >
       {/* Top bar */}
       <div className="flex items-center justify-between gap-3 mb-3">
         <div className="text-sm text-muted-foreground">
@@ -230,6 +258,9 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => setDrawerOpen((v) => !v)}>
             {drawerOpen ? 'Hide items' : 'Show items'}
+          </Button>
+          <Button variant="outline" onClick={toggleFullscreen}>
+            {isFullscreen ? 'Exit full screen' : 'Full screen'}
           </Button>
           <Button variant="outline" onClick={() => { loadItems(); loadCoverage(); }} disabled={loadingItems || loadingCoverage}>
             Refresh
