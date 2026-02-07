@@ -1,6 +1,6 @@
 name: Configure Spaces CORS
 
-on:
+"on":
   workflow_dispatch:
 
 jobs:
