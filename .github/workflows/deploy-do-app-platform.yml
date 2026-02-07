@@ -59,19 +59,7 @@ jobs:
             fi
             if [ "$phase" = "ERROR" ] || [ "$phase" = "FAILED" ] || [ "$phase" = "CANCELED" ]; then
               echo "Deployment failed." >&2
-              echo "$d" | python3 - <<'PY'
-import json,sys
-j=json.load(sys.stdin)
-d=j.get('deployment',{})
-# Print a minimal, non-secret summary
-print('phase:', d.get('phase'))
-for s in (d.get('progress',{}) or {}).get('summary_steps',[]) or []:
-  name=s.get('name')
-  status=s.get('status')
-  reason=(s.get('reason') or {}).get('message')
-  comp=s.get('component_name')
-  print(f"- {name} [{status}] ({comp}): {reason}")
-PY
+              echo "$d" | python3 -c "import json,sys; j=json.load(sys.stdin); d=j.get('deployment',{}); print('phase:', d.get('phase')); ss=(d.get('progress',{}) or {}).get('summary_steps',[]) or []; [print(f\"- {s.get('name')} [{s.get('status')}] ({s.get('component_name')}): {(s.get('reason') or {}).get('message')}\") for s in ss]"
               exit 1
             fi
 
