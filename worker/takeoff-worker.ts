@@ -46,7 +46,7 @@ async function claimNextJob(): Promise<JobRow | null> {
     WITH candidate AS (
       SELECT id
       FROM takeoff_jobs
-      WHERE status = 'queued'
+      WHERE status IN ('queued','running')
         AND (locked_at IS NULL OR locked_at < ${staleBefore})
       ORDER BY created_at ASC
       LIMIT 1
@@ -139,6 +139,19 @@ async function downloadBidPdfsToTemp(input: {
 
 async function runJob(job: JobRow) {
   const bidId = job.bidId;
+
+  // Keep the lock fresh so other workers (or restarts) don't steal a legitimately running job.
+  const heartbeat = setInterval(async () => {
+    try {
+      await db
+        .update(takeoffJobs)
+        .set({ lockedAt: new Date(), updatedAt: new Date() } as any)
+        .where(eq(takeoffJobs.id, job.id));
+    } catch {
+      // ignore
+    }
+  }, 10_000);
+
 
   // Load documents
   const docs = await getJobDocuments(job.id);
@@ -953,6 +966,7 @@ async function runJob(job: JobRow) {
 
     console.error('[takeoff-worker] Job failed:', msg);
   } finally {
+    clearInterval(heartbeat);
     try {
       await rm(localBidFolder, { recursive: true, force: true });
     } catch {}
