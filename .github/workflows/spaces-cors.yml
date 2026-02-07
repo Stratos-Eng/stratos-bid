@@ -27,26 +27,14 @@ jobs:
           fi
 
           # Prefer a bare regional endpoint for S3 API calls.
-          endpoint="$DO_SPACES_ENDPOINT"
-          if [ -z "$endpoint" ]; then
-            endpoint="https://${AWS_DEFAULT_REGION}.digitaloceanspaces.com"
-          fi
-          # Strip bucket prefix if present.
-          endpoint=$(python3 - <<'PY'
-import os
-from urllib.parse import urlparse
-raw=os.environ.get('endpoint','')
-if not raw:
-  raise SystemExit(0)
-u=urlparse(raw)
-h=u.hostname or ''
-parts=h.split('.')
-b=os.environ.get('bucket','')
-if b and parts and parts[0]==b:
-  h='.'.join(parts[1:])
-print(f"{u.scheme}://{h}")
-PY
-          bucket="$DO_SPACES_BUCKET" endpoint="$endpoint")
+          endpoint="${DO_SPACES_ENDPOINT:-https://${AWS_DEFAULT_REGION}.digitaloceanspaces.com}"
+          # Strip protocol + path
+          host="${endpoint#https://}"
+          host="${host#http://}"
+          host="${host%%/*}"
+          # Strip bucket prefix if present
+          host="${host#${DO_SPACES_BUCKET}.}"
+          endpoint="https://${host}"
 
           echo "Using endpoint: $endpoint"
           echo "Applying CORS to bucket: $DO_SPACES_BUCKET"
