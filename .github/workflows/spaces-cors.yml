@@ -1,0 +1,84 @@
+name: Configure Spaces CORS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cors:
+    runs-on: ubuntu-latest
+    environment: Production
+    steps:
+      - name: Install awscli
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install awscli
+
+      - name: Apply CORS policy to Spaces bucket
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET }}
+          AWS_DEFAULT_REGION: ${{ secrets.DO_SPACES_REGION }}
+          DO_SPACES_BUCKET: ${{ secrets.DO_SPACES_BUCKET }}
+          DO_SPACES_ENDPOINT: ${{ secrets.DO_SPACES_ENDPOINT }}
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ] || [ -z "$DO_SPACES_BUCKET" ]; then
+            echo "Missing Spaces credentials in secrets (DO_SPACES_KEY/DO_SPACES_SECRET/DO_SPACES_BUCKET)" >&2
+            exit 1
+          fi
+
+          # Prefer a bare regional endpoint for S3 API calls.
+          endpoint="$DO_SPACES_ENDPOINT"
+          if [ -z "$endpoint" ]; then
+            endpoint="https://${AWS_DEFAULT_REGION}.digitaloceanspaces.com"
+          fi
+          # Strip bucket prefix if present.
+          endpoint=$(python3 - <<'PY'
+import os
+from urllib.parse import urlparse
+raw=os.environ.get('endpoint','')
+if not raw:
+  raise SystemExit(0)
+u=urlparse(raw)
+h=u.hostname or ''
+parts=h.split('.')
+b=os.environ.get('bucket','')
+if b and parts and parts[0]==b:
+  h='.'.join(parts[1:])
+print(f"{u.scheme}://{h}")
+PY
+          bucket="$DO_SPACES_BUCKET" endpoint="$endpoint")
+
+          echo "Using endpoint: $endpoint"
+          echo "Applying CORS to bucket: $DO_SPACES_BUCKET"
+
+          cat > cors.json <<'JSON'
+{
+  "CORSRules": [
+    {
+      "AllowedOrigins": [
+        "https://app.stratos.to",
+        "http://localhost:3000"
+      ],
+      "AllowedMethods": [
+        "GET",
+        "PUT",
+        "POST",
+        "HEAD"
+      ],
+      "AllowedHeaders": [
+        "*"
+      ],
+      "ExposeHeaders": [
+        "ETag"
+      ],
+      "MaxAgeSeconds": 3000
+    }
+  ]
+}
+JSON
+
+          aws --endpoint-url "$endpoint" s3api put-bucket-cors \
+            --bucket "$DO_SPACES_BUCKET" \
+            --cors-configuration file://cors.json
+
+          echo "CORS applied."
