@@ -34,4 +34,37 @@ jobs:
             -d '{"force_build":true}'
           )
 
-          echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print('deployment_id=', d.get('deployment',{}).get('id'))"
+          dep_id=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('deployment',{}).get('id',''))")
+          if [ -z "$dep_id" ]; then
+            echo "Failed to create deployment. Response:" >&2
+            echo "$resp" >&2
+            exit 1
+          fi
+
+          echo "deployment_id=$dep_id"
+
+          echo "Polling deployment status..."
+          for i in $(seq 1 60); do
+            d=$(curl -sS \
+              -H "Authorization: Bearer ${DO_API_TOKEN}" \
+              "https://api.digitalocean.com/v2/apps/${DO_APP_ID}/deployments/${dep_id}" \
+            )
+
+            phase=$(echo "$d" | python3 -c "import json,sys; j=json.load(sys.stdin); print(j.get('deployment',{}).get('phase',''))")
+            echo "[$i/60] phase=$phase"
+
+            if [ "$phase" = "ACTIVE" ]; then
+              echo "Deployment is ACTIVE"
+              exit 0
+            fi
+            if [ "$phase" = "ERROR" ] || [ "$phase" = "FAILED" ] || [ "$phase" = "CANCELED" ]; then
+              echo "Deployment failed. Payload:" >&2
+              echo "$d" >&2
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+          echo "Timed out waiting for deployment to become ACTIVE" >&2
+          exit 1
