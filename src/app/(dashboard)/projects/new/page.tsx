@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useRef } from "react"
 import { useRouter } from "next/navigation"
 import Link from 'next/link'
 import { useDropzone } from "react-dropzone"
@@ -139,10 +139,14 @@ export default function NewProjectPage() {
     addIncomingFiles(acceptedFiles.map((file) => ({ file })))
   }, [addIncomingFiles])
 
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const folderInputRef = useRef<HTMLInputElement | null>(null)
+
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: { "application/pdf": [".pdf"] },
     multiple: true,
+    noClick: true,
   })
 
   const handleFolderPick = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -346,57 +350,82 @@ export default function NewProjectPage() {
 
       {/* Drop Zone */}
       <div
-        {...getRootProps()}
+        {...getRootProps({
+          onClick: (e) => {
+            // Make the dropzone a single entry point.
+            // Clicking anywhere opens the file picker; folder selection is a secondary action.
+            e.preventDefault()
+            if (isUploading) return
+            fileInputRef.current?.click()
+          },
+        })}
         className={cn(
           "border-2 border-dashed rounded-lg p-12 text-center cursor-pointer transition-colors",
           isDragActive ? "border-primary bg-primary/5" : "border-border hover:border-primary/50",
           isUploading && "pointer-events-none opacity-50"
         )}
       >
-        <input {...getInputProps()} disabled={isUploading} />
+        <input {...getInputProps()} ref={fileInputRef} disabled={isUploading} />
+        <input
+          ref={folderInputRef}
+          type="file"
+          multiple
+          // @ts-expect-error - webkitdirectory is non-standard but supported in Chromium
+          webkitdirectory="true"
+          className="hidden"
+          onChange={handleFolderPick}
+          disabled={isUploading}
+        />
+
         <div className="text-4xl mb-4">📄</div>
         {isDragActive ? (
           <p className="text-primary font-medium">Drop PDFs here...</p>
         ) : (
           <>
-            <p className="font-medium mb-1">Drop PDFs or a folder of PDFs</p>
-            <p className="text-sm text-muted-foreground">click to browse files, or use the folder picker below</p>
+            <p className="font-medium mb-1">Drop PDFs here</p>
+            <p className="text-sm text-muted-foreground">
+              Click to choose files, or drag and drop.{' '}
+              <button
+                type="button"
+                className="underline"
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  if (isUploading) return
+                  folderInputRef.current?.click()
+                }}
+              >
+                Choose a folder
+              </button>
+            </p>
           </>
         )}
       </div>
 
-      <div className="mt-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <label className={cn("inline-flex", isUploading && "pointer-events-none opacity-50")}>
-            <input
-              type="file"
-              multiple
-              // @ts-expect-error - webkitdirectory is non-standard but supported in Chromium
-              webkitdirectory="true"
-              className="hidden"
-              onChange={handleFolderPick}
-            />
-            <span className="px-4 py-2 text-sm border border-border rounded-lg hover:bg-secondary cursor-pointer">
-              Select folder
-            </span>
-          </label>
-          <span className="text-xs text-muted-foreground">
-            For large plan sets, folder upload is the fastest way.
-          </span>
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <div className="text-xs text-muted-foreground">
+          Takeoff review starts automatically.
         </div>
-
-        <div className="flex items-center gap-3">
-          <div className="text-xs text-muted-foreground">
-            Takeoff review starts automatically when uploads finish.
-          </div>
-          <button
-            type="button"
-            className="text-xs underline text-muted-foreground hover:text-foreground"
-            onClick={() => setShowAdvanced((v) => !v)}
+        <button
+          type="button"
+          className="p-2 rounded hover:bg-secondary"
+          aria-label="Advanced settings"
+          onClick={() => setShowAdvanced((v) => !v)}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="w-4 h-4 text-muted-foreground"
           >
-            Advanced settings
-          </button>
-        </div>
+            <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" />
+            <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.02.02a2.2 2.2 0 0 1-1.56 3.76 2.2 2.2 0 0 1-1.55-.64l-.02-.02a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.04 1.63V21a2.2 2.2 0 0 1-4.4 0v-.03a1.8 1.8 0 0 0-1.04-1.63 1.8 1.8 0 0 0-1.98.36l-.02.02a2.2 2.2 0 1 1-3.11-3.11l.02-.02A1.8 1.8 0 0 0 3 15.4a1.8 1.8 0 0 0-1.63-1.04H1.3a2.2 2.2 0 0 1 0-4.4h.03A1.8 1.8 0 0 0 3 8.92a1.8 1.8 0 0 0-.36-1.98l-.02-.02A2.2 2.2 0 0 1 4.18 3.16c.57 0 1.14.22 1.55.64l.02.02a1.8 1.8 0 0 0 1.98.36A1.8 1.8 0 0 0 8.77 2.55V2.5a2.2 2.2 0 0 1 4.4 0v.03a1.8 1.8 0 0 0 1.04 1.63 1.8 1.8 0 0 0 1.98-.36l.02-.02a2.2 2.2 0 0 1 3.76 1.56c0 .57-.22 1.14-.64 1.55l-.02.02a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.63 1.04H21a2.2 2.2 0 0 1 0 4.4h-.03a1.8 1.8 0 0 0-1.63 1.04Z" />
+          </svg>
+        </button>
       </div>
 
       {showAdvanced && (
