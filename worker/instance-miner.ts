@@ -98,13 +98,14 @@ export async function mineTakeoffInstances(input: {
       const extracted = extractPageTextWithFallback({
         pdfPath,
         page,
-        ocrMinChars: process.env.TAKEOFF_OCR_MODE === 'full' ? 30 : Number.POSITIVE_INFINITY,
+        // Smart default: keep embedded PDF text when it exists; OCR only when text is too thin.
+        // (Passing Infinity would force OCR on every page, which is slow and can yield empty text.)
+        ocrMinChars: 30,
       });
 
       if (!extracted.text) {
-        // if the first few pages have no text, still continue a bit; otherwise assume end.
-        if (page <= 3) continue;
-        break;
+        // If text extraction fails, keep going; pageCount bounds us.
+        continue;
       }
 
       scannedPages++;
@@ -115,6 +116,11 @@ export async function mineTakeoffInstances(input: {
         continue;
       }
       re.lastIndex = 0;
+
+      // Light logging for visibility
+      if (scannedPages % 50 === 0) {
+        console.log(`[instance-miner] scannedPages=${scannedPages} candidates=${candidates.length}`);
+      }
 
       let m: RegExpExecArray | null;
       let perPage = 0;
