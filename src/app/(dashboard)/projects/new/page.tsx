@@ -47,6 +47,7 @@ export default function NewProjectPage() {
   const [autoEnqueue, setAutoEnqueue] = useState(true)
   const [smartSelection, setSmartSelection] = useState(true)
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [showSelectedFiles, setShowSelectedFiles] = useState(false)
   const [enqueueState, setEnqueueState] = useState<EnqueueState>({ status: 'idle' })
   const [foundRunId, setFoundRunId] = useState<string | null>(null)
 
@@ -133,7 +134,10 @@ export default function NewProjectPage() {
       const name = pdfFiles[0].file.name.replace(/\.pdf$/i, "")
       setProjectName(name)
     }
-  }, [projectName, addToast])
+
+    // For big folders, keep the screen calm by default.
+    if (pdfFiles.length <= 30) setShowSelectedFiles(true)
+  }, [projectName, addToast, setShowSelectedFiles])
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     addIncomingFiles(acceptedFiles.map((file) => ({ file })))
@@ -458,8 +462,20 @@ export default function NewProjectPage() {
       {/* File List */}
       {files.length > 0 && (
         <div className="mt-6 space-y-2">
-          <p className="text-sm font-medium">{files.length} file(s) selected</p>
-          {files.map(({ file, relativePath }, i) => {
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-medium">{files.length} file(s) selected</p>
+            {files.length > 30 && (
+              <button
+                type="button"
+                className="text-xs underline text-muted-foreground hover:text-foreground"
+                onClick={() => setShowSelectedFiles((v) => !v)}
+              >
+                {showSelectedFiles ? 'Hide list' : 'Show list'}
+              </button>
+            )}
+          </div>
+
+          {showSelectedFiles && files.map(({ file, relativePath }, i) => {
             const isLargeFile = file.size > LARGE_FILE_THRESHOLD
             const key = relativePath || file.name
             const progress = fileProgress.find(p => p.filename === key)
@@ -503,7 +519,13 @@ export default function NewProjectPage() {
                 )}
               </div>
             )
-          })}
+          ))}
+
+          {!showSelectedFiles && files.length > 30 && (
+            <div className="text-xs text-muted-foreground">
+              List hidden to keep things fast.
+            </div>
+          )}
 
           {/* Proper queue view once uploading starts */}
           {fileProgress.length > 0 && (

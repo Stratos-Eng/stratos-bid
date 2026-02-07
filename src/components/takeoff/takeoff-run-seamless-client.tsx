@@ -94,6 +94,7 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
 
   const [filter, setFilter] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(true);
+  const [sourcesOpen, setSourcesOpen] = useState(true);
 
   const [escalating, setEscalating] = useState(false);
 
@@ -259,6 +260,9 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
           <Button variant="outline" onClick={() => setDrawerOpen((v) => !v)}>
             {drawerOpen ? 'Hide items' : 'Show items'}
           </Button>
+          <Button variant="outline" onClick={() => setSourcesOpen((v) => !v)}>
+            {sourcesOpen ? 'Hide sources' : 'Show sources'}
+          </Button>
           <Button variant="outline" onClick={toggleFullscreen}>
             {isFullscreen ? 'Exit full screen' : 'Full screen'}
           </Button>
@@ -293,7 +297,8 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
         )}
 
         {/* Evidence rail overlay */}
-        <div className="absolute left-0 right-0 bottom-0 p-3 bg-white/90 backdrop-blur border-t">
+        {sourcesOpen && (
+          <div className="absolute left-0 right-0 bottom-0 p-3 bg-white/90 backdrop-blur border-t max-h-[35vh] overflow-auto">
           <div className="flex items-center justify-between gap-3 mb-2">
             <div className="text-sm">
               <span className="font-medium">{selectedItem ? selectedItem.description : 'No item selected'}</span>
@@ -341,10 +346,11 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
             </div>
           )}
         </div>
+        )}
 
         {/* Items drawer (overlay) */}
         {drawerOpen && (
-          <div className="absolute top-0 left-0 bottom-0 w-[420px] max-w-[92vw] bg-white border-r shadow-lg flex flex-col">
+          <div className="absolute top-0 left-0 bottom-0 w-full md:w-[420px] max-w-[92vw] bg-white border-r shadow-lg flex flex-col">
             <div className="p-3 border-b flex items-center justify-between gap-2">
               <div>
                 <div className="text-sm font-medium">Items</div>
