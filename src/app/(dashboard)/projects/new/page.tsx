@@ -43,9 +43,10 @@ export default function NewProjectPage() {
   const [lastBidId, setLastBidId] = useState<string | null>(null)
   const [lastUploadBatch, setLastUploadBatch] = useState<Array<{ file: File; relativePath?: string; bidId: string }>>([])
   // Defaults: keep time-to-value short.
-  // We keep these always-on and hide them from the estimator UI.
-  const autoEnqueue = true
-  const smartSelection = true
+  // Expose behind Advanced settings for power users.
+  const [autoEnqueue, setAutoEnqueue] = useState(true)
+  const [smartSelection, setSmartSelection] = useState(true)
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [enqueueState, setEnqueueState] = useState<EnqueueState>({ status: 'idle' })
   const [foundRunId, setFoundRunId] = useState<string | null>(null)
 
@@ -384,10 +385,46 @@ export default function NewProjectPage() {
           </span>
         </div>
 
-        <div className="text-xs text-muted-foreground">
-          Takeoff review starts automatically when uploads finish.
+        <div className="flex items-center gap-3">
+          <div className="text-xs text-muted-foreground">
+            Takeoff review starts automatically when uploads finish.
+          </div>
+          <button
+            type="button"
+            className="text-xs underline text-muted-foreground hover:text-foreground"
+            onClick={() => setShowAdvanced((v) => !v)}
+          >
+            Advanced settings
+          </button>
         </div>
       </div>
+
+      {showAdvanced && (
+        <div className="mt-3 rounded-lg border bg-white p-3">
+          <div className="text-sm font-medium mb-2">Advanced settings</div>
+          <div className="flex flex-col gap-2">
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={autoEnqueue}
+                onChange={(e) => setAutoEnqueue(e.target.checked)}
+                disabled={isUploading}
+              />
+              Start takeoff review automatically
+            </label>
+
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={smartSelection}
+                onChange={(e) => setSmartSelection(e.target.checked)}
+                disabled={isUploading}
+              />
+              Focus on schedules & signage docs (recommended for large folders)
+            </label>
+          </div>
+        </div>
+      )}
 
       {/* File List */}
       {files.length > 0 && (
