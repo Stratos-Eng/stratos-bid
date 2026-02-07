@@ -32,20 +32,22 @@ export function ocrPage(pdfPath: string, page: number): string {
   try {
     ensurePdfReadableInPlace(pdfPath);
     const outBase = path.join(dir, 'page');
-    // Render just one page to PNG
-    execSync(`pdftoppm -f ${page} -l ${page} -png -r 200 "${pdfPath}" "${outBase}"`, {
+    // Render just one page to PNG (single output file)
+    // -singlefile avoids page-numbered output naming differences across poppler versions.
+    execSync(`pdftoppm -f ${page} -l ${page} -png -r 200 -singlefile "${pdfPath}" "${outBase}"`, {
       stdio: 'ignore',
       maxBuffer: 50 * 1024 * 1024,
     });
 
-    const pngPath = `${outBase}-${String(page).padStart(1, '0')}.png`;
+    const pngPath = `${outBase}.png`;
     // tesseract to stdout
     const txt = execSync(`tesseract "${pngPath}" stdout -l eng`, {
       encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024,
     });
     return txt || '';
-  } catch {
+  } catch (e) {
+    // Avoid noisy tesseract/pdftoppm errors; caller will treat as empty OCR.
     return '';
   } finally {
     try {

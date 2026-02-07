@@ -211,18 +211,18 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
     let tries = 0;
     const t = setInterval(() => {
       tries += 1;
-      if (tries > 60) {
+      if (tries > 40) {
         clearInterval(t);
         return;
       }
-      // Stop polling once we have items.
-      if (items.length > 0) {
+      // Only poll while the list is empty to avoid UI flicker.
+      if (items.length === 0) {
+        loadItems();
+        loadCoverage();
+      } else {
         clearInterval(t);
-        return;
       }
-      loadItems();
-      loadCoverage();
-    }, 3000);
+    }, 4000);
 
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -273,6 +273,15 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
       {loadingItems && items.length === 0 && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-background/80 backdrop-blur-sm">
           <div className="text-sm text-muted-foreground">Preparing takeoff review…</div>
+        </div>
+      )}
+
+      {!loadingItems && items.length === 0 && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-background/60 backdrop-blur-sm text-center p-6">
+          <div className="text-sm font-medium">No items yet</div>
+          <div className="text-xs text-muted-foreground mt-1 max-w-md">
+            This takeoff is still starting up. If it stays empty after a minute, try Refresh.
+          </div>
         </div>
       )}
       {/* Top bar */}
