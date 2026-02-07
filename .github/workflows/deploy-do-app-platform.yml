@@ -36,8 +36,7 @@ jobs:
 
           dep_id=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('deployment',{}).get('id',''))")
           if [ -z "$dep_id" ]; then
-            echo "Failed to create deployment. Response:" >&2
-            echo "$resp" >&2
+            echo "Failed to create deployment." >&2
             exit 1
           fi
 
@@ -68,3 +67,59 @@ jobs:
 
           echo "Timed out waiting for deployment to become ACTIVE" >&2
           exit 1
+
+  spaces_cors:
+    runs-on: ubuntu-latest
+    environment: Production
+    steps:
+      - name: Install awscli
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install awscli
+
+      - name: Apply CORS policy to Spaces bucket
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET }}
+          AWS_DEFAULT_REGION: ${{ secrets.DO_SPACES_REGION }}
+          DO_SPACES_BUCKET: ${{ secrets.DO_SPACES_BUCKET }}
+          DO_SPACES_ENDPOINT: ${{ secrets.DO_SPACES_ENDPOINT }}
+        run: |
+          endpoint="${DO_SPACES_ENDPOINT:-https://${AWS_DEFAULT_REGION}.digitaloceanspaces.com}"
+          host="${endpoint#https://}"
+          host="${host#http://}"
+          host="${host%%/*}"
+          host="${host#${DO_SPACES_BUCKET}.}"
+          endpoint="https://${host}"
+
+          cat > cors.json <<'JSON'
+{
+  "CORSRules": [
+    {
+      "AllowedOrigins": [
+        "https://app.stratos.to",
+        "http://localhost:3000"
+      ],
+      "AllowedMethods": [
+        "GET",
+        "PUT",
+        "POST",
+        "HEAD"
+      ],
+      "AllowedHeaders": [
+        "*"
+      ],
+      "ExposeHeaders": [
+        "ETag"
+      ],
+      "MaxAgeSeconds": 3000
+    }
+  ]
+}
+JSON
+
+          aws --endpoint-url "$endpoint" s3api put-bucket-cors \
+            --bucket "$DO_SPACES_BUCKET" \
+            --cors-configuration file://cors.json
+
+          echo "Spaces CORS applied."
