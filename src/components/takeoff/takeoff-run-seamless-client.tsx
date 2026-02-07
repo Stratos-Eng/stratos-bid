@@ -205,6 +205,26 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
   useEffect(() => {
     loadItems();
     loadCoverage();
+
+    // If a run is opened immediately after starting a takeoff, it may be empty for a bit.
+    // Poll briefly so the user doesn’t land on a “blank” workspace.
+    let tries = 0;
+    const t = setInterval(() => {
+      tries += 1;
+      if (tries > 60) {
+        clearInterval(t);
+        return;
+      }
+      // Stop polling once we have items.
+      if (items.length > 0) {
+        clearInterval(t);
+        return;
+      }
+      loadItems();
+      loadCoverage();
+    }, 3000);
+
+    return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
 
@@ -250,6 +270,11 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
       ref={containerRef}
       className={`relative h-full ${isFullscreen ? 'bg-background p-2' : ''}`}
     >
+      {loadingItems && items.length === 0 && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="text-sm text-muted-foreground">Preparing takeoff review…</div>
+        </div>
+      )}
       {/* Top bar */}
       <div className="flex items-center justify-between gap-3 mb-3">
         <div className="text-sm text-muted-foreground">
@@ -257,17 +282,36 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
           <span className="ml-2 text-xs text-muted-foreground">(auto)</span>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => setDrawerOpen((v) => !v)}>
-            {drawerOpen ? 'Hide items' : 'Show items'}
+          <Button variant="outline" size="sm" title={drawerOpen ? 'Hide items' : 'Show items'} onClick={() => setDrawerOpen((v) => !v)}>
+            <span className="sr-only">{drawerOpen ? 'Hide items' : 'Show items'}</span>
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 4h16v16H4z" />
+              <path d="M9 4v16" />
+            </svg>
           </Button>
-          <Button variant="outline" onClick={() => setSourcesOpen((v) => !v)}>
-            {sourcesOpen ? 'Hide sources' : 'Show sources'}
+          <Button variant="outline" size="sm" title={sourcesOpen ? 'Hide sources' : 'Show sources'} onClick={() => setSourcesOpen((v) => !v)}>
+            <span className="sr-only">{sourcesOpen ? 'Hide sources' : 'Show sources'}</span>
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 6h16" />
+              <path d="M4 12h16" />
+              <path d="M4 18h16" />
+            </svg>
           </Button>
-          <Button variant="outline" onClick={toggleFullscreen}>
-            {isFullscreen ? 'Exit full screen' : 'Full screen'}
+          <Button variant="outline" size="sm" title={isFullscreen ? 'Exit full screen' : 'Full screen'} onClick={toggleFullscreen}>
+            <span className="sr-only">{isFullscreen ? 'Exit full screen' : 'Full screen'}</span>
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+              <path d="M16 3h3a2 2 0 0 1 2 2v3" />
+              <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
+              <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+            </svg>
           </Button>
-          <Button variant="outline" onClick={() => { loadItems(); loadCoverage(); }} disabled={loadingItems || loadingCoverage}>
-            Refresh
+          <Button variant="outline" size="sm" title="Refresh" onClick={() => { loadItems(); loadCoverage(); }} disabled={loadingItems || loadingCoverage}>
+            <span className="sr-only">Refresh</span>
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+              <path d="M21 3v6h-6" />
+            </svg>
           </Button>
           <Link className="underline text-sm" href={`/projects/${bidId}/takeoff`}>
             All takeoffs
