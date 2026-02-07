@@ -1,0 +1,37 @@
+name: Deploy DigitalOcean App Platform
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-do-app-platform
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: Production
+    steps:
+      - name: Trigger DO App Platform deployment
+        env:
+          DO_API_TOKEN: ${{ secrets.DO_API_TOKEN }}
+          DO_APP_ID: d51e20ff-1eb7-4f57-90fc-d6938cd30017
+        run: |
+          if [ -z "$DO_API_TOKEN" ]; then
+            echo "Missing DO_API_TOKEN secret" >&2
+            exit 1
+          fi
+
+          echo "Triggering redeploy for app $DO_APP_ID"
+
+          # Create a new deployment (equivalent to clicking Deploy Latest)
+          resp=$(curl -sS -X POST \
+            -H "Authorization: Bearer ${DO_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "https://api.digitalocean.com/v2/apps/${DO_APP_ID}/deployments" \
+            -d '{"force_build":true}'
+          )
+
+          echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print('deployment_id=', d.get('deployment',{}).get('id'))"
