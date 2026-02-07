@@ -241,7 +241,7 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
       </div>
 
       {/* Main drawing canvas */}
-      <div className="relative rounded-lg border bg-white overflow-hidden" style={{ height: '78vh' }}>
+      <div className="relative border bg-white overflow-hidden" style={{ height: '88vh' }}>
         {docId ? (
           <ProjectViewer
             documentId={docId}

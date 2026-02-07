@@ -9,17 +9,11 @@ export default async function TakeoffRunPage({
   const { id: bidId, runId } = await params;
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Takeoff</h1>
-          <div className="text-sm text-muted-foreground">Bid: {bidId}</div>
-        </div>
-        <div className="flex gap-3">
-          <Link className="underline" href={`/projects/${bidId}`}>Back to project</Link>
-        </div>
+    <div className="h-[calc(100vh-6rem)]">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-sm text-muted-foreground">Takeoff Review</div>
+        <Link className="underline text-sm" href={`/projects/${bidId}`}>Back to project</Link>
       </div>
-
       <TakeoffRunSeamlessClient bidId={bidId} runId={runId} />
     </div>
   );
