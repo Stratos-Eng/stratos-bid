@@ -10,6 +10,7 @@ function stableUuid(input: string): string {
 
 import { deriveFindingsFromText } from './finding-utils';
 import { mineSignageEvidence, hashText } from './signage-evidence-miner';
+import { mineTakeoffInstances } from './instance-miner';
 import { extractPageTextWithFallback, getPdfPageCount } from './pdf-artifacts';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -876,6 +877,21 @@ async function runJob(job: JobRow) {
             .onConflictDoNothing({ target: [takeoffItemEvidence.itemId, takeoffItemEvidence.findingId] } as any);
         }
       }
+    }
+
+    // STEP 4: instance mining (placements)
+    try {
+      const mined = await mineTakeoffInstances({
+        runId,
+        bidId,
+        userId: job.userId,
+        localBidFolder,
+        docIdBySafeName,
+        budgetMs: 25 * 60 * 1000,
+      });
+      console.log(`[takeoff-worker] Instance mining: inserted=${mined.inserted} scannedPages=${mined.scannedPages} codes=${mined.codes}`);
+    } catch (e) {
+      console.warn('[takeoff-worker] Instance mining failed (non-fatal):', e instanceof Error ? e.message : e);
     }
 
     await db
