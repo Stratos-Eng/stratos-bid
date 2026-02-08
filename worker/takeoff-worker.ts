@@ -140,9 +140,33 @@ async function downloadBidPdfsToTemp(input: {
 async function runJob(job: JobRow) {
   const bidId = job.bidId;
 
+  let cancelled = false;
+  let lastCancelCheckMs = 0;
+  const checkCancelled = async () => {
+    if (cancelled) return true;
+    const now = Date.now();
+    if (now - lastCancelCheckMs < 15_000) return false;
+    lastCancelCheckMs = now;
+    try {
+      const [row] = await db
+        .select({ status: takeoffJobs.status })
+        .from(takeoffJobs)
+        .where(eq(takeoffJobs.id, job.id))
+        .limit(1);
+      if (row?.status === 'cancelled') cancelled = true;
+    } catch {
+      // ignore
+    }
+    return cancelled;
+  };
+
   // Keep the lock fresh so other workers (or restarts) don't steal a legitimately running job.
   const heartbeat = setInterval(async () => {
     try {
+      // If the user started a newer run, stop doing work.
+      await checkCancelled();
+      if (cancelled) return;
+
       await db
         .update(takeoffJobs)
         .set({ lockedAt: new Date(), updatedAt: new Date() } as any)
@@ -643,6 +667,7 @@ async function runJob(job: JobRow) {
         const pagesToScan = pickPagesToScan(pageCount || 0, budget);
 
         for (const p of pagesToScan) {
+          if (await checkCancelled()) throw new Error('cancelled');
           // Smart OCR: always possible, but avoid OCRing every thin page blindly.
           // Heuristic: OCR thin pages only if early/late in set OR page looks schedule-ish.
           const extracted0 = extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: Number.POSITIVE_INFINITY });
@@ -650,7 +675,7 @@ async function runJob(job: JobRow) {
 
           const looksScheduley = /schedule|legend|sign\s+type|type\s+code|qty|quantity|signage/i.test(t0);
           const isEarly = p <= 15;
-          const isLate = pageCount > 0 ? p >= Math.max(1, scanPages - 9) : false;
+          const isLate = pageCount > 0 ? p >= Math.max(1, pageCount - 9) : false;
 
           const doOcr = process.env.TAKEOFF_OCR_MODE === 'full'
             ? t0.length < 30
@@ -977,6 +1002,31 @@ async function runJob(job: JobRow) {
     console.log(`[takeoff-worker] Estimator takeoff complete for bid ${bidId}: ${result.items.length} items`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+
+    if (msg === 'cancelled') {
+      await db
+        .update(takeoffJobs)
+        .set({
+          status: 'cancelled',
+          lastError: 'Cancelled: superseded by a newer takeoff run.',
+          updatedAt: new Date(),
+          finishedAt: new Date(),
+        } as any)
+        .where(eq(takeoffJobs.id, job.id));
+
+      await db
+        .update(takeoffRuns)
+        .set({
+          status: 'cancelled',
+          lastError: 'Cancelled: superseded by a newer takeoff run.',
+          updatedAt: new Date(),
+          finishedAt: new Date(),
+        } as any)
+        .where(eq(takeoffRuns.id, runId));
+
+      console.warn('[takeoff-worker] Job cancelled:', job.id);
+      return;
+    }
 
     await db
       .update(documents)
