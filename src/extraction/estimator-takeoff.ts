@@ -180,8 +180,9 @@ export async function estimatorTakeoffFromLocalPdfs(input: {
     const pages = new Set<number>();
 
     // Always include head + tail.
+    // Tail is especially important for plan sets where the actual signage sheets are near the end.
     for (let p = 1; p <= Math.min(12, pageCount); p++) pages.add(p);
-    for (let p = Math.max(1, pageCount - 19); p <= pageCount; p++) pages.add(p);
+    for (let p = Math.max(1, pageCount - 49); p <= pageCount; p++) pages.add(p);
 
     // Fill remaining budget with evenly-spaced samples.
     while (pages.size < budget) {
