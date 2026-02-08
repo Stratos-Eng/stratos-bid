@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { db } from '@/db';
-import { bids, documents, takeoffJobs, takeoffJobDocuments } from '@/db/schema';
+import { bids, documents, takeoffJobs, takeoffJobDocuments, takeoffRuns } from '@/db/schema';
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { dirname } from 'path';
 
@@ -41,6 +41,30 @@ export async function POST(request: NextRequest) {
     if (!bid) {
       return NextResponse.json({ error: 'Project not found or access denied' }, { status: 403 });
     }
+
+    // Cancel any in-flight takeoffs for this bid so we don't spam runs / burn worker time.
+    // (We keep history via their finished_at + last_error.)
+    await db
+      .update(takeoffJobs)
+      .set({
+        status: 'cancelled',
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+        lastError: 'Cancelled: superseded by a newer takeoff run.',
+        lockId: null,
+        lockedAt: null,
+      } as any)
+      .where(and(eq(takeoffJobs.bidId, bidId), eq(takeoffJobs.userId, session.user.id), inArray(takeoffJobs.status, ['queued', 'running'])));
+
+    await db
+      .update(takeoffRuns)
+      .set({
+        status: 'cancelled',
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+        lastError: 'Cancelled: superseded by a newer takeoff run.',
+      } as any)
+      .where(and(eq(takeoffRuns.bidId, bidId), eq(takeoffRuns.userId, session.user.id), eq(takeoffRuns.status, 'running')));
 
     // Resolve documents for this job
     const docs = requestedDocumentIds.length > 0
