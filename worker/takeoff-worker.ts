@@ -637,14 +637,21 @@ async function runJob(job: JobRow) {
 
       const flushArtifacts = async () => {
         if (artifactRows.length === 0) return;
+        const t0 = Date.now();
+        console.log(`[takeoff-worker] flushing ${artifactRows.length} artifacts...`);
         const chunkSize = 200;
         for (let i = 0; i < artifactRows.length; i += chunkSize) {
           const chunk = artifactRows.slice(i, i + chunkSize);
-          if (chunk.length > 0) await db.insert(takeoffArtifacts).values(chunk as any);
+          if (chunk.length === 0) continue;
+          try {
+            await db.insert(takeoffArtifacts).values(chunk as any);
+          } catch (e) {
+            console.warn('[takeoff-worker] artifacts insert failed (non-fatal):', e);
+          }
         }
         artifactBuffered += artifactRows.length;
         artifactRows.length = 0;
-        console.log(`[takeoff-worker] wrote artifacts so far: ${artifactBuffered}`);
+        console.log(`[takeoff-worker] wrote artifacts so far: ${artifactBuffered} (flush ${Date.now() - t0}ms)`);
       };
 
       const pickPagesToScan = (pageCount: number, budget: number): number[] => {
