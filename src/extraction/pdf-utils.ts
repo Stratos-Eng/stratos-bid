@@ -16,11 +16,17 @@ import { tmpdir } from 'os';
  * 3) ghostscript pdfwrite re-distill (fallback)
  */
 const repaired = new Set<string>();
+const repairFailed = new Set<string>();
 
 export function ensurePdfReadableInPlace(pdfPath: string): void {
   const t0 = Date.now();
+
   // Avoid repeatedly rewriting the same file in a single run.
   if (repaired.has(pdfPath)) return;
+
+  // If repair already failed once, don't keep retrying (it can be very expensive).
+  if (repairFailed.has(pdfPath)) return;
+
   repaired.add(pdfPath);
 
   const tempDir = mkdtempSync(join(tmpdir(), 'stratos-pdf-repair-'));
@@ -56,6 +62,7 @@ export function ensurePdfReadableInPlace(pdfPath: string): void {
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn(`[pdf-utils] gs repair failed in ${Date.now() - t0}ms: ${pdfPath}`);
+    repairFailed.add(pdfPath);
     // give up; caller will handle empty extraction
   }
 }
