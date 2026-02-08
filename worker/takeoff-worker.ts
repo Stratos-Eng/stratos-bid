@@ -636,7 +636,11 @@ async function runJob(job: JobRow) {
       for (const pdf of localPdfPaths) {
         const documentId = docIdBySafeName.get(pdf.filename) ?? documentIds[0];
         const pageCount = getPdfPageCount(pdf.path);
-        const pagesToScan = pickPagesToScan(pageCount || 0, 60);
+
+        // Large plan sets often bury the relevant signage sheets deep in the set.
+        // Increase sampling budget so we have a fighting chance to hit the right sheet block.
+        const budget = pageCount && pageCount > 1000 ? 220 : pageCount && pageCount > 200 ? 120 : 60;
+        const pagesToScan = pickPagesToScan(pageCount || 0, budget);
 
         for (const p of pagesToScan) {
           // Smart OCR: always possible, but avoid OCRing every thin page blindly.
@@ -679,9 +683,13 @@ async function runJob(job: JobRow) {
       console.warn('[takeoff-worker] artifacts write failed (non-fatal):', err);
     }
 
+    // For huge plan sets, scan more pages so we actually hit the relevant sheet block.
+    // (DU40 in this bid is ~2000 pages and the ZA-E sheets are in the ~800s.)
+    const maxPagesPerDoc = localPdfPaths.some((p) => (getPdfPageCount(p.path) || 0) > 1000) ? 220 : 60;
+
     const { result, evidence } = await estimatorTakeoffFromLocalPdfs({
       localPdfPaths,
-      maxPagesPerDoc: 60,
+      maxPagesPerDoc,
     });
 
     const values = result.items.map((item, idx) => ({
