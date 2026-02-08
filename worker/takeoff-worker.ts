@@ -643,6 +643,13 @@ async function runJob(job: JobRow) {
         for (let p = 1; p <= Math.min(12, pageCount); p++) pages.add(p);
         for (let p = Math.max(1, pageCount - 49); p <= pageCount; p++) pages.add(p);
 
+        // Huge plan sets often have “real” sheets (not cover/index) in the middle.
+        // Add a focused window around ~40% into the PDF.
+        if (pageCount > 1000) {
+          const center = Math.round(pageCount * 0.4);
+          for (let p = Math.max(1, center - 30); p <= Math.min(pageCount, center + 30); p++) pages.add(p);
+        }
+
         // Fill remaining budget with evenly-spaced samples across the document.
         while (pages.size < budget) {
           const needed = budget - pages.size;
