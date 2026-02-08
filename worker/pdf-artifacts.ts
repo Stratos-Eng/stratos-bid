@@ -16,18 +16,26 @@ export function getPdfPageCount(pdfPath: string): number {
 }
 
 export function pdftotextPage(pdfPath: string, page: number): string {
+  const t0 = Date.now();
   try {
     ensurePdfReadableInPlace(pdfPath);
-    return execSync(`pdftotext -layout -f ${page} -l ${page} "${pdfPath}" -`, {
+    const out = execSync(`pdftotext -layout -f ${page} -l ${page} "${pdfPath}" -`, {
       encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024,
+      timeout: 25_000,
     });
+    if (Date.now() - t0 > 4000) {
+      // eslint-disable-next-line no-console
+      console.log(`[pdf-artifacts] slow pdftotext p${page} ${Date.now() - t0}ms: ${path.basename(pdfPath)}`);
+    }
+    return out;
   } catch {
     return '';
   }
 }
 
 export function ocrPage(pdfPath: string, page: number): string {
+  const t0 = Date.now();
   const dir = mkdtempSync(path.join(os.tmpdir(), 'takeoff-ocr-'));
   try {
     ensurePdfReadableInPlace(pdfPath);
@@ -37,6 +45,7 @@ export function ocrPage(pdfPath: string, page: number): string {
     execSync(`pdftoppm -f ${page} -l ${page} -png -r 200 -singlefile "${pdfPath}" "${outBase}"`, {
       stdio: 'ignore',
       maxBuffer: 50 * 1024 * 1024,
+      timeout: 45_000,
     });
 
     const pngPath = `${outBase}.png`;
@@ -44,7 +53,12 @@ export function ocrPage(pdfPath: string, page: number): string {
     const txt = execSync(`tesseract "${pngPath}" stdout -l eng`, {
       encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024,
+      timeout: 60_000,
     });
+    if (Date.now() - t0 > 8000) {
+      // eslint-disable-next-line no-console
+      console.log(`[pdf-artifacts] slow ocr p${page} ${Date.now() - t0}ms: ${path.basename(pdfPath)}`);
+    }
     return txt || '';
   } catch (e) {
     // Avoid noisy tesseract/pdftoppm errors; caller will treat as empty OCR.

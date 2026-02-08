@@ -630,6 +630,8 @@ async function runJob(job: JobRow) {
 
     // STEP 3a: page-level extraction coverage + OCR escalation (artifacts)
     try {
+      console.log('[takeoff-worker] STEP 3a artifacts scan: start');
+      const tArtifacts0 = Date.now();
       const artifactRows: any[] = [];
       let artifactBuffered = 0;
 
@@ -725,6 +727,7 @@ async function runJob(job: JobRow) {
 
       // final flush
       await flushArtifacts();
+      console.log(`[takeoff-worker] STEP 3a artifacts scan: done in ${Date.now() - tArtifacts0}ms (artifactsWritten=${artifactBuffered})`);
     } catch (err) {
       console.warn('[takeoff-worker] artifacts write failed (non-fatal):', err);
     }
