@@ -629,6 +629,8 @@ async function runJob(job: JobRow) {
     }
 
     // STEP 3a: page-level extraction coverage + OCR escalation (artifacts)
+    // NOTE: artifacts are for coverage/debug. They should NEVER trigger heavy OCR on huge plan sets.
+    // We keep them pdftotext-only to avoid burning hours/$$ before the estimator pass.
     try {
       console.log('[takeoff-worker] STEP 3a artifacts scan: start');
       const tArtifacts0 = Date.now();
@@ -702,17 +704,8 @@ async function runJob(job: JobRow) {
           const extracted0 = extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: Number.POSITIVE_INFINITY });
           const t0 = (extracted0.text || '').trim();
 
-          const looksScheduley = /schedule|legend|sign\s+type|type\s+code|qty|quantity|signage/i.test(t0);
-          const isEarly = p <= 15;
-          const isLate = pageCount > 0 ? p >= Math.max(1, pageCount - 9) : false;
-
-          const doOcr = process.env.TAKEOFF_OCR_MODE === 'full'
-            ? t0.length < 30
-            : t0.length < 30 && (looksScheduley || isEarly || isLate);
-
-          const extracted = doOcr
-            ? extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: 30 })
-            : { method: 'pdftotext' as const, text: t0, meta: { textLength: t0.length } };
+          // For artifacts, do NOT OCR. If pdftotext is thin/empty, record it as-is.
+          const extracted = { method: 'pdftotext' as const, text: t0, meta: { textLength: t0.length } };
 
           artifactRows.push({
             runId,
