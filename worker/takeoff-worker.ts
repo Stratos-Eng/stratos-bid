@@ -607,12 +607,37 @@ async function runJob(job: JobRow) {
     // STEP 3a: page-level extraction coverage + OCR escalation (artifacts)
     try {
       const artifactRows: any[] = [];
+
+      const pickPagesToScan = (pageCount: number, budget: number): number[] => {
+        if (!pageCount || pageCount <= 0) return Array.from({ length: budget }, (_, i) => i + 1);
+        if (pageCount <= budget) return Array.from({ length: pageCount }, (_, i) => i + 1);
+
+        const pages = new Set<number>();
+
+        // Always include head + tail.
+        for (let p = 1; p <= Math.min(12, pageCount); p++) pages.add(p);
+        for (let p = Math.max(1, pageCount - 19); p <= pageCount; p++) pages.add(p);
+
+        // Fill remaining budget with evenly-spaced samples across the document.
+        while (pages.size < budget) {
+          const needed = budget - pages.size;
+          const step = pageCount / (needed + 1);
+          for (let i = 1; i <= needed; i++) {
+            pages.add(Math.min(pageCount, Math.max(1, Math.round(i * step))));
+            if (pages.size >= budget) break;
+          }
+          if (step <= 1) break;
+        }
+
+        return [...pages].sort((a, b) => a - b).slice(0, budget);
+      };
+
       for (const pdf of localPdfPaths) {
         const documentId = docIdBySafeName.get(pdf.filename) ?? documentIds[0];
         const pageCount = getPdfPageCount(pdf.path);
-        const scanPages = pageCount > 0 ? Math.min(pageCount, 60) : 60;
+        const pagesToScan = pickPagesToScan(pageCount || 0, 60);
 
-        for (let p = 1; p <= scanPages; p++) {
+        for (const p of pagesToScan) {
           // Smart OCR: always possible, but avoid OCRing every thin page blindly.
           // Heuristic: OCR thin pages only if early/late in set OR page looks schedule-ish.
           const extracted0 = extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: Number.POSITIVE_INFINITY });

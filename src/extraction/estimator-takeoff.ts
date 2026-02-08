@@ -173,11 +173,35 @@ export async function estimatorTakeoffFromLocalPdfs(input: {
 
   const evidence: EvidenceSnippet[] = [];
 
+  const pickPagesToScan = (pageCount: number, budget: number): number[] => {
+    if (!pageCount || pageCount <= 0) return Array.from({ length: budget }, (_, i) => i + 1);
+    if (pageCount <= budget) return Array.from({ length: pageCount }, (_, i) => i + 1);
+
+    const pages = new Set<number>();
+
+    // Always include head + tail.
+    for (let p = 1; p <= Math.min(12, pageCount); p++) pages.add(p);
+    for (let p = Math.max(1, pageCount - 19); p <= pageCount; p++) pages.add(p);
+
+    // Fill remaining budget with evenly-spaced samples.
+    while (pages.size < budget) {
+      const needed = budget - pages.size;
+      const step = pageCount / (needed + 1);
+      for (let i = 1; i <= needed; i++) {
+        pages.add(Math.min(pageCount, Math.max(1, Math.round(i * step))));
+        if (pages.size >= budget) break;
+      }
+      if (step <= 1) break;
+    }
+
+    return [...pages].sort((a, b) => a - b).slice(0, budget);
+  };
+
   for (const pdf of input.localPdfPaths) {
     const pageCount = getPdfPageCount(pdf.path) ?? 0;
-    const scanPages = pageCount > 0 ? Math.min(pageCount, maxPagesPerDoc) : maxPagesPerDoc;
+    const pagesToScan = pickPagesToScan(pageCount, maxPagesPerDoc);
 
-    for (let p = 1; p <= scanPages; p++) {
+    for (const p of pagesToScan) {
       const pageText = pdftotextPage(pdf.path, p);
       if (!pageText) continue;
 
