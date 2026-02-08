@@ -631,6 +631,19 @@ async function runJob(job: JobRow) {
     // STEP 3a: page-level extraction coverage + OCR escalation (artifacts)
     try {
       const artifactRows: any[] = [];
+      let artifactBuffered = 0;
+
+      const flushArtifacts = async () => {
+        if (artifactRows.length === 0) return;
+        const chunkSize = 200;
+        for (let i = 0; i < artifactRows.length; i += chunkSize) {
+          const chunk = artifactRows.slice(i, i + chunkSize);
+          if (chunk.length > 0) await db.insert(takeoffArtifacts).values(chunk as any);
+        }
+        artifactBuffered += artifactRows.length;
+        artifactRows.length = 0;
+        console.log(`[takeoff-worker] wrote artifacts so far: ${artifactBuffered}`);
+      };
 
       const pickPagesToScan = (pageCount: number, budget: number): number[] => {
         if (!pageCount || pageCount <= 0) return Array.from({ length: budget }, (_, i) => i + 1);
@@ -702,15 +715,16 @@ async function runJob(job: JobRow) {
             meta: { ...extracted.meta, ocrMode: process.env.TAKEOFF_OCR_MODE || 'smart' },
             createdAt: new Date(),
           });
+
+          // Flush periodically so UI shows progress and we don’t lose everything on a crash.
+          if (artifactRows.length >= 50) {
+            await flushArtifacts();
+          }
         }
       }
 
-      // insert in chunks to avoid giant single statement
-      const chunkSize = 200;
-      for (let i = 0; i < artifactRows.length; i += chunkSize) {
-        const chunk = artifactRows.slice(i, i + chunkSize);
-        if (chunk.length > 0) await db.insert(takeoffArtifacts).values(chunk as any);
-      }
+      // final flush
+      await flushArtifacts();
     } catch (err) {
       console.warn('[takeoff-worker] artifacts write failed (non-fatal):', err);
     }
@@ -719,10 +733,15 @@ async function runJob(job: JobRow) {
     // (DU40 in this bid is ~2000 pages and the ZA-E sheets are in the ~800s.)
     const maxPagesPerDoc = localPdfPaths.some((p) => (getPdfPageCount(p.path) || 0) > 1000) ? 220 : 60;
 
+    console.log(`[takeoff-worker] starting estimatorTakeoffFromLocalPdfs (maxPagesPerDoc=${maxPagesPerDoc})`);
+    const tEstimator0 = Date.now();
+
     const { result, evidence } = await estimatorTakeoffFromLocalPdfs({
       localPdfPaths,
       maxPagesPerDoc,
     });
+
+    console.log(`[takeoff-worker] estimatorTakeoffFromLocalPdfs done in ${Date.now() - tEstimator0}ms (items=${result.items.length}, evidence=${evidence.length})`);
 
     const values = result.items.map((item, idx) => ({
       documentId: documentIds[0],
@@ -1007,6 +1026,17 @@ async function runJob(job: JobRow) {
       .where(eq(takeoffRuns.id, runId));
 
     console.log(`[takeoff-worker] Estimator takeoff complete for bid ${bidId}: ${result.items.length} items`);
+
+    // Watchdog: if we somehow marked the job/run as succeeded but produced nothing, fail loudly.
+    try {
+      const artifactCount = artifactBuffered;
+      const producedItems = result.items.length;
+      if (producedItems === 0) {
+        console.warn(`[takeoff-worker] WARNING: produced 0 items (artifactsWritten=${artifactCount}).`);
+      }
+    } catch {
+      // ignore
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
 
