@@ -369,7 +369,8 @@ async function runJob(job: JobRow) {
 
       let docScore = 0;
       for (const p of pages) {
-        const extracted0 = extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: Number.POSITIVE_INFINITY });
+        // First pass: pdftotext only. (ocrMinChars=0 forces no OCR in extractPageTextWithFallback)
+        const extracted0 = extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: 0 });
         const t0 = (extracted0.text || '').trim();
         const baseScore = scorePageForSignage(t0);
 
@@ -701,10 +702,12 @@ async function runJob(job: JobRow) {
           if (await checkCancelled()) throw new Error('cancelled');
           // Smart OCR: always possible, but avoid OCRing every thin page blindly.
           // Heuristic: OCR thin pages only if early/late in set OR page looks schedule-ish.
-          const extracted0 = extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: Number.POSITIVE_INFINITY });
+          // For artifacts, do NOT OCR. If pdftotext is thin/empty, record it as-is.
+          // NOTE: ocrMinChars=0 forces extractPageTextWithFallback to return the pdftotext output
+          // and *skip* OCR entirely (critical for very large plan sets).
+          const extracted0 = extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: 0 });
           const t0 = (extracted0.text || '').trim();
 
-          // For artifacts, do NOT OCR. If pdftotext is thin/empty, record it as-is.
           const extracted = { method: 'pdftotext' as const, text: t0, meta: { textLength: t0.length } };
 
           artifactRows.push({
