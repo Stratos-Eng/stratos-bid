@@ -372,201 +372,102 @@ async function runJob(job: JobRow) {
   });
 
   try {
-    // STEP 1: score docs
-    const scoredDocs = await scoreAllDocuments(localBidFolder, 'division_10', false);
-    console.log(`[takeoff-worker] Document scores:\n${formatScoresForLog(scoredDocs)}`);
+    // OpenClaw agentic extraction (single source of truth)
+    const localPdfPaths = Array.from(docIdBySafeName.keys())
+      .filter((f) => f.toLowerCase().endsWith('.pdf'))
+      .map((filename) => ({ filename, path: join(localBidFolder, filename) }));
 
-    // STEP 2: fast-path
-    const topDoc = getTopDocument(scoredDocs, 80);
-    if (topDoc) {
-      const text = await extractPdfText(topDoc.path);
-      if (text && text.length >= 100) {
-        const sourceType = detectSourceType(text);
-        if (sourceType) {
-          const fp = tryFastPathExtraction(text, sourceType);
-          if (fp && fp.confidence >= 0.85) {
-            // Save line items
-            const values = fp.entries.map((entry) => ({
-              documentId: documentIds[0],
-              bidId,
-              userId: job.userId,
-              tradeCode: 'division_10',
-              category: entry.name,
-              description: `${entry.name}${entry.roomNumber ? ` (${entry.roomNumber})` : ''}`,
-              estimatedQty: String(entry.quantity),
-              unit: 'EA',
-              notes: `Source: ${fp.source}`,
-              pageNumber: entry.pageNumbers[0],
-              pageReference: entry.sheetRefs.join(', '),
-              extractionConfidence: entry.confidence,
-              extractionModel: 'signage-fast-path',
-              rawExtractionJson: {
-                id: entry.id,
-                identifier: entry.identifier,
-                source: entry.source,
-                isGrouped: entry.isGrouped,
-                signTypeCode: entry.signTypeCode,
-              },
-              // UI expects: pending|approved|rejected|modified. Keep pending and encode review needs in notes/flags.
-              reviewStatus: 'pending',
-              extractedAt: new Date(),
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            }));
+    const attemptLogRel = `attempt_logs/${bidId}/${runId}.jsonl`;
 
-            if (values.length > 0) {
-              await db.insert(lineItems).values(values);
+    const system = `You are the Stratos signage takeoff extraction agent.
 
-              // Also write v2 takeoff items (best-effort)
-              const itemRows = fp.entries.map((entry) => {
-                const code = entry.signTypeCode || entry.identifier;
-                const itemKey = `division_10:${code}:${String(entry.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_')}`;
-                return {
-                  id: randomUUID(),
-                  runId,
-                  bidId,
-                  userId: job.userId,
-                  tradeCode: 'division_10',
-                  itemKey,
-                  code,
-                  category: entry.name,
-                  description: `${entry.name}${entry.roomNumber ? ` (${entry.roomNumber})` : ''}`,
-                  qtyNumber: entry.quantity,
-                  qtyText: null,
-                  unit: 'EA',
-                  confidence: entry.confidence,
-                  status: entry.confidence >= 0.8 ? 'draft' : 'needs_review',
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-                };
-              });
-              if (itemRows.length > 0) await db.insert(takeoffItems).values(itemRows as any);
-            }
+GOAL: Detect signage quantities comprehensively from the provided bid PDFs (plans + schedules), with strong recall.
 
-            await db
-              .update(documents)
-              .set({
-                extractionStatus: 'completed',
-                lineItemCount: fp.entries.length,
-                signageLegend: {
-                  fastPathExtraction: true,
-                  skippedAI: true,
-                  totalCount: fp.totalCount,
-                  confidence: fp.confidence,
-                  source: fp.source,
-                  issues: fp.issues,
-                  notes: fp.notes,
-                  extractedAt: new Date().toISOString(),
-                  tokenUsage: { inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 },
-                },
-              })
-              .where(inArray(documents.id, documentIds));
+CRITICAL: Write an internal attempt log to the bid agent workspace at: ${attemptLogRel} (JSONL: {ts, kind, input, outputSummary, ok, error, durationMs}).
 
-            await db
-              .update(takeoffJobs)
-              .set({
-                status: 'succeeded',
-                updatedAt: new Date(),
-                finishedAt: new Date(),
-              })
-              .where(eq(takeoffJobs.id, job.id));
+Return ONLY valid JSON with schema: {items:[{category,description,qty,unit,confidence,reviewFlags,sources:[{filename,page,sheetRef,evidence,whyAuthoritative}]}],discrepancyLog,missingItems,reviewFlags}`;
 
-            await db
-              .update(takeoffRuns)
-              .set({ status: 'succeeded', updatedAt: new Date(), finishedAt: new Date() } as any)
-              .where(eq(takeoffRuns.id, runId));
-
-            console.log(`[takeoff-worker] Fast-path complete for bid ${bidId}: ${fp.entries.length} items`);
-            return;
-          }
-        }
-      }
-    }
-
-    // STEP 3: estimator-grade takeoff (OpenClaw) + second-pass verification
-    // Accuracy strategy (not sycophancy):
-    // - A fixed cutoff (top 5 / top 8) WILL miss schedules in 1000+ doc folders.
-    // - But we also can't OCR+AI everything.
-    // Best practice: cheap index across *all job docs*, then deep-pass only on the best candidates,
-    // and expand if mismatches are detected.
-
-    const scorePageForSignage = (text: string) => {
-      const t = (text || '').toLowerCase();
-      let s = 0;
-      if (/(signage\s*schedule|sign\s*schedule|type\s*schedule|schedule\s*of\s*sign)/.test(t)) s += 60;
-      if (/(legend|sign\s*legend)/.test(t)) s += 40;
-      if (/(type\s*code|sign\s*type|room\s*id|pictogram)/.test(t)) s += 25;
-      if (/(qty|quantity|count|ea\b|each\b)/.test(t)) s += 15;
-      if (/(ada|tactile|braille)/.test(t)) s += 10;
-      if (/\bexhibit\b/.test(t)) s += 10;
-      return s;
+    const user = {
+      bidId,
+      runId,
+      trade: 'division_10',
+      localBidFolder,
+      localPdfPaths,
+      attemptLogRel,
+      constraints: { prioritizeRecall: true, maxRuntimeMinutes: 20 },
     };
 
-    const pickIndexPages = (pageCount: number) => {
-      const pages = new Set<number>();
-      const pc = pageCount > 0 ? pageCount : 1;
-      // first/second
-      pages.add(1);
-      if (pc >= 2) pages.add(2);
-      // last/second-last
-      pages.add(pc);
-      if (pc >= 2) pages.add(pc - 1);
-      // periodic sample (every 25 pages) to catch schedules buried in the middle
-      const step = 25;
-      for (let p = 1; p <= pc; p += step) pages.add(p);
-      return [...pages].filter((p) => p >= 1 && p <= pc).sort((a, b) => a - b);
-    };
+    const resp = await openclawChatCompletions({
+      temperature: 0.1,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: JSON.stringify(user) },
+      ],
+    });
 
-    // PASS 1: cheap index over all job PDFs (sample pages; OCR only when needed)
-    const indexRows: any[] = [];
-    const docAgg = new Map<string, { filename: string; path: string; docScore: number }>();
+    const content = resp?.choices?.[0]?.message?.content as string | undefined;
+    if (!content) throw new Error('OpenClaw returned empty extraction');
 
-    for (const pdf of scoredDocs) {
-      const documentId = docIdBySafeName.get(pdf.filename) ?? documentIds[0];
-      const pageCount = getPdfPageCount(pdf.path);
-      const pages = pickIndexPages(pageCount);
-
-      let docScore = 0;
-      for (const p of pages) {
-        // First pass: pdftotext only. (ocrMinChars=0 forces no OCR in extractPageTextWithFallback)
-        const extracted0 = extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: 0 });
-        const t0 = (extracted0.text || '').trim();
-        const baseScore = scorePageForSignage(t0);
-
-        // OCR is always available; in index pass we only OCR sampled pages when text is thin.
-        const needsOcr = t0.length < 30;
-        const extracted = needsOcr
-          ? extractPageTextWithFallback({ pdfPath: pdf.path, page: p, ocrMinChars: 30 })
-          : { method: 'pdftotext' as const, text: t0, meta: { textLength: t0.length } };
-
-        const score = baseScore + (/(schedule|legend|signage)/i.test(extracted.text || '') ? 10 : 0);
-        docScore = Math.max(docScore, score);
-
-        indexRows.push({
-          runId,
-          bidId,
-          documentId,
-          pageNumber: p,
-          method: extracted.method,
-          rawText: extracted.text ? extracted.text.slice(0, 4000) : null,
-          meta: { phase: 'index', score, ocrMode: process.env.TAKEOFF_OCR_MODE || 'smart' },
-          createdAt: new Date(),
-        });
-      }
-
-      // filename boost (cheap signal)
-      if (/schedule|legend|signage|exhibit/i.test(pdf.filename)) docScore += 20;
-      docAgg.set(pdf.filename, { filename: pdf.filename, path: pdf.path, docScore });
-    }
-
-    // Persist index artifacts (sample pages only)
+    let parsed: any;
     try {
-      const chunkSize = 200;
-      for (let i = 0; i < indexRows.length; i += chunkSize) {
-        const chunk = indexRows.slice(i, i + chunkSize);
-        if (chunk.length > 0) await db.insert(takeoffArtifacts).values(chunk as any);
-      }
-    } catch (err) {
+      parsed = JSON.parse(content);
+    } catch {
+      throw new Error(`OpenClaw returned non-JSON: ${content.slice(0, 400)}`);
+    }
+
+    const items = Array.isArray(parsed?.items) ? parsed.items : [];
+    if (items.length === 0) throw new Error('OpenClaw produced 0 items');
+
+    const values = items.map((item: any, idx: number) => {
+      const qty = Number(item?.qty ?? 0);
+      const sources = Array.isArray(item?.sources) ? item.sources : [];
+      const notes = [
+        ...(item?.confidence != null && Number(item.confidence) < 0.8 ? ['LOW_CONFIDENCE: review recommended'] : []),
+        ...((item?.reviewFlags || []).map((f: string) => `FLAG: ${f}`)),
+        ...sources.slice(0, 3).map((s: any) => `Source: ${s.filename} p${s.page ?? ''} — ${s.whyAuthoritative ?? ''}`.trim()),
+      ].join(' | ');
+
+      return {
+        documentId: documentIds[0],
+        bidId,
+        userId: job.userId,
+        tradeCode: 'division_10',
+        category: String(item?.category || 'Signage'),
+        description: String(item?.description || item?.category || 'Signage'),
+        estimatedQty: String(Number.isFinite(qty) ? qty : 0),
+        unit: item?.unit ? String(item.unit) : 'EA',
+        notes,
+        pageNumber: sources?.[0]?.page ?? null,
+        pageReference: sources?.[0]?.sheetRef ?? null,
+        extractionConfidence: item?.confidence != null ? Number(item.confidence) : null,
+        extractionModel: 'openclaw:agentic-pdf-extraction',
+        rawExtractionJson: {
+          itemIndex: idx,
+          item,
+          discrepancyLog: parsed?.discrepancyLog ?? null,
+          missingItems: parsed?.missingItems ?? null,
+          reviewFlags: parsed?.reviewFlags ?? null,
+          attemptLogRel,
+        },
+        reviewStatus: 'pending',
+        extractedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+    });
+
+    await db.insert(lineItems).values(values);
+
+    await db
+      .update(documents)
+      .set({ extractionStatus: 'completed', lineItemCount: values.length } as any)
+      .where(inArray(documents.id, documentIds));
+
+    await db.update(takeoffJobs).set({ status: 'succeeded', updatedAt: new Date(), finishedAt: new Date() } as any).where(eq(takeoffJobs.id, job.id));
+    await db.update(takeoffRuns).set({ status: 'succeeded', updatedAt: new Date(), finishedAt: new Date() } as any).where(eq(takeoffRuns.id, runId));
+
+    console.log(`[takeoff-worker] OpenClaw agentic extraction complete for bid ${bidId}: ${items.length} items`);
+  } catch (err) {
       console.warn('[takeoff-worker] index artifacts write failed (non-fatal):', err);
     }
 
