@@ -10,22 +10,39 @@ import { tmpdir } from 'os';
  *   "Syntax Error: Bad block header in flate stream"
  * which can cause pdftotext/pdfinfo to return empty output.
  *
+ * IMPORTANT: Do NOT blindly "repair" every PDF — it is expensive on large plan sets
+ * (hundreds of MB / thousands of pages) and can time out even when the PDF is actually
+ * readable. We first do a cheap health check, and only run repair if that fails.
+ *
  * Strategy:
- * 1) qpdf --check
- * 2) qpdf --repair --stream-data=uncompress (in-place via temp file)
- * 3) ghostscript pdfwrite re-distill (fallback)
+ * 0) quick check (qpdf --check)
+ * 1) qpdf --repair --stream-data=uncompress (in-place via temp file)
+ * 2) ghostscript pdfwrite re-distill (fallback)
  */
 const repaired = new Set<string>();
 const repairFailed = new Set<string>();
+const checkedOk = new Set<string>();
 
 export function ensurePdfReadableInPlace(pdfPath: string): void {
   const t0 = Date.now();
+
+  // If we've already verified this PDF is OK, skip any work.
+  if (checkedOk.has(pdfPath)) return;
 
   // Avoid repeatedly rewriting the same file in a single run.
   if (repaired.has(pdfPath)) return;
 
   // If repair already failed once, don't keep retrying (it can be very expensive).
   if (repairFailed.has(pdfPath)) return;
+
+  // Cheap sanity check: if qpdf --check passes quickly, treat it as readable.
+  try {
+    execSync(`qpdf --check "${pdfPath}"`, { stdio: 'ignore', timeout: 2_000 });
+    checkedOk.add(pdfPath);
+    return;
+  } catch {
+    // fall through to repair attempts
+  }
 
   repaired.add(pdfPath);
 
