@@ -64,8 +64,17 @@ export async function extractPdfText(
 
     return text;
   } catch (error) {
-    console.warn(`[fast-path] Could not extract text from ${pdfPath}`);
-    return '';
+    // Fallback: Ghostscript text device. This can succeed when poppler fails.
+    try {
+      const gsText = execSync(
+        `gs -q -dNOPAUSE -dBATCH -sDEVICE=txtwrite -sOutputFile=- "${pdfPath}"`,
+        { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }
+      );
+      return gsText;
+    } catch {
+      console.warn(`[fast-path] Could not extract text from ${pdfPath}`);
+      return '';
+    }
   }
 }
 

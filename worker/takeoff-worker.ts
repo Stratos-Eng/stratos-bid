@@ -273,8 +273,12 @@ Return ONLY valid JSON with schema: {items:[{category,description,qty,unit,confi
         estimatedQty: String(Number.isFinite(qty) ? qty : 0),
         unit: item?.unit ? String(item.unit) : 'EA',
         notes,
-        pageNumber: sources?.[0]?.page ?? null,
-        pageReference: sources?.[0]?.sheetRef ?? null,
+        pageNumber: (() => {
+          const p = sources?.[0]?.page;
+          const n = typeof p === 'number' ? p : Number(p);
+          return Number.isFinite(n) ? n : null;
+        })(),
+        pageReference: sources?.[0]?.sheetRef ? String(sources[0].sheetRef) : null,
         extractionConfidence: item?.confidence != null ? Number(item.confidence) : null,
         extractionModel: 'openclaw:agentic-pdf-extraction',
         rawExtractionJson: { itemIndex: idx, item, attemptLogRel },
