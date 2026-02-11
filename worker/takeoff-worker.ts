@@ -378,17 +378,28 @@ async function runJob(job: JobRow) {
       .filter((f) => f.toLowerCase().endsWith('.pdf'))
       .map((filename) => ({ filename, path: join(localBidFolder, filename) }));
 
+    // IMPORTANT: the model cannot access local files directly. Provide extracted text.
+    // We intentionally cap pages/chars to avoid pathological runtimes and token blowups.
+    const docTexts: Array<{ filename: string; pageRange: string; text: string }> = [];
+    for (const pdf of localPdfPaths) {
+      const pageCount = docs.find((d) => d.filename === pdf.filename)?.pageCount || 0;
+      const endPage = Math.max(1, Math.min(Number(pageCount) || 30, 30));
+      const text = await extractPdfText(pdf.path, 1, endPage);
+      const trimmed = (text || '').slice(0, 120_000);
+      docTexts.push({ filename: pdf.filename, pageRange: `1-${endPage}`, text: trimmed });
+    }
+
     const attemptLogRel = `attempt_logs/${bidId}/${runId}.jsonl`;
 
     const system = `You are the Stratos signage takeoff extraction agent.
 
 GOAL: Detect signage quantities comprehensively from the provided bid PDFs (plans + schedules), with strong recall.
 
-CRITICAL: Write an internal attempt log to the bid agent workspace at ${attemptLogRel} (JSONL: {ts, kind, input, outputSummary, ok, error, durationMs}).
+You are provided extracted PDF TEXT (not the PDF files themselves). Use it to produce a takeoff.
 
 Return ONLY valid JSON with schema: {items:[{category,description,qty,unit,confidence,reviewFlags,sources:[{filename,page,sheetRef,evidence,whyAuthoritative}]}],discrepancyLog,missingItems,reviewFlags}`;
 
-    const user = { bidId, runId, trade: 'division_10', localBidFolder, localPdfPaths, attemptLogRel };
+    const user = { bidId, runId, trade: 'division_10', localBidFolder, localPdfPaths, docTexts, attemptLogRel };
 
     const resp = await openclawChatCompletions({
       temperature: 0.1,
