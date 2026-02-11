@@ -222,19 +222,37 @@ async function runJob(job: JobRow) {
       if (lower.includes('du40') || lower.includes('msf_idr-cr_85p')) {
         const ranges: Array<[number, number]> = [];
 
-        // Primary signage schedule / ID sheets (per Hamza reference)
-        if (pageCount >= 857) {
-          ranges.push([814, 857]);
-        } else if (pageCount >= 851) {
-          ranges.push([814, 851]);
-        } else if (pageCount >= 830) {
-          ranges.push([814, 830]);
+        // Seed with a deep slice known to often contain schedules on this project,
+        // but also add additional discovery windows so we don't overfit to one band.
+        if (pageCount >= 857) ranges.push([814, 857]);
+        else if (pageCount >= 851) ranges.push([814, 851]);
+        else if (pageCount >= 830) ranges.push([814, 830]);
+
+        // Add evenly spaced discovery windows (20 pages each) across the document.
+        // This helps catch schedules/legends that land elsewhere.
+        const win = 20;
+        const candidates = [
+          Math.max(1, Math.floor(pageCount * 0.25)),
+          Math.max(1, Math.floor(pageCount * 0.50)),
+          Math.max(1, Math.floor(pageCount * 0.75)),
+        ];
+        for (const start0 of candidates) {
+          const start = Math.max(1, start0);
+          const end = Math.min(pageCount || start + win - 1, start + win - 1);
+          if (end >= start) ranges.push([start, end]);
         }
 
         // Add small front-matter slice for legends/notes
         ranges.push([1, Math.min(25, Math.max(1, pageCount || 25))]);
 
-        return ranges;
+        // De-dupe overlapping ranges
+        const seen = new Set<string>();
+        return ranges.filter(([a, b]) => {
+          const k = `${a}-${b}`;
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
       }
 
       // Default: first 30 pages
@@ -261,12 +279,11 @@ GOAL: Detect signage quantities comprehensively from the provided bid PDFs (plan
 
 You are provided extracted PDF TEXT (not the PDF files themselves). Use it to produce a takeoff.
 
-Estimator reference (DU40 target schedule area):
-- DU40 - MSF_IDR-CR_85P.pdf pages 814-857 (ZA-E1-110 to ZA-E5-202) contains MANY signage schedule items, including categories like C1/C3 Room ID, C2 Hydraulic/OH Doors, C4/C5 Stair IDs, C6 Evac Map, C7 Exit Route, C8 Max Occupancy, C10 In Case of Fire, C12 Rest Room ID (jamb), C12/13 context IDs, C15 Fire Extinguisher, etc. Expected totals are in the hundreds.
+Reference note: DU40 is a very large set and signage schedules/legends may appear deep in the page range (not necessarily near the front). Treat any provided deep page-range text as high-signal schedule content, but do NOT assume specific categories/codes are the only items.
 
 CRITICAL OUTPUT REQUIREMENTS:
-- Maximize recall: enumerate ALL schedule rows / sign codes you can find, not just examples.
-- Prefer schedule-derived quantities over scattered plan callouts.
+- Maximize recall: enumerate ALL schedule rows / sign codes you can find across the provided text ranges, not just a few examples.
+- Prefer schedule-derived quantities over scattered plan callouts when schedules exist.
 - Include sources with filename + pageRange and sheetRef where possible.
 
 Return ONLY valid JSON with schema: {items:[{category,description,qty,unit,confidence,reviewFlags,sources:[{filename,page,sheetRef,evidence,whyAuthoritative}]}],discrepancyLog,missingItems,reviewFlags}`;
