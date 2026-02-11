@@ -66,8 +66,13 @@ export async function extractPdfText(
   } catch (error) {
     // Fallback: Ghostscript text device. This can succeed when poppler fails.
     try {
+      // Respect page range when provided; otherwise gs will try to process the entire PDF.
+      // On huge plan sets this can be extremely slow / memory-heavy.
+      const firstLast =
+        startPage && endPage ? `-dFirstPage=${startPage} -dLastPage=${endPage}` : '';
+
       const gsText = execSync(
-        `gs -q -dNOPAUSE -dBATCH -sDEVICE=txtwrite -sOutputFile=- "${pdfPath}"`,
+        `gs -q -dNOPAUSE -dBATCH ${firstLast} -sDEVICE=txtwrite -sOutputFile=- "${pdfPath}"`,
         { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }
       );
       return gsText;
