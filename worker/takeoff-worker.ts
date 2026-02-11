@@ -348,6 +348,48 @@ Return ONLY valid JSON with schema: {items:[{category,description,qty,unit,confi
 
     await db.insert(lineItems).values(values);
 
+    // Also persist into takeoff_items because the UI "Items found" counters are computed from takeoff_items.
+    const itemRows = items.map((item: any) => {
+      const category = String(item?.category || 'Signage');
+      const description = String(item?.description || item?.category || 'Signage');
+      const qty = item?.qty != null ? Number(item.qty) : null;
+
+      // Stable-ish key per run: hash(category|description|unit)
+      const keyBase = `${category}|${description}|${item?.unit ?? ''}`;
+      const itemKey = `division_10:${createHash('sha256').update(keyBase).digest('hex').slice(0, 16)}`;
+
+      // Try to infer a short code prefix (e.g. C1, D2, WS-01) from description.
+      const m = /^\s*([A-Z]{1,3}[-]?(?:\d{1,3})?)\b/.exec(description);
+      const code = m?.[1] ? String(m[1]) : null;
+
+      return {
+        id: randomUUID(),
+        runId,
+        bidId,
+        userId: job.userId,
+        tradeCode: 'division_10',
+        itemKey,
+        code,
+        category,
+        description,
+        qtyNumber: Number.isFinite(qty as any) ? (qty as number) : null,
+        qtyText: null,
+        unit: item?.unit ? String(item.unit) : null,
+        confidence: item?.confidence != null ? Number(item.confidence) : null,
+        status: item?.confidence != null && Number(item.confidence) < 0.8 ? 'needs_review' : 'draft',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+    });
+
+    if (itemRows.length > 0) {
+      await db
+        .insert(takeoffItems)
+        .values(itemRows as any)
+        // avoid unique collisions in retries
+        .onConflictDoNothing();
+    }
+
     await db
       .update(documents)
       .set({ extractionStatus: 'completed', lineItemCount: values.length } as any)
