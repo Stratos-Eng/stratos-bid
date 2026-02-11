@@ -212,13 +212,45 @@ async function runJob(job: JobRow) {
 
     // IMPORTANT: the model cannot access local files directly. Provide extracted text.
     // We intentionally cap pages/chars to avoid pathological runtimes and token blowups.
+    // For DU40 (very large plan set), we target known signage schedule ranges (reference from estimator).
     const docTexts: Array<{ filename: string; pageRange: string; text: string }> = [];
-    for (const pdf of localPdfPaths) {
-      const pageCount = docs.find((d) => d.filename === pdf.filename)?.pageCount || 0;
+
+    const chooseRanges = (filename: string, pageCount: number) => {
+      const lower = filename.toLowerCase();
+
+      // MSF IDR 85% set (DU40): schedules live deep in the set.
+      if (lower.includes('du40') || lower.includes('msf_idr-cr_85p')) {
+        const ranges: Array<[number, number]> = [];
+
+        // Primary signage schedule / ID sheets (per Hamza reference)
+        if (pageCount >= 857) {
+          ranges.push([814, 857]);
+        } else if (pageCount >= 851) {
+          ranges.push([814, 851]);
+        } else if (pageCount >= 830) {
+          ranges.push([814, 830]);
+        }
+
+        // Add small front-matter slice for legends/notes
+        ranges.push([1, Math.min(25, Math.max(1, pageCount || 25))]);
+
+        return ranges;
+      }
+
+      // Default: first 30 pages
       const endPage = Math.max(1, Math.min(Number(pageCount) || 30, 30));
-      const text = await extractPdfText(pdf.path, 1, endPage);
-      const trimmed = (text || '').slice(0, 120_000);
-      docTexts.push({ filename: pdf.filename, pageRange: `1-${endPage}`, text: trimmed });
+      return [[1, endPage]] as Array<[number, number]>;
+    };
+
+    for (const pdf of localPdfPaths) {
+      const pageCount = Number(docs.find((d) => d.filename === pdf.filename)?.pageCount || 0);
+      const ranges = chooseRanges(pdf.filename, pageCount);
+
+      for (const [start, end] of ranges) {
+        const text = await extractPdfText(pdf.path, start, end);
+        const trimmed = (text || '').slice(0, 140_000);
+        docTexts.push({ filename: pdf.filename, pageRange: `${start}-${end}`, text: trimmed });
+      }
     }
 
     const attemptLogRel = `attempt_logs/${bidId}/${runId}.jsonl`;
@@ -228,6 +260,14 @@ async function runJob(job: JobRow) {
 GOAL: Detect signage quantities comprehensively from the provided bid PDFs (plans + schedules), with strong recall.
 
 You are provided extracted PDF TEXT (not the PDF files themselves). Use it to produce a takeoff.
+
+Estimator reference (DU40 target schedule area):
+- DU40 - MSF_IDR-CR_85P.pdf pages 814-857 (ZA-E1-110 to ZA-E5-202) contains MANY signage schedule items, including categories like C1/C3 Room ID, C2 Hydraulic/OH Doors, C4/C5 Stair IDs, C6 Evac Map, C7 Exit Route, C8 Max Occupancy, C10 In Case of Fire, C12 Rest Room ID (jamb), C12/13 context IDs, C15 Fire Extinguisher, etc. Expected totals are in the hundreds.
+
+CRITICAL OUTPUT REQUIREMENTS:
+- Maximize recall: enumerate ALL schedule rows / sign codes you can find, not just examples.
+- Prefer schedule-derived quantities over scattered plan callouts.
+- Include sources with filename + pageRange and sheetRef where possible.
 
 Return ONLY valid JSON with schema: {items:[{category,description,qty,unit,confidence,reviewFlags,sources:[{filename,page,sheetRef,evidence,whyAuthoritative}]}],discrepancyLog,missingItems,reviewFlags}`;
 
