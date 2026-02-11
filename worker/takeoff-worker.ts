@@ -20,6 +20,7 @@ import { db } from '@/db';
 import { documents, lineItems, takeoffJobs, takeoffJobDocuments, takeoffRuns, takeoffArtifacts, takeoffFindings, takeoffItems, takeoffItemEvidence } from '@/db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { downloadFile } from '@/lib/storage';
+import { openclawChatCompletions } from '@/lib/openclaw';
 import { scoreAllDocuments, formatScoresForLog, getTopDocument } from '@/extraction/scoring';
 import { detectSourceType, extractPdfText, tryFastPathExtraction } from '@/extraction/fast-path';
 import { estimatorTakeoffFromLocalPdfs } from '@/extraction/estimator-takeoff';
