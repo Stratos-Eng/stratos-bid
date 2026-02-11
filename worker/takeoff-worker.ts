@@ -114,7 +114,8 @@ async function downloadBidPdfsToTemp(input: {
     const outPath = join(tempDir, safeName);
 
     try {
-      await downloadFile(doc.storagePath, outPath);
+      const buf = await downloadFile(doc.storagePath);
+      await writeFile(outPath, buf);
       docIdBySafeName.set(safeName, doc.id);
       downloaded += 1;
     } catch (err) {
