@@ -33,13 +33,14 @@ export async function openclawChatCompletions(
 
   // Network can be flaky; instance-miner especially depends on this call.
   // Retry transient failures (fetch errors, 408/429/5xx) with exponential backoff.
-  const maxAttempts = Number(process.env.OPENCLAW_FETCH_RETRIES || 4);
+  const maxAttempts = Number(process.env.OPENCLAW_FETCH_RETRIES || 5);
 
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const controller = new AbortController();
-      const timeoutMs = Number(process.env.OPENCLAW_FETCH_TIMEOUT_MS || 120_000);
+      // Some takeoff calls include large docText payloads and can take several minutes.
+      const timeoutMs = Number(process.env.OPENCLAW_FETCH_TIMEOUT_MS || 600_000);
       const t = setTimeout(() => controller.abort(), timeoutMs);
 
       const res = await fetch(url, {
