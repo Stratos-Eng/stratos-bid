@@ -17,7 +17,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { db } from '@/db';
-import { documents, lineItems, takeoffJobs, takeoffJobDocuments, takeoffRuns, takeoffArtifacts, takeoffFindings, takeoffItems, takeoffItemEvidence } from '@/db/schema';
+import { documents, lineItems, takeoffJobs, takeoffJobDocuments, takeoffRuns, takeoffArtifacts, takeoffFindings, takeoffItems, takeoffItemEvidence, takeoffInstances, takeoffInstanceEvidence } from '@/db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { downloadFile } from '@/lib/storage';
 import { openclawChatCompletions } from '@/lib/openclaw';
@@ -390,6 +390,22 @@ Return ONLY valid JSON with schema: {items:[{category,description,qty,unit,confi
         .onConflictDoNothing();
     }
 
+    // Mine placements (instances) from the PDFs using the type codes we just stored.
+    // This is what drives "hundreds of placements" and enables estimator-style counting.
+    try {
+      const mined = await mineTakeoffInstances({
+        runId,
+        bidId,
+        userId: job.userId,
+        localBidFolder,
+        docIdBySafeName,
+        budgetMs: 18 * 60 * 1000,
+      });
+      console.log(`[takeoff-worker] instance-miner inserted~${mined.inserted} scannedPages=${mined.scannedPages} codes=${mined.codes}`);
+    } catch (e) {
+      console.warn('[takeoff-worker] instance-miner failed (non-fatal):', e instanceof Error ? e.message : String(e));
+    }
+
     await db
       .update(documents)
       .set({ extractionStatus: 'completed', lineItemCount: values.length } as any)
@@ -405,7 +421,9 @@ Return ONLY valid JSON with schema: {items:[{category,description,qty,unit,confi
       .set({ status: 'succeeded', updatedAt: new Date(), finishedAt: new Date() } as any)
       .where(eq(takeoffRuns.id, runId));
 
-    console.log(`[takeoff-worker] OpenClaw agentic extraction complete for bid ${bidId}: ${items.length} items`);
+    const [typeCountRow] = await db.select({ c: sql<number>`count(*)` }).from(takeoffItems).where(eq(takeoffItems.runId, runId));
+    const [instCountRow] = await db.select({ c: sql<number>`count(*)` }).from(takeoffInstances).where(eq(takeoffInstances.runId, runId));
+    console.log(`[takeoff-worker] OpenClaw agentic extraction complete for bid ${bidId}: ${items.length} types; placements=${Number(instCountRow?.c ?? 0)}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
 
