@@ -358,8 +358,9 @@ Return ONLY valid JSON with schema: {items:[{category,description,qty,unit,confi
       const keyBase = `${category}|${description}|${item?.unit ?? ''}`;
       const itemKey = `division_10:${createHash('sha256').update(keyBase).digest('hex').slice(0, 16)}`;
 
-      // Try to infer a short code prefix (e.g. C1, D2, WS-01) from description.
-      const m = /^\s*([A-Z]{1,3}[-]?(?:\d{1,3})?)\b/.exec(description);
+      // Try to infer a short code (e.g. C1, D2, WS-01) from description.
+      // Don't anchor to start; schedules often embed codes mid-string.
+      const m = /\b([A-Z]{1,3}-?\d{1,4})\b/.exec(description);
       const code = m?.[1] ? String(m[1]) : null;
 
       return {
