@@ -11,6 +11,7 @@ function stableUuid(input: string): string {
 import { deriveFindingsFromText } from './finding-utils';
 import { mineSignageEvidence, hashText } from './signage-evidence-miner';
 import { mineTakeoffInstances } from './instance-miner';
+import { discoverCodesFromOcrTiles, extractPlacementsFromTiles } from './du39-ocr-takeoff';
 import { extractPageTextWithFallback, getPdfPageCount } from './pdf-artifacts';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -205,10 +206,135 @@ async function runJob(job: JobRow) {
   });
 
   try {
-    // OpenClaw agentic extraction (single source of truth)
+    // Local PDFs available for extraction
     const localPdfPaths = Array.from(docIdBySafeName.keys())
       .filter((f) => f.toLowerCase().endsWith('.pdf'))
       .map((filename) => ({ filename, path: join(localBidFolder, filename) }));
+
+    // DU39 MVP: accuracy-first placements via tiled OCR (no hardcoded page ranges; only scoped by doc size)
+    // For small PDFs (<= 60 pages), run a tiled-OCR discovery+placement pass and persist placements directly.
+    // This is the estimator-style path (graphical labels) and should outperform pure text extraction.
+    for (const pdf of localPdfPaths) {
+      const pageCount = Number(docs.find((d) => d.filename === pdf.filename)?.pageCount || 0);
+      if (!pageCount || pageCount > 60) continue;
+
+      try {
+        const allTileTexts: string[] = [];
+        // lightweight sampling across the doc to discover repeating codes
+        const samplePages = Array.from(new Set([1, 2, 3, Math.ceil(pageCount / 2), Math.max(1, pageCount - 2), pageCount]));
+        for (const p of samplePages) {
+          const tiles = (await import('./tiled-ocr')).ocrTiledPage({ pdfPath: pdf.path, page: p, overlapPx: 20, dpi: 250, rows: 3, cols: 2 });
+          for (const t of tiles) if (t.text) allTileTexts.push(t.text);
+        }
+
+        const discoveredCodes = discoverCodesFromOcrTiles(allTileTexts);
+        if (discoveredCodes.length > 0) {
+          console.log(`[takeoff-worker] tiled-ocr discovered codes=${discoveredCodes.length} in ${pdf.filename}`);
+
+          const placementsNoOverlap: any[] = [];
+          const placementsOverlap: any[] = [];
+
+          for (let page = 1; page <= pageCount; page++) {
+            const noOv = extractPlacementsFromTiles({ pdfPath: pdf.path, page, codes: discoveredCodes, overlapPx: 0, dpi: 300 });
+            placementsNoOverlap.push(...noOv);
+
+            const ov = extractPlacementsFromTiles({ pdfPath: pdf.path, page, codes: discoveredCodes, overlapPx: 20, dpi: 300 });
+            placementsOverlap.push(...ov);
+          }
+
+          // Prefer no-overlap as baseline (no dupes), then add overlap-only placements that look new.
+          const key = (pl: any) => `${pl.pageNumber}:${pl.code}:${(pl.evidenceText || '').slice(0, 60)}`;
+          const seen = new Set(placementsNoOverlap.map(key));
+          const merged = [...placementsNoOverlap];
+          for (const pl of placementsOverlap) {
+            const k = key(pl);
+            if (!seen.has(k)) {
+              seen.add(k);
+              merged.push(pl);
+            }
+          }
+
+          // Insert types for this run from discovered codes (UI grouping)
+          const typeRows = discoveredCodes.slice(0, 250).map((code) => {
+            const itemKey = `code:${code}`;
+            return {
+              id: randomUUID(),
+              runId,
+              bidId,
+              userId: job.userId,
+              tradeCode: 'division_10',
+              itemKey,
+              code,
+              category: 'Signage',
+              description: code,
+              qtyNumber: null,
+              qtyText: null,
+              unit: 'EA',
+              confidence: 0.6,
+              status: 'needs_review',
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            };
+          });
+
+          if (typeRows.length > 0) {
+            await db.insert(takeoffItems).values(typeRows as any).onConflictDoNothing();
+          }
+
+          // Map code -> typeItemId for linking instances
+          const typeMapRows = await db
+            .select({ id: takeoffItems.id, code: takeoffItems.code })
+            .from(takeoffItems)
+            .where(eq(takeoffItems.runId, runId));
+          const codeToTypeId = new Map<string, string>();
+          for (const r of typeMapRows) if (r.code) codeToTypeId.set(String(r.code).toUpperCase(), r.id);
+
+          const documentId = docIdBySafeName.get(pdf.filename) || documentIds[0];
+
+          const instRows: any[] = [];
+          const evRows: any[] = [];
+
+          for (const pl of merged.slice(0, 8000)) {
+            const typeItemId = codeToTypeId.get(String(pl.code).toUpperCase()) || null;
+            const stable = stableUuid(`${runId}:${documentId}:${pl.pageNumber}:${pl.code}:${(pl.evidenceText || '').slice(0, 80)}`);
+
+            instRows.push({
+              id: stable,
+              runId,
+              bidId,
+              userId: job.userId,
+              typeItemId,
+              sourceKind: 'evidence',
+              status: 'needs_review',
+              confidence: 0.65,
+              meta: { ...pl.meta, code: pl.code },
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            });
+
+            evRows.push({
+              instanceId: stable,
+              documentId,
+              pageNumber: pl.pageNumber,
+              evidenceText: String(pl.evidenceText || '').slice(0, 900),
+              evidence: { filename: pdf.filename, code: pl.code, ...pl.meta?.tile },
+              weight: 1,
+              createdAt: new Date(),
+            });
+          }
+
+          if (instRows.length > 0) {
+            await db.insert(takeoffInstances).values(instRows).onConflictDoNothing();
+            await db.insert(takeoffInstanceEvidence).values(evRows).onConflictDoNothing();
+            console.log(`[takeoff-worker] tiled-ocr inserted placements=${instRows.length} for ${pdf.filename}`);
+          }
+        }
+      } catch (e) {
+        console.warn('[takeoff-worker] tiled-ocr pass failed (non-fatal):', e instanceof Error ? e.message : String(e));
+      }
+    }
+
+    // OpenClaw agentic extraction (types/schedule-derived quantities)
 
     // IMPORTANT: the model cannot access local files directly. Provide extracted text.
     // We intentionally cap pages/chars to avoid pathological runtimes and token blowups.
