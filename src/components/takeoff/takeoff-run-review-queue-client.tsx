@@ -22,6 +22,8 @@ type TakeoffInstance = {
   typeCode: string | null;
   typeDescription: string | null;
   meta: any;
+  evidenceDocId?: string | null;
+  evidencePageNumber?: number | null;
 };
 
 type InstanceSummary = { total: number; needs_review: number; inferred: number; counted: number };
@@ -73,6 +75,7 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
   const [filter, setFilter] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(true);
   const [sourcesOpen, setSourcesOpen] = useState(true);
+  const [selectedTypeKey, setSelectedTypeKey] = useState<string | null>(null);
 
   const [instances, setInstances] = useState<TakeoffInstance[]>([]);
   const [summary, setSummary] = useState<InstanceSummary | null>(null);
@@ -175,14 +178,48 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedInstanceId]);
 
+  const typeGroups = useMemo(() => {
+    const m = new Map<string, { key: string; code: string; desc: string; count: number; pages: Array<{ docId: string; page: number }> }>();
+    for (const inst of instances) {
+      const code = (inst.typeCode || '—').trim();
+      const desc = (inst.typeDescription || '').trim();
+      const key = `${code}||${desc}`;
+      const g = m.get(key) || { key, code, desc, count: 0, pages: [] as Array<{ docId: string; page: number }> };
+      g.count += 1;
+      const d = inst.evidenceDocId;
+      const p = inst.evidencePageNumber;
+      if (d && p) g.pages.push({ docId: d, page: p });
+      m.set(key, g);
+    }
+
+    const groups = Array.from(m.values());
+    for (const g of groups) {
+      // de-dupe pages
+      const seen = new Set<string>();
+      const out: Array<{ docId: string; page: number }> = [];
+      for (const x of g.pages) {
+        const k = `${x.docId}:${x.page}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        out.push(x);
+      }
+      out.sort((a, b) => (a.page - b.page));
+      g.pages = out;
+    }
+
+    groups.sort((a, b) => b.count - a.count || a.code.localeCompare(b.code));
+    return groups;
+  }, [instances]);
+
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    if (!q) return instances;
-    return instances.filter((it) => {
+    const base = selectedTypeKey ? instances.filter((it) => `${(it.typeCode || '—').trim()}||${(it.typeDescription || '').trim()}` === selectedTypeKey) : instances;
+    if (!q) return base;
+    return base.filter((it) => {
       const hay = `${it.typeCode || ''} ${it.typeDescription || ''} ${it.status} ${it.sourceKind}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [instances, filter]);
+  }, [instances, filter, selectedTypeKey]);
 
   const highlightTerms = useMemo(() => {
     const terms: string[] = [];
@@ -313,52 +350,100 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
           <div className="absolute top-0 left-0 bottom-0 w-full md:w-[420px] max-w-[92vw] bg-white border-r shadow-lg flex flex-col">
             <div className="p-3 border-b flex items-center justify-between gap-2">
               <div>
-                <div className="text-sm font-medium">Placements</div>
-                <div className="text-xs text-muted-foreground">{filtered.length} / {instances.length}</div>
+                <div className="text-sm font-medium">Types</div>
+                <div className="text-xs text-muted-foreground">{typeGroups.length} types · {summary?.total ?? instances.length} placements</div>
               </div>
               <Button variant="ghost" onClick={() => setDrawerOpen(false)}>Close</Button>
             </div>
+
             <div className="p-3 border-b space-y-2">
-              <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter placements…" />
-              {selectedInstanceId ? (
-                <div className="flex gap-2">
-                  <Button size="sm" onClick={() => setInstanceStatus(selectedInstanceId, 'counted')}>Accept</Button>
-                  <Button size="sm" variant="outline" onClick={() => setInstanceStatus(selectedInstanceId, 'needs_review')}>Flag</Button>
-                  <Button size="sm" variant="destructive" onClick={() => setInstanceStatus(selectedInstanceId, 'excluded')}>Reject</Button>
-                </div>
-              ) : null}
+              <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter types/placements…" />
+
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant={selectedTypeKey ? 'outline' : 'default'} onClick={() => setSelectedTypeKey(null)}>
+                  All types
+                </Button>
+                {selectedTypeKey ? (
+                  <Button size="sm" variant="outline" onClick={() => {
+                    const g = typeGroups.find((x) => x.key === selectedTypeKey);
+                    const first = g?.pages?.[0];
+                    if (first) { setDocId(first.docId); setPage(first.page); }
+                  }}>
+                    Jump to first page
+                  </Button>
+                ) : null}
+
+                {selectedInstanceId ? (
+                  <>
+                    <Button size="sm" onClick={() => setInstanceStatus(selectedInstanceId, 'counted')}>Accept</Button>
+                    <Button size="sm" variant="outline" onClick={() => setInstanceStatus(selectedInstanceId, 'needs_review')}>Flag</Button>
+                    <Button size="sm" variant="destructive" onClick={() => setInstanceStatus(selectedInstanceId, 'excluded')}>Reject</Button>
+                  </>
+                ) : null}
+              </div>
             </div>
+
             <div className="flex-1 overflow-auto">
               {loadingInstances && (
                 <div className="p-4 text-sm text-muted-foreground">Loading…</div>
               )}
-              {!loadingInstances && filtered.length === 0 && (
-                <div className="p-4 text-sm text-muted-foreground">No placements.</div>
-              )}
-              {!loadingInstances && filtered.map((it) => {
-                const active = it.id === selectedInstanceId;
+
+              {!loadingInstances && typeGroups.map((g) => {
+                const active = g.key === selectedTypeKey;
                 return (
                   <button
-                    key={it.id}
+                    key={g.key}
                     className={`w-full text-left px-3 py-2 border-b hover:bg-gray-50 ${active ? 'bg-blue-50' : ''}`}
                     onClick={() => {
-                      setSelectedInstanceId(it.id);
-                      setDrawerOpen(false);
+                      setSelectedTypeKey(g.key);
+                      // auto-jump to first page that contains this type if we have it
+                      const first = g.pages?.[0];
+                      if (first) { setDocId(first.docId); setPage(first.page); }
                     }}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="font-medium text-sm leading-tight">
-                        {it.typeCode ? <span className="font-mono text-xs mr-2">{it.typeCode}</span> : null}
-                        {it.typeDescription || 'Placement'}
+                        <span className="font-mono text-xs mr-2">{g.code}</span>
+                        {g.desc || 'Sign type'}
                       </div>
-                      <div className={`text-xs ${confClass(it.confidence)}`}>{confLabel(it.confidence)}</div>
+                      <div className="text-xs text-muted-foreground">{g.count}</div>
                     </div>
                     <div className="text-xs text-muted-foreground mt-1">
-                      {it.status} · {it.sourceKind}
+                      {g.pages.length ? `${g.pages.length} pages` : 'pages unknown (open evidence to navigate)'}
                     </div>
                   </button>
                 );
               })}
+
+              {/* Placements list (within selected type) */}
+              {!loadingInstances && selectedTypeKey && (
+                <div className="border-t">
+                  <div className="px-3 py-2 text-xs text-muted-foreground">Placements in this type: {filtered.length}</div>
+                  {filtered.map((it) => {
+                    const active = it.id === selectedInstanceId;
+                    return (
+                      <button
+                        key={it.id}
+                        className={`w-full text-left px-3 py-2 border-b hover:bg-gray-50 ${active ? 'bg-blue-50' : ''}`}
+                        onClick={() => {
+                          setSelectedInstanceId(it.id);
+                          setDrawerOpen(false);
+                        }}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="text-sm leading-tight">
+                            {it.status} · {it.sourceKind}
+                          </div>
+                          <div className={`text-xs ${confClass(it.confidence)}`}>{confLabel(it.confidence)}</div>
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-1">
+                          {it.evidencePageNumber ? `p${it.evidencePageNumber}` : ''}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         )}

@@ -37,6 +37,32 @@ export async function GET(
     .where(and(eq(takeoffInstances.runId, runId), eq(takeoffInstances.userId, session.user.id)))
     .limit(500);
 
+  // Best-effort: attach one "best" evidence pointer to each instance so the UI can group/navigate by page
+  // without fetching evidence for every row.
+  const ids = rows.map((r) => r.id);
+  const evMap = new Map<string, { documentId: string; pageNumber: number | null }>();
+  if (ids.length) {
+    const evRows = await db.execute(sql`
+      select distinct on (instance_id)
+        instance_id,
+        document_id,
+        page_number
+      from takeoff_instance_evidence
+      where instance_id = any(${ids}::uuid[])
+      order by instance_id, weight desc nulls last, created_at asc
+    `);
+    const list = ((evRows as any)?.rows ?? evRows ?? []) as any[];
+    for (const r of list) {
+      evMap.set(String(r.instance_id), { documentId: String(r.document_id), pageNumber: r.page_number == null ? null : Number(r.page_number) });
+    }
+  }
+
+  const rowsWithEv = rows.map((r) => ({
+    ...r,
+    evidenceDocId: evMap.get(r.id)?.documentId || null,
+    evidencePageNumber: evMap.get(r.id)?.pageNumber ?? null,
+  }));
+
   const summary = await db.execute(sql`
     select
       count(*)::int as total,
@@ -51,7 +77,7 @@ export async function GET(
 
   return NextResponse.json({
     summary: srow || { total: 0, needs_review: 0, inferred: 0, counted: 0 },
-    instances: rows,
+    instances: rowsWithEv,
   });
 }
 
