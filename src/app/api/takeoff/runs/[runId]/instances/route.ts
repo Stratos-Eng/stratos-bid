@@ -42,13 +42,17 @@ export async function GET(
   const ids = rows.map((r) => r.id);
   const evMap = new Map<string, { documentId: string; pageNumber: number | null }>();
   if (ids.length) {
+    // NOTE: Passing a JS array as a single SQL parameter and then casting (`${ids}::uuid[]`)
+    // can break depending on the driver/Drizzle serialization (it may arrive as text/json rather than a PG uuid[]).
+    // Build a typed uuid[] via `array[ ... ]::uuid[]` with individually casted params instead.
+    const idExprs = ids.map((id) => sql`${id}::uuid`);
     const evRows = await db.execute(sql`
       select distinct on (instance_id)
         instance_id,
         document_id,
         page_number
       from takeoff_instance_evidence
-      where instance_id = any(${ids}::uuid[])
+      where instance_id = any(array[${sql.join(idExprs, sql`, `)}]::uuid[])
       order by instance_id, weight desc nulls last, created_at asc
     `);
     const list = ((evRows as any)?.rows ?? evRows ?? []) as any[];
