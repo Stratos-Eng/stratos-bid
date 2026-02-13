@@ -2,8 +2,8 @@ import { NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import * as XLSX from 'xlsx';
 import { db } from '@/db';
-import { documents, takeoffFindings, takeoffItemEvidence, takeoffItems, takeoffRuns } from '@/db/schema';
-import { and, eq, inArray } from 'drizzle-orm';
+import { documents, takeoffFindings, takeoffItemEvidence, takeoffItems, takeoffRuns, takeoffInstances } from '@/db/schema';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 
 export async function GET(
   _req: Request,
@@ -66,6 +66,38 @@ export async function GET(
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Takeoff Items');
+
+  // Placements (instances) grouped by type for estimator workflows
+  const placementAgg = await db.execute(sql`
+    select
+      ti.trade_code as trade,
+      coalesce(ti.code, '') as code,
+      ti.category as category,
+      ti.description as description,
+      count(*)::int as placements_total,
+      sum(case when inst.status = 'counted' then 1 else 0 end)::int as counted,
+      sum(case when inst.status = 'needs_review' then 1 else 0 end)::int as needs_review,
+      sum(case when inst.source_kind = 'inferred' then 1 else 0 end)::int as inferred
+    from takeoff_instances inst
+    left join takeoff_items ti on ti.id = inst.type_item_id
+    where inst.run_id = ${runId} and inst.user_id = ${userId}
+    group by ti.trade_code, ti.code, ti.category, ti.description
+    order by ti.trade_code asc, ti.code asc, ti.category asc, ti.description asc
+  `);
+
+  const placementRows = ((placementAgg as any)?.rows ?? placementAgg ?? []).map((r: any) => ({
+    trade: r.trade || '',
+    code: r.code || '',
+    category: r.category || '',
+    description: r.description || '',
+    placementsTotal: r.placements_total ?? r.placementsTotal ?? '',
+    counted: r.counted ?? '',
+    needsReview: r.needs_review ?? r.needsReview ?? '',
+    inferred: r.inferred ?? '',
+  }));
+
+  const ws2 = XLSX.utils.json_to_sheet(placementRows);
+  XLSX.utils.book_append_sheet(wb, ws2, 'Placements');
 
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 

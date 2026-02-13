@@ -84,9 +84,48 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
     }
   }
 
+  const [mode, setMode] = useState<'items' | 'instances'>('items');
+
   const [items, setItems] = useState<TakeoffItem[]>([]);
   const [loadingItems, setLoadingItems] = useState(true);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+
+  type TakeoffInstance = {
+    id: string;
+    runId: string;
+    bidId: string;
+    userId: string;
+    typeItemId: string | null;
+    sourceKind: string;
+    status: string;
+    confidence: number | null;
+    createdAt: string;
+    updatedAt: string;
+    typeCode: string | null;
+    typeDescription: string | null;
+    meta: any;
+  };
+
+  type InstanceSummary = { total: number; needs_review: number; inferred: number; counted: number };
+
+  type InstanceEvidenceRow = {
+    instanceId: string;
+    documentId: string;
+    pageNumber: number | null;
+    evidenceText: string | null;
+    evidence: any;
+    weight: number | null;
+    createdAt: string;
+  };
+
+  const [instances, setInstances] = useState<TakeoffInstance[]>([]);
+  const [instanceSummary, setInstanceSummary] = useState<InstanceSummary | null>(null);
+  const [loadingInstances, setLoadingInstances] = useState(false);
+  const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null);
+
+  const [instanceEvidence, setInstanceEvidence] = useState<InstanceEvidenceRow[]>([]);
+  const [loadingInstanceEvidence, setLoadingInstanceEvidence] = useState(false);
+  const [selectedInstanceEvidenceKey, setSelectedInstanceEvidenceKey] = useState<string | null>(null);
 
   const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
   const [loadingEvidence, setLoadingEvidence] = useState(false);
@@ -114,6 +153,20 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
     () => evidence.find((e) => e.finding.id === selectedEvidenceId) || null,
     [evidence, selectedEvidenceId]
   );
+
+  const selectedInstance = useMemo(
+    () => instances.find((i) => i.id === selectedInstanceId) || null,
+    [instances, selectedInstanceId]
+  );
+
+  const selectedInstanceEvidence = useMemo(() => {
+    if (!selectedInstanceEvidenceKey) return null;
+    const [instanceId, ix] = selectedInstanceEvidenceKey.split(':');
+    const idx = Number(ix);
+    if (!instanceId || !Number.isFinite(idx)) return null;
+    if (instanceId !== selectedInstanceId) return null;
+    return instanceEvidence[idx] || null;
+  }, [selectedInstanceEvidenceKey, selectedInstanceId, instanceEvidence]);
 
   // Current drawing target
   const [docId, setDocId] = useState<string | null>(null);
@@ -172,6 +225,46 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
     }
   }
 
+  async function loadInstances() {
+    setLoadingInstances(true);
+    try {
+      const res = await fetch(`/api/takeoff/runs/${runId}/instances`, { cache: 'no-store' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to load instances');
+      const list = (data.instances || []) as TakeoffInstance[];
+      setInstanceSummary((data.summary || null) as InstanceSummary | null);
+      setInstances(list);
+      if (!selectedInstanceId && list[0]) setSelectedInstanceId(list[0].id);
+    } catch (err) {
+      addToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to load instances' });
+    } finally {
+      setLoadingInstances(false);
+    }
+  }
+
+  async function loadInstanceEvidence(instanceId: string) {
+    setLoadingInstanceEvidence(true);
+    setInstanceEvidence([]);
+    setSelectedInstanceEvidenceKey(null);
+    try {
+      const res = await fetch(`/api/takeoff/instances/${instanceId}/evidence`, { cache: 'no-store' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to load instance evidence');
+      const ev = (data.evidence || []) as InstanceEvidenceRow[];
+      setInstanceEvidence(ev);
+      const bestIdx = ev.findIndex((x) => x.pageNumber != null);
+      const idx = bestIdx >= 0 ? bestIdx : 0;
+      if (ev[idx]) {
+        setSelectedInstanceEvidenceKey(`${instanceId}:${idx}`);
+        jumpToInstanceEvidence(ev[idx]);
+      }
+    } catch (err) {
+      addToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to load instance evidence' });
+    } finally {
+      setLoadingInstanceEvidence(false);
+    }
+  }
+
   async function loadEvidence(itemId: string) {
     setLoadingEvidence(true);
     setEvidence([]);
@@ -198,6 +291,13 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
   function jumpToFinding(row: EvidenceRow) {
     const d = row.finding.documentId;
     const p = row.finding.pageNumber || (row.finding.evidence?.page as number | undefined) || 1;
+    if (d) setDocId(d);
+    setPage(p);
+  }
+
+  function jumpToInstanceEvidence(row: InstanceEvidenceRow) {
+    const d = row.documentId;
+    const p = row.pageNumber || (row.evidence?.page as number | undefined) || 1;
     if (d) setDocId(d);
     setPage(p);
   }
@@ -229,10 +329,18 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
   }, [runId]);
 
   useEffect(() => {
+    if (mode !== 'items') return;
     if (!selectedItemId) return;
     loadEvidence(selectedItemId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedItemId]);
+  }, [mode, selectedItemId]);
+
+  useEffect(() => {
+    if (mode !== 'instances') return;
+    if (!selectedInstanceId) return;
+    loadInstanceEvidence(selectedInstanceId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, selectedInstanceId]);
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -243,8 +351,35 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
     });
   }, [items, filter]);
 
+  const filteredInstances = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return instances;
+    return instances.filter((it) => {
+      const hay = `${it.typeCode || ''} ${it.typeDescription || ''} ${it.status} ${it.sourceKind}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [instances, filter]);
+
   const highlightTerms = useMemo(() => {
     const terms: string[] = [];
+
+    if (mode === 'instances') {
+      if (selectedInstance?.typeCode) terms.push(selectedInstance.typeCode);
+      const t = (selectedInstanceEvidence?.evidenceText || '').trim();
+      if (t) {
+        const tokens = t
+          .replace(/[^a-zA-Z0-9\s-]+/g, ' ')
+          .split(/\s+/)
+          .map((x) => x.trim())
+          .filter((x) => x.length >= 4)
+          .filter((x) => !/^(this|that|with|from|sheet|page|signs|sign|type|qty|each|provide|install)$/i.test(x));
+        for (const tok of tokens.slice(0, 6)) {
+          if (!terms.includes(tok)) terms.push(tok);
+        }
+      }
+      return terms.slice(0, 8);
+    }
+
     if (selectedItem?.code) terms.push(selectedItem.code);
 
     const t = (selectedEvidence?.finding.evidenceText || '').trim();
@@ -291,6 +426,23 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
           <span className="ml-2 text-xs text-muted-foreground">(auto)</span>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant={mode === 'items' ? 'default' : 'outline'}
+            onClick={() => setMode('items')}
+          >
+            Items ({items.length})
+          </Button>
+          <Button
+            size="sm"
+            variant={mode === 'instances' ? 'default' : 'outline'}
+            onClick={() => {
+              setMode('instances');
+              if (instances.length === 0) loadInstances();
+            }}
+          >
+            Placements ({instanceSummary?.total ?? instances.length})
+          </Button>
           <Button variant="outline" size="sm" title={drawerOpen ? 'Hide items' : 'Show items'} onClick={() => setDrawerOpen((v) => !v)}>
             <span className="sr-only">{drawerOpen ? 'Hide items' : 'Show items'}</span>
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -315,7 +467,20 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
               <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
             </svg>
           </Button>
-          <Button variant="outline" size="sm" title="Refresh" onClick={() => { loadItems(); loadCoverage(); }} disabled={loadingItems || loadingCoverage}>
+          <Button
+            variant="outline"
+            size="sm"
+            title="Refresh"
+            onClick={() => {
+              if (mode === 'items') {
+                loadItems();
+                loadCoverage();
+              } else {
+                loadInstances();
+              }
+            }}
+            disabled={(mode === 'items' ? loadingItems || loadingCoverage : loadingInstances)}
+          >
             <span className="sr-only">Refresh</span>
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 12a9 9 0 1 1-2.64-6.36" />
@@ -354,25 +519,39 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
           <div className="absolute left-0 right-0 bottom-0 p-3 bg-white/90 backdrop-blur border-t max-h-[35vh] overflow-auto">
           <div className="flex items-center justify-between gap-3 mb-2">
             <div className="text-sm">
-              <span className="font-medium">{selectedItem ? selectedItem.description : 'No item selected'}</span>
-              {selectedItem && (
+              <span className="font-medium">
+                {mode === 'instances'
+                  ? (selectedInstance ? `${selectedInstance.typeCode || '—'} ${selectedInstance.typeDescription || ''}`.trim() : 'No placement selected')
+                  : (selectedItem ? selectedItem.description : 'No item selected')}
+              </span>
+              {mode === 'items' && selectedItem && (
                 <span className="ml-2 text-xs text-muted-foreground">
                   {selectedItem.code ? `${selectedItem.code} · ` : ''}{selectedItem.category} · {selectedItem.qtyNumber ?? selectedItem.qtyText ?? '—'} {selectedItem.unit || ''}
                   {' · '}
                   <span className={confClass(selectedItem.confidence)}>{confLabel(selectedItem.confidence)}</span>
                 </span>
               )}
+              {mode === 'instances' && selectedInstance && (
+                <span className="ml-2 text-xs text-muted-foreground">
+                  {selectedInstance.status} · {selectedInstance.sourceKind}
+                  {' · '}
+                  <span className={confClass(selectedInstance.confidence)}>{confLabel(selectedInstance.confidence)}</span>
+                </span>
+              )}
             </div>
             <div className="text-xs text-muted-foreground">
-              {loadingEvidence ? 'Loading sources…' : `${evidence.length} sources`}
+              {mode === 'instances'
+                ? (loadingInstanceEvidence ? 'Loading sources…' : `${instanceEvidence.length} sources`)
+                : (loadingEvidence ? 'Loading sources…' : `${evidence.length} sources`)}
             </div>
           </div>
 
           <div className="flex gap-2 overflow-auto pb-1">
-            {evidence.length === 0 && !loadingEvidence && (
+            {mode === 'items' && evidence.length === 0 && !loadingEvidence && (
               <div className="text-sm text-muted-foreground">No sources yet (needs review).</div>
             )}
-            {evidence.map((row) => {
+
+            {mode === 'items' && evidence.map((row) => {
               const ev = row.finding.evidence || {};
               const label = `${ev.filename || 'file'} p${row.finding.pageNumber ?? ev.page ?? '—'}${ev.sheetRef ? ` (${ev.sheetRef})` : ''}`;
               const active = row.finding.id === selectedEvidenceId;
@@ -388,6 +567,31 @@ export function TakeoffRunSeamlessClient({ bidId, runId }: { bidId: string; runI
                 >
                   <div className="font-mono truncate">{label}</div>
                   <div className="truncate text-muted-foreground">{row.finding.type}{row.link.note ? ` · ${row.link.note}` : ''}</div>
+                </button>
+              );
+            })}
+
+            {mode === 'instances' && instanceEvidence.length === 0 && !loadingInstanceEvidence && (
+              <div className="text-sm text-muted-foreground">No sources yet (needs review).</div>
+            )}
+
+            {mode === 'instances' && instanceEvidence.map((row, idx) => {
+              const ev = row.evidence || {};
+              const label = `${ev.filename || 'file'} p${row.pageNumber ?? ev.page ?? '—'}`;
+              const key = `${row.instanceId}:${idx}`;
+              const active = key === selectedInstanceEvidenceKey;
+              return (
+                <button
+                  key={key}
+                  className={`min-w-[240px] max-w-[360px] text-left border rounded px-2 py-1 text-xs hover:bg-gray-50 ${active ? 'bg-blue-50 border-blue-300' : 'bg-white'}`}
+                  onClick={() => {
+                    setSelectedInstanceEvidenceKey(key);
+                    jumpToInstanceEvidence(row);
+                  }}
+                  title={row.evidenceText || ''}
+                >
+                  <div className="font-mono truncate">{label}</div>
+                  <div className="truncate text-muted-foreground">{ev.code || ''}</div>
                 </button>
               );
             })}
