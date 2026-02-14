@@ -76,6 +76,7 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
   const [drawerOpen, setDrawerOpen] = useState(true);
   const [sourcesOpen, setSourcesOpen] = useState(true);
   const [selectedTypeKey, setSelectedTypeKey] = useState<string | null>(null);
+  const [selectedTypeDocId, setSelectedTypeDocId] = useState<string | null>(null);
   const [selectedTypePage, setSelectedTypePage] = useState<number | null>(null);
 
   const [instances, setInstances] = useState<TakeoffInstance[]>([]);
@@ -214,23 +215,40 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
 
   const selectedType = useMemo(() => typeGroups.find((g) => g.key === selectedTypeKey) || null, [typeGroups, selectedTypeKey]);
 
-  const selectedTypePages = useMemo(() => {
-    if (!selectedTypeKey) return [] as Array<{ page: number; docId: string; count: number }>;
-
-    // group placements by page for the selected type (using the fast evidence pointers)
-    const m = new Map<string, { page: number; docId: string; count: number }>();
+  const selectedTypeDocs = useMemo(() => {
+    if (!selectedTypeKey) return [] as Array<{ docId: string; count: number }>;
+    const m = new Map<string, number>();
     for (const inst of instances) {
       const k = `${(inst.typeCode || '—').trim()}||${(inst.typeDescription || '').trim()}`;
       if (k !== selectedTypeKey) continue;
-      if (!inst.evidenceDocId || !inst.evidencePageNumber) continue;
-      const key = `${inst.evidenceDocId}:${inst.evidencePageNumber}`;
-      const row = m.get(key) || { page: inst.evidencePageNumber, docId: inst.evidenceDocId, count: 0 };
-      row.count += 1;
-      m.set(key, row);
+      if (!inst.evidenceDocId) continue;
+      m.set(inst.evidenceDocId, (m.get(inst.evidenceDocId) || 0) + 1);
+    }
+    return Array.from(m.entries())
+      .map(([docId, count]) => ({ docId, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [instances, selectedTypeKey]);
+
+  const selectedTypePages = useMemo(() => {
+    if (!selectedTypeKey) return [] as Array<{ page: number; docId: string; count: number }>;
+
+    const docId = selectedTypeDocId || selectedTypeDocs[0]?.docId || null;
+    if (!docId) return [] as Array<{ page: number; docId: string; count: number }>;
+
+    // group placements by page for the selected type (using the fast evidence pointers)
+    const m = new Map<number, number>();
+    for (const inst of instances) {
+      const k = `${(inst.typeCode || '—').trim()}||${(inst.typeDescription || '').trim()}`;
+      if (k !== selectedTypeKey) continue;
+      if (inst.evidenceDocId !== docId) continue;
+      if (!inst.evidencePageNumber) continue;
+      m.set(inst.evidencePageNumber, (m.get(inst.evidencePageNumber) || 0) + 1);
     }
 
-    return Array.from(m.values()).sort((a, b) => a.page - b.page);
-  }, [instances, selectedTypeKey]);
+    return Array.from(m.entries())
+      .map(([page, count]) => ({ page, docId, count }))
+      .sort((a, b) => a.page - b.page);
+  }, [instances, selectedTypeKey, selectedTypeDocId, selectedTypeDocs]);
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -240,7 +258,7 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
       : instances;
 
     const base = selectedTypePage
-      ? base0.filter((it) => (it.evidencePageNumber || null) === selectedTypePage)
+      ? base0.filter((it) => (it.evidenceDocId || null) === (selectedTypeDocId || null) && (it.evidencePageNumber || null) === selectedTypePage)
       : base0;
 
     if (!q) return base;
@@ -389,7 +407,7 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
               <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter types/placements…" />
 
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant={selectedTypeKey ? 'outline' : 'default'} onClick={() => { setSelectedTypeKey(null); setSelectedTypePage(null); }}>
+                <Button size="sm" variant={selectedTypeKey ? 'outline' : 'default'} onClick={() => { setSelectedTypeKey(null); setSelectedTypeDocId(null); setSelectedTypePage(null); }}>
                   All types
                 </Button>
 
@@ -398,6 +416,27 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
                     <div className="text-xs text-muted-foreground mt-1">
                       Reviewing: <span className="font-mono">{selectedType.code}</span> · {selectedType.count} placements
                     </div>
+
+                    {/* Doc chips */}
+                    <div className="flex gap-2 overflow-auto pt-2">
+                      {selectedTypeDocs.length ? selectedTypeDocs.map((d) => (
+                        <Button
+                          key={d.docId}
+                          size="sm"
+                          variant={(selectedTypeDocId || selectedTypeDocs[0]?.docId) === d.docId ? 'default' : 'outline'}
+                          onClick={() => {
+                            setSelectedTypeDocId(d.docId);
+                            setSelectedTypePage(null);
+                          }}
+                        >
+                          Doc ({d.count})
+                        </Button>
+                      )) : (
+                        <div className="text-xs text-muted-foreground">No doc pointers yet (use Sources to navigate).</div>
+                      )}
+                    </div>
+
+                    {/* Page chips */}
                     <div className="flex gap-2 overflow-auto py-2">
                       {selectedTypePages.length ? selectedTypePages.map((p) => (
                         <Button
@@ -405,6 +444,7 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
                           size="sm"
                           variant={selectedTypePage === p.page ? 'default' : 'outline'}
                           onClick={() => {
+                            setSelectedTypeDocId(p.docId);
                             setSelectedTypePage(p.page);
                             setDocId(p.docId);
                             setPage(p.page);
@@ -442,10 +482,12 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
                     className={`w-full text-left px-3 py-2 border-b hover:bg-gray-50 ${active ? 'bg-blue-50' : ''}`}
                     onClick={() => {
                       setSelectedTypeKey(g.key);
+                      setSelectedTypeDocId(null);
                       setSelectedTypePage(null);
                       // auto-jump to first page that contains this type if we have it
                       const first = g.pages?.[0];
                       if (first) {
+                        setSelectedTypeDocId(first.docId);
                         setSelectedTypePage(first.page);
                         setDocId(first.docId);
                         setPage(first.page);
