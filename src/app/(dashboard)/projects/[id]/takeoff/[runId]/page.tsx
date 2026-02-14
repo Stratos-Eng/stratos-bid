@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { TakeoffRunReviewQueueClient } from '@/components/takeoff/takeoff-run-review-queue-client';
+import { TakeoffRunSimpleReviewClient } from '@/components/takeoff/takeoff-run-simple-review-client';
 
 export default async function TakeoffRunPage({
   params,
@@ -15,7 +15,7 @@ export default async function TakeoffRunPage({
         <Link className="underline text-sm" href={`/projects/${bidId}`}>Back to project</Link>
       </div>
       <div className="flex-1 min-h-0">
-        <TakeoffRunReviewQueueClient bidId={bidId} runId={runId} />
+        <TakeoffRunSimpleReviewClient bidId={bidId} runId={runId} />
       </div>
     </div>
   );
