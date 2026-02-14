@@ -76,6 +76,7 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
   const [drawerOpen, setDrawerOpen] = useState(true);
   const [sourcesOpen, setSourcesOpen] = useState(true);
   const [selectedTypeKey, setSelectedTypeKey] = useState<string | null>(null);
+  const [selectedTypePage, setSelectedTypePage] = useState<number | null>(null);
 
   const [instances, setInstances] = useState<TakeoffInstance[]>([]);
   const [summary, setSummary] = useState<InstanceSummary | null>(null);
@@ -211,15 +212,43 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
     return groups;
   }, [instances]);
 
+  const selectedType = useMemo(() => typeGroups.find((g) => g.key === selectedTypeKey) || null, [typeGroups, selectedTypeKey]);
+
+  const selectedTypePages = useMemo(() => {
+    if (!selectedTypeKey) return [] as Array<{ page: number; docId: string; count: number }>;
+
+    // group placements by page for the selected type (using the fast evidence pointers)
+    const m = new Map<string, { page: number; docId: string; count: number }>();
+    for (const inst of instances) {
+      const k = `${(inst.typeCode || '—').trim()}||${(inst.typeDescription || '').trim()}`;
+      if (k !== selectedTypeKey) continue;
+      if (!inst.evidenceDocId || !inst.evidencePageNumber) continue;
+      const key = `${inst.evidenceDocId}:${inst.evidencePageNumber}`;
+      const row = m.get(key) || { page: inst.evidencePageNumber, docId: inst.evidenceDocId, count: 0 };
+      row.count += 1;
+      m.set(key, row);
+    }
+
+    return Array.from(m.values()).sort((a, b) => a.page - b.page);
+  }, [instances, selectedTypeKey]);
+
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    const base = selectedTypeKey ? instances.filter((it) => `${(it.typeCode || '—').trim()}||${(it.typeDescription || '').trim()}` === selectedTypeKey) : instances;
+
+    const base0 = selectedTypeKey
+      ? instances.filter((it) => `${(it.typeCode || '—').trim()}||${(it.typeDescription || '').trim()}` === selectedTypeKey)
+      : instances;
+
+    const base = selectedTypePage
+      ? base0.filter((it) => (it.evidencePageNumber || null) === selectedTypePage)
+      : base0;
+
     if (!q) return base;
     return base.filter((it) => {
       const hay = `${it.typeCode || ''} ${it.typeDescription || ''} ${it.status} ${it.sourceKind}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [instances, filter, selectedTypeKey]);
+  }, [instances, filter, selectedTypeKey, selectedTypePage]);
 
   const highlightTerms = useMemo(() => {
     const terms: string[] = [];
@@ -360,17 +389,34 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
               <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter types/placements…" />
 
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant={selectedTypeKey ? 'outline' : 'default'} onClick={() => setSelectedTypeKey(null)}>
+                <Button size="sm" variant={selectedTypeKey ? 'outline' : 'default'} onClick={() => { setSelectedTypeKey(null); setSelectedTypePage(null); }}>
                   All types
                 </Button>
-                {selectedTypeKey ? (
-                  <Button size="sm" variant="outline" onClick={() => {
-                    const g = typeGroups.find((x) => x.key === selectedTypeKey);
-                    const first = g?.pages?.[0];
-                    if (first) { setDocId(first.docId); setPage(first.page); }
-                  }}>
-                    Jump to first page
-                  </Button>
+
+                {selectedType ? (
+                  <div className="w-full">
+                    <div className="text-xs text-muted-foreground mt-1">
+                      Reviewing: <span className="font-mono">{selectedType.code}</span> · {selectedType.count} placements
+                    </div>
+                    <div className="flex gap-2 overflow-auto py-2">
+                      {selectedTypePages.length ? selectedTypePages.map((p) => (
+                        <Button
+                          key={`${p.docId}:${p.page}`}
+                          size="sm"
+                          variant={selectedTypePage === p.page ? 'default' : 'outline'}
+                          onClick={() => {
+                            setSelectedTypePage(p.page);
+                            setDocId(p.docId);
+                            setPage(p.page);
+                          }}
+                        >
+                          p{p.page} ({p.count})
+                        </Button>
+                      )) : (
+                        <div className="text-xs text-muted-foreground">No page pointers yet (use Sources to navigate).</div>
+                      )}
+                    </div>
+                  </div>
                 ) : null}
 
                 {selectedInstanceId ? (
@@ -396,9 +442,14 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
                     className={`w-full text-left px-3 py-2 border-b hover:bg-gray-50 ${active ? 'bg-blue-50' : ''}`}
                     onClick={() => {
                       setSelectedTypeKey(g.key);
+                      setSelectedTypePage(null);
                       // auto-jump to first page that contains this type if we have it
                       const first = g.pages?.[0];
-                      if (first) { setDocId(first.docId); setPage(first.page); }
+                      if (first) {
+                        setSelectedTypePage(first.page);
+                        setDocId(first.docId);
+                        setPage(first.page);
+                      }
                     }}
                   >
                     <div className="flex items-start justify-between gap-2">
@@ -418,7 +469,9 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
               {/* Placements list (within selected type) */}
               {!loadingInstances && selectedTypeKey && (
                 <div className="border-t">
-                  <div className="px-3 py-2 text-xs text-muted-foreground">Placements in this type: {filtered.length}</div>
+                  <div className="px-3 py-2 text-xs text-muted-foreground">
+                    Placements {selectedTypePage ? `(p${selectedTypePage})` : ''}: {filtered.length}
+                  </div>
                   {filtered.map((it) => {
                     const active = it.id === selectedInstanceId;
                     return (
@@ -427,7 +480,6 @@ export function TakeoffRunReviewQueueClient({ bidId, runId }: { bidId: string; r
                         className={`w-full text-left px-3 py-2 border-b hover:bg-gray-50 ${active ? 'bg-blue-50' : ''}`}
                         onClick={() => {
                           setSelectedInstanceId(it.id);
-                          setDrawerOpen(false);
                         }}
                       >
                         <div className="flex items-start justify-between gap-2">
