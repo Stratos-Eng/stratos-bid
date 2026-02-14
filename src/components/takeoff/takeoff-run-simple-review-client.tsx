@@ -164,6 +164,8 @@ export function TakeoffRunSimpleReviewClient({ bidId, runId }: { bidId: string; 
   function next() {
     const nextIdx = idx + 1;
     if (nextIdx >= queue.length) {
+      // move index to end so Finish screen math is sane
+      setIdx(queue.length);
       setStep('finish');
       return;
     }
@@ -214,12 +216,13 @@ export function TakeoffRunSimpleReviewClient({ bidId, runId }: { bidId: string; 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
 
+  const queueKey = useMemo(() => computedQueue.map((x) => x.id).join(','), [computedQueue]);
+
   // When instances load, reset queue.
   useEffect(() => {
     setQueue(computedQueue);
     setIdx(0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [computedQueue.length]);
+  }, [queueKey, computedQueue]);
 
   // When current changes, update viewer target + load evidence.
   useEffect(() => {
@@ -267,6 +270,8 @@ export function TakeoffRunSimpleReviewClient({ bidId, runId }: { bidId: string; 
   }
 
   if (step === 'start') {
+    const hasAny = instances.length > 0;
+
     return (
       <div className="p-6 space-y-4">
         <div className="flex items-center justify-between">
@@ -296,10 +301,26 @@ export function TakeoffRunSimpleReviewClient({ bidId, runId }: { bidId: string; 
             Items that look risky (low confidence / missing evidence pointers / flagged):{' '}
             <span className="font-medium">{riskyCount}</span>
           </div>
+          {!hasAny ? (
+            <div className="text-sm text-muted-foreground">Nothing to review yet for this run.</div>
+          ) : null}
         </div>
 
         <div className="flex items-center gap-2">
-          <Button onClick={() => { setStep('review'); setQueue(computedQueue); setIdx(0); }}>Start review</Button>
+          <Button
+            onClick={() => {
+              if (!hasAny) {
+                setStep('finish');
+                return;
+              }
+              setStep('review');
+              setQueue(computedQueue);
+              setIdx(0);
+            }}
+            disabled={!hasAny}
+          >
+            Start review
+          </Button>
           <Button variant="outline" onClick={() => { setStep('finish'); }}>Skip to finish</Button>
         </div>
 
@@ -342,6 +363,20 @@ export function TakeoffRunSimpleReviewClient({ bidId, runId }: { bidId: string; 
   }
 
   // review
+  if (queue.length === 0) {
+    // defensive: if something weird happens, don't show a broken 1/0 UI
+    return (
+      <div className="p-6 space-y-2">
+        <div className="text-lg font-semibold">Review</div>
+        <div className="text-sm text-muted-foreground">No placements to review.</div>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setStep('finish')}>Go to finish</Button>
+          <Button variant="outline" onClick={loadInstances}>Refresh</Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div ref={containerRef} className={`relative h-full ${isFullscreen ? 'bg-background p-2' : ''}`}>
       <div className="flex items-center justify-between gap-3 mb-3">
@@ -436,7 +471,7 @@ export function TakeoffRunSimpleReviewClient({ bidId, runId }: { bidId: string; 
             <div className="text-xs text-muted-foreground">J next · K previous</div>
             <div className="flex gap-2">
               <Button size="sm" variant="outline" onClick={prev} disabled={idx === 0}>Prev (K)</Button>
-              <Button size="sm" variant="outline" onClick={next} disabled={idx + 1 >= queue.length}>Next (J)</Button>
+              <Button size="sm" variant="outline" onClick={next}>Next (J)</Button>
             </div>
           </div>
         </div>
