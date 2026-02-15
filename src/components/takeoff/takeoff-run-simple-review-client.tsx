@@ -4,8 +4,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/toast';
-import { ProjectViewer } from '@/components/projects/project-viewer';
-import type { SignageItem } from '@/lib/stores/project-store';
+// NOTE: we intentionally do not use the heavyweight ProjectViewer (pdf.js + OpenLayers)
+// in the simple review flow. We use the browser's native PDF renderer via <iframe>.
 
 type TakeoffInstance = {
   id: string;
@@ -400,17 +400,11 @@ export function TakeoffRunSimpleReviewClient({ bidId, runId }: { bidId: string; 
 
       <div className="relative border bg-white overflow-hidden h-[calc(100vh-10rem)] min-h-[520px]">
         {docId ? (
-          <ProjectViewer
-            documentId={docId}
-            pageNumber={page}
-            totalPages={1}
-            items={[] as SignageItem[]}
-            selectedItemId={null}
-            onSelectItem={() => {}}
-            quickAddMode={false}
-            onQuickAddClick={() => {}}
-            extractionStatus={undefined}
-            highlightTerms={current?.typeCode ? [current.typeCode] : []}
+          <iframe
+            key={`${docId}:${page}`}
+            title="PDF"
+            className="w-full h-full"
+            src={`/api/documents/${docId}/view#page=${page}`}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-sm text-muted-foreground">
