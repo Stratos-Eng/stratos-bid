@@ -39,7 +39,13 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable} font-sans antialiased`}
       >
-        <Providers>{children}</Providers>
+        <Providers>
+          {children}
+          {/* Deploy debug marker (safe + tiny). Remove anytime. */}
+          <div className="fixed bottom-2 right-2 z-50 text-[10px] text-muted-foreground bg-background/70 backdrop-blur border rounded px-2 py-1">
+            ui:b1d393f api: <a className="underline" href="/api/version" target="_blank">/api/version</a>
+          </div>
+        </Providers>
       </body>
     </html>
   );
